@@ -1,0 +1,15 @@
+{
+  "name": "@affilio/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Turborepo task adapter for the Python API. Python dependencies are managed by uv (see pyproject.toml), not pnpm.",
+  "scripts": {
+    "dev": "uv run uvicorn affilio.main:app --reload --host 0.0.0.0 --port 8000 --no-access-log",
+    "lint": "uv run ruff check . && uv run ruff format --check .",
+    "format": "uv run ruff format . && uv run ruff check --fix .",
+    "typecheck": "uv run python -c \"import affilio.main\"",
+    "test": "uv run pytest",
+    "migrate": "uv run alembic upgrade head",
+    "seed": "uv run python -m affilio.scripts.seed_dev"
+  }
+}

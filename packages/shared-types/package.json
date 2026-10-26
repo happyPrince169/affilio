@@ -1,0 +1,18 @@
+{
+  "name": "@affilio/shared-types",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript contracts shared between the AFFILIO web app and consumers of the AFFILIO API.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@affilio/config": "workspace:*",
+    "typescript": "^5.9.3"
+  }
+}

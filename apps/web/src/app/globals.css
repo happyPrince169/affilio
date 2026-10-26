@@ -1,0 +1,160 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/*
+ * AFFILIO design tokens.
+ * Neutral surfaces with a warm, slightly desaturated orange brand accent.
+ * All colors are OKLCH so light/dark variants keep the same perceived hue.
+ */
+:root {
+  --brand: oklch(0.68 0.19 42);
+  --brand-foreground: oklch(0.99 0.01 80);
+
+  --background: oklch(0.985 0.002 80);
+  --foreground: oklch(0.17 0.01 60);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.17 0.01 60);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.17 0.01 60);
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-foreground);
+  --secondary: oklch(0.96 0.005 80);
+  --secondary-foreground: oklch(0.25 0.01 60);
+  --muted: oklch(0.96 0.005 80);
+  --muted-foreground: oklch(0.52 0.012 60);
+  --accent: oklch(0.955 0.02 60);
+  --accent-foreground: oklch(0.3 0.06 45);
+  --destructive: oklch(0.577 0.245 27.325);
+  --success: oklch(0.6 0.15 150);
+  --warning: oklch(0.72 0.16 75);
+  --border: oklch(0.91 0.006 70);
+  --input: oklch(0.91 0.006 70);
+  --ring: oklch(0.68 0.19 42 / 60%);
+  --chart-1: oklch(0.68 0.19 42);
+  --chart-2: oklch(0.78 0.14 70);
+  --chart-3: oklch(0.55 0.02 60);
+  --chart-4: oklch(0.42 0.02 60);
+  --chart-5: oklch(0.3 0.02 60);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.975 0.004 80);
+  --sidebar-foreground: oklch(0.22 0.01 60);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: var(--brand-foreground);
+  --sidebar-accent: oklch(0.94 0.02 60);
+  --sidebar-accent-foreground: oklch(0.3 0.06 45);
+  --sidebar-border: oklch(0.91 0.006 70);
+  --sidebar-ring: oklch(0.68 0.19 42 / 60%);
+}
+
+.dark {
+  --brand: oklch(0.74 0.17 48);
+  --brand-foreground: oklch(0.16 0.03 50);
+
+  --background: oklch(0.15 0.006 60);
+  --foreground: oklch(0.96 0.005 80);
+  --card: oklch(0.19 0.006 60);
+  --card-foreground: oklch(0.96 0.005 80);
+  --popover: oklch(0.19 0.006 60);
+  --popover-foreground: oklch(0.96 0.005 80);
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-foreground);
+  --secondary: oklch(0.25 0.006 60);
+  --secondary-foreground: oklch(0.96 0.005 80);
+  --muted: oklch(0.25 0.006 60);
+  --muted-foreground: oklch(0.7 0.01 70);
+  --accent: oklch(0.28 0.03 50);
+  --accent-foreground: oklch(0.92 0.04 60);
+  --destructive: oklch(0.704 0.191 22.216);
+  --success: oklch(0.72 0.15 150);
+  --warning: oklch(0.8 0.15 80);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.74 0.17 48 / 60%);
+  --chart-1: oklch(0.74 0.17 48);
+  --chart-2: oklch(0.82 0.13 75);
+  --chart-3: oklch(0.7 0.01 70);
+  --chart-4: oklch(0.55 0.01 70);
+  --chart-5: oklch(0.4 0.01 70);
+  --sidebar: oklch(0.17 0.006 60);
+  --sidebar-foreground: oklch(0.93 0.005 80);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: var(--brand-foreground);
+  --sidebar-accent: oklch(0.26 0.03 50);
+  --sidebar-accent-foreground: oklch(0.94 0.04 60);
+  --sidebar-border: oklch(1 0 0 / 8%);
+  --sidebar-ring: oklch(0.74 0.17 48 / 60%);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings:
+      "rlig" 1,
+      "calt" 1;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}

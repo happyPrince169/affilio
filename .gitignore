@@ -1,0 +1,53 @@
+# --- Node / pnpm ---
+node_modules/
+.pnpm-store/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# --- Next.js ---
+.next/
+out/
+next-env.d.ts
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+htmlcov/
+.coverage
+coverage.xml
+
+# --- Environment / secrets (never commit real values) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Docker volumes / local data ---
+infrastructure/docker/data/
+postgres-data/
+
+# --- Editors / OS ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+
+# --- Misc ---
+coverage/
+tmp/
+.claude/

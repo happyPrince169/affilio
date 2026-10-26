@@ -1,0 +1,8 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Native build scripts pnpm should not run automatically.
+ignoredBuiltDependencies:
+  - sharp
+  - unrs-resolver

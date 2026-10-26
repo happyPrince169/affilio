@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+
+jobs:
+  web:
+    name: Web · lint, typecheck, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # version is read from the root package.json "packageManager" field
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Prettier
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm turbo run lint --filter=@affilio/web --filter=@affilio/shared-types
+
+      - name: Typecheck
+        run: pnpm turbo run typecheck --filter=@affilio/web --filter=@affilio/shared-types
+
+      - name: Build
+        run: pnpm turbo run build --filter=@affilio/web
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+
+  api:
+    name: API · ruff, pytest, migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/api
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: affilio
+          POSTGRES_PASSWORD: affilio
+          POSTGRES_DB: affilio_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U affilio -d affilio_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      APP_ENV: test
+      LOG_FORMAT: json
+      DATABASE_URL: postgresql+psycopg://affilio:affilio@localhost:5432/affilio_test
+      TEST_DATABASE_URL: postgresql+psycopg://affilio:affilio@localhost:5432/affilio_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+
+      - name: Sync (Python 3.12)
+        run: uv sync --frozen
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      - name: Import smoke
+        run: uv run python -c "import affilio.main"
+
+      - name: Migrations · upgrade / downgrade / upgrade
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+
+      - name: Seed (idempotency check)
+        run: |
+          uv run python -m affilio.scripts.seed_dev
+          uv run python -m affilio.scripts.seed_dev
+
+      - name: Pytest
+        run: uv run pytest
+
+      - name: API boots and answers health
+        run: |
+          uv run uvicorn affilio.main:app --port 8000 &
+          for i in $(seq 1 20); do
+            curl -fsS http://localhost:8000/health && break
+            sleep 1
+          done
+          curl -fsS http://localhost:8000/api/v1/health
+          curl -fsS http://localhost:8000/api/v1/system/info | grep -q '"status":"ok"'

@@ -1,0 +1,32 @@
+# AFFILIO local infrastructure.
+# M0 ships PostgreSQL only. Redis, NAS mounts and FFmpeg workers arrive in later milestones
+# when a concrete requirement justifies them. Values default sensibly; override via `.env`.
+
+name: affilio
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: affilio-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-affilio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-affilio}
+      POSTGRES_DB: ${POSTGRES_DB:-affilio}
+      # Created by infrastructure/docker/postgres/init/01-create-test-db.sh
+      POSTGRES_TEST_DB: ${POSTGRES_TEST_DB:-affilio_test}
+    ports:
+      # Host port is 5440 by default because 5432 is commonly taken by a local PostgreSQL.
+      - "${POSTGRES_PORT:-5440}:5432"
+    volumes:
+      - affilio-postgres-data:/var/lib/postgresql/data
+      - ./infrastructure/docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-affilio} -d ${POSTGRES_DB:-affilio}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  affilio-postgres-data:
