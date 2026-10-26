@@ -67,12 +67,35 @@ publication transition. Admins read it via `GET /auth/audit`.
 - Passwords are never accepted on the command line: `affilio.scripts.create_user` reads them
   from `AFFILIO_NEW_USER_PASSWORD` or an interactive prompt.
 
+## Login rate limiting (pre-M3B hardening)
+
+`POST /auth/login` counts **failed** attempts per client IP (the socket peer, or the first
+`X-Forwarded-For` hop only when `TRUST_PROXY_HEADERS=true`, which the Synology compose sets
+because the API has no published port) and per email in a sliding window
+(`AUTH_LOGIN_MAX_ATTEMPTS_PER_MINUTE`, default 10, over `AUTH_LOGIN_WINDOW_SECONDS`,
+default 60). Over the limit the endpoint answers 429 `too_many_attempts` with a
+`Retry-After` header and performs no password verification. A successful sign-in clears the
+email bucket. Failed attempts are audited (`auth.login_failed`, organization-less).
+The limiter is in-process (`affilio.core.ratelimit`): the Synology deployment runs one
+uvicorn worker, so the limit is exact there; with N workers it is N × limit. A shared store
+is deliberately not introduced.
+
+## Review notes (pre-M3B)
+
+| Area | State | Note |
+| --- | --- | --- |
+| Session expiry | sliding 14 days, touched at most every 15 min | expired rows are not purged yet; add a worker sweep when the table grows |
+| Revocation | logout revokes the session; password change revokes all others; suspended users fail resolution | no admin "sign out everywhere" endpoint yet (use `create_user --reset-password`) |
+| Cookie | HttpOnly, SameSite=Lax, Path=/, Secure unless `SESSION_COOKIE_SECURE=false` | the Synology example sets `false` for plain-HTTP LAN; switch to unset once TLS terminates on the DSM reverse proxy |
+| CSRF | Origin / Sec-Fetch-Site check on cookie writes + Lax | `X-Forwarded-Host` is trusted from the web proxy only because the API has no published port |
+| Roles | enforced per router (`RequireEditor` / `RequireAdmin`), services scope by organization | viewer cannot mutate anything; owner is only assignable through the seed or SQL |
+| Service token | acts as **owner** of one organization | broader than needed; M3B should narrow it to scan / release-due / reconciliation endpoints |
+| Seed credentials | `seed_dev` refuses outside development/test; production users via `create_user` with password from env or prompt | `SEED_ADMIN_PASSWORD` default is documented as a local placeholder and never used in production |
+
 ## Known limitations
 
-- No rate limiting on `/auth/login` beyond argon2 cost (`AUTH_LOGIN_MAX_ATTEMPTS_PER_MINUTE`
-  is reserved); place the LAN deployment behind the Synology reverse proxy and keep it
-  off the public internet.
 - No password reset flow; an admin resets with `create_user --reset-password`.
 - Session cookies are host-scoped: in development the web app and the API must be reached
   through the same host name (`localhost:3000` and `localhost:8000`), or use the same-origin
   proxy (`NEXT_PUBLIC_API_URL=""`).
+- Expired sessions are retained until a cleanup sweep exists.

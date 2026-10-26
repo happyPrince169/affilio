@@ -19,6 +19,7 @@ from affilio.api.deps import (
 from affilio.core.audit import record_audit
 from affilio.core.config import Settings
 from affilio.core.errors import NotFoundError
+from affilio.core.ratelimit import SlidingWindowLimiter
 from affilio.modules.identity import service
 from affilio.modules.identity.models import OrganizationMembership
 from affilio.modules.identity.schemas import (
@@ -34,6 +35,40 @@ from affilio.modules.identity.schemas import (
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+_login_limiter: SlidingWindowLimiter | None = None
+
+
+class TooManyAttemptsError(AuthenticationRequiredError):
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    code = "too_many_attempts"
+
+
+def _limiter(settings: Settings) -> SlidingWindowLimiter:
+    global _login_limiter
+    if (
+        _login_limiter is None
+        or _login_limiter.limit != settings.auth_login_max_attempts_per_minute
+    ):
+        _login_limiter = SlidingWindowLimiter(
+            limit=settings.auth_login_max_attempts_per_minute,
+            window_seconds=settings.auth_login_window_seconds,
+        )
+    return _login_limiter
+
+
+def reset_login_limiter() -> None:
+    """Test hook."""
+    if _login_limiter is not None:
+        _login_limiter.clear()
+
+
+def _client_ip(request: Request, settings: Settings) -> str:
+    if settings.trust_proxy_headers:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()[:64]
+    return request.client.host if request.client else "unknown"
 
 
 def _membership_response(m: OrganizationMembership) -> MembershipResponse:
@@ -113,7 +148,32 @@ def login(
     session: DbSession,
     settings: SettingsDep,
 ) -> CurrentUserResponse:
-    user = service.authenticate(session, body.email, body.password)
+    limiter = _limiter(settings)
+    email_key = f"email:{body.email}"
+    ip_key = f"ip:{_client_ip(request, settings)}"
+    wait = limiter.check(ip_key) or limiter.check(email_key)
+    if wait is not None:
+        raise TooManyAttemptsError(
+            "Too many sign-in attempts; try again later",
+            details={"retry_after_seconds": int(wait)},
+            headers={"Retry-After": str(int(wait))},
+        )
+    try:
+        user = service.authenticate(session, body.email, body.password)
+    except service.InvalidCredentialsError:
+        limiter.hit(ip_key)
+        limiter.hit(email_key)
+        record_audit(
+            session,
+            organization_id=None,
+            identity=None,
+            action="auth.login_failed",
+            entity_type="user",
+            data={"email": body.email, "ip": _client_ip(request, settings)},
+        )
+        session.commit()
+        raise
+    limiter.reset(email_key)
     membership = service.membership_for(user, body.organization_slug)
     if membership is None:
         raise AuthenticationRequiredError("This account has no organization membership")

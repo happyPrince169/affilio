@@ -121,7 +121,13 @@ class Settings(BaseSettings):
     # None → secure cookies outside development/test. Set explicitly behind plain-HTTP LAN setups.
     session_cookie_secure: bool | None = None
     session_cookie_domain: str | None = None
+    # Failed sign-in attempts allowed per client IP and per email within the window before
+    # /auth/login answers 429. In-process; see affilio.core.ratelimit for the scope.
     auth_login_max_attempts_per_minute: int = 10
+    auth_login_window_seconds: int = 60
+    # Trust X-Forwarded-For for the client IP (rate limiting). Only behind the web proxy /
+    # a reverse proxy that overwrites the header; off by default so clients cannot spoof it.
+    trust_proxy_headers: bool = False
     # Development seed only (affilio.scripts.seed_dev refuses to run outside dev/test).
     seed_admin_email: str = "owner@affilio.local"
     seed_admin_password: SecretStr = SecretStr("affilio-dev-owner")

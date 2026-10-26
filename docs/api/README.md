@@ -142,7 +142,7 @@ require an identity. Errors: 401 `authentication_required` (no/invalid session),
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| POST | `/api/v1/auth/login` | `{email, password, organization_slug?}` → current user + `Set-Cookie: affilio_session` (HttpOnly, Lax, Secure outside dev). 401 `invalid_credentials` |
+| POST | `/api/v1/auth/login` | `{email, password, organization_slug?}` → current user + `Set-Cookie: affilio_session` (HttpOnly, Lax, Secure outside dev). 401 `invalid_credentials`; 429 `too_many_attempts` (+ `Retry-After`) after `AUTH_LOGIN_MAX_ATTEMPTS_PER_MINUTE` failures per IP or email |
 | POST | `/api/v1/auth/logout` | Revokes the session, clears the cookie (204) |
 | GET | `/api/v1/auth/me` | `{id, email, display_name, identity_kind user\|service, organization{slug,name,timezone,role}, memberships[], permissions{view,edit,approve,manage_accounts,manage_members}}` |
 | POST | `/api/v1/auth/password` | `{current_password, new_password ≥ 10}`; other sessions are revoked |

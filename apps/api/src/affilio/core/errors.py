@@ -33,6 +33,7 @@ class AppError(Exception):
         code: str | None = None,
         status_code: int | None = None,
         details: Any = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -41,6 +42,7 @@ class AppError(Exception):
         if status_code is not None:
             self.status_code = status_code
         self.details = details
+        self.headers = headers
 
 
 class NotFoundError(AppError):
@@ -112,6 +114,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             code=exc.code,
             message=exc.message,
             details=exc.details,
+            headers=exc.headers,
         )
 
     @app.exception_handler(StarletteHTTPException)

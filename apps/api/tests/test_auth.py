@@ -328,3 +328,53 @@ def test_audit_trail_records_user_ids(api: TestClient, db_session: Session, orga
     ).all()
     assert len(rows) >= 3
     assert api.get("/api/v1/auth/me").json()["organization"]["timezone"] == "Asia/Ho_Chi_Minh"
+
+
+def test_login_rate_limit_blocks_repeated_failures(
+    api: TestClient, db_session: Session, organization, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from affilio.modules.identity.router import reset_login_limiter
+
+    reset_login_limiter()
+    user = create_member(db_session, organization, role=MembershipRole.EDITOR)
+    limit = get_settings().auth_login_max_attempts_per_minute
+    for _ in range(limit):
+        bad = api.post(
+            "/api/v1/auth/login", json={"email": user.email, "password": "nope-nope-nope"}
+        )
+        assert bad.status_code == 401
+    blocked = api.post(
+        "/api/v1/auth/login", json={"email": user.email, "password": "nope-nope-nope"}
+    )
+    assert blocked.status_code == 429
+    assert blocked.json()["error"]["code"] == "too_many_attempts"
+    assert int(blocked.headers["Retry-After"]) >= 1
+    # Even the correct password is refused while the window is active (no oracle).
+    assert (
+        api.post(
+            "/api/v1/auth/login", json={"email": user.email, "password": TEST_PASSWORD}
+        ).status_code
+        == 429
+    )
+    # Failures are audited without an organization.
+    events = db_session.scalars(
+        select(AuditEvent).where(AuditEvent.action == "auth.login_failed")
+    ).all()
+    assert any(e.data.get("email") == user.email for e in events)
+    # A different email from the same client is also limited (per-IP bucket)…
+    other = create_member(db_session, organization, role=MembershipRole.VIEWER)
+    assert (
+        api.post(
+            "/api/v1/auth/login", json={"email": other.email, "password": "nope-nope-nope"}
+        ).status_code
+        == 429
+    )
+    # …until the window is cleared; then a success resets the email bucket.
+    reset_login_limiter()
+    assert (
+        api.post(
+            "/api/v1/auth/login", json={"email": user.email, "password": TEST_PASSWORD}
+        ).status_code
+        == 200
+    )
+    reset_login_limiter()

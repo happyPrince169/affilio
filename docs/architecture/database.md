@@ -245,6 +245,34 @@ folder_category_rules
   category_id FK RESTRICT, include_subfolders, priority, is_active; UNIQUE(root, path)
 ```
 
+## Publication revalidation markers (migration `0007_publication_revalidation`)
+
+```
+publication_jobs += revalidated_at, revalidated_by_label
+```
+
+Owned by 0007, not 0006. 0007 is idempotent: it adds each column only if missing and drops
+each only if present, so it is safe on databases that already carry the columns.
+
+### Reconciling databases patched by hand
+
+Symptom: a database is stamped `0006_content_routing` but `publication_jobs` already has
+`revalidated_at` / `revalidated_by_label` (they were added with `ALTER TABLE` while the
+interim 0006 contained them, or the database was built from that interim 0006).
+
+Procedure (no data loss, Alembic history preserved):
+
+1. Back up: `pnpm db:backup` (or `pg_dump`).
+2. Check the state: `alembic current` must print `0006_content_routing`;
+   `\d publication_jobs` shows whether the two columns exist. Either state is fine.
+3. Run `alembic upgrade head`. 0007 skips columns that exist and creates the missing ones,
+   then stamps `0007_publication_revalidation`. Never run `alembic stamp` to skip 0007.
+4. Verify: `alembic current` prints `0007_publication_revalidation (head)` and
+   `uv run pytest tests/test_migrations.py` reports no drift.
+
+Databases that never saw the interim 0006 need nothing special: `upgrade head` applies 0006
+(original shape) and then 0007.
+
 ## Growth plan (not implemented)
 
 | Milestone | Tables (indicative)                                                              |

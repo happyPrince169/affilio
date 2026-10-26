@@ -28,7 +28,8 @@
 - **Hardening**: routing eligibility is re-checked before approve / schedule / start / retry
   and in release-due; blocked targets and stale classifications require an explicit admin
   decision (`revalidate` or `revoke_approval`); `publication_jobs.revalidated_at/by`.
-- Migration `0006_content_routing` with downgrade.
+- Migrations `0006_content_routing` and `0007_publication_revalidation` (revalidation
+  markers; idempotent) with downgrades.
 
 ## Acceptance criteria → verification
 

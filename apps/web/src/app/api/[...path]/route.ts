@@ -47,6 +47,8 @@ async function proxy(request: Request, ctx: Context): Promise<Response> {
   // Lets the API compare `Origin` against the host the browser actually used (CSRF check).
   headers.set("x-forwarded-host", request.headers.get("host") ?? incoming.host);
   headers.set("x-forwarded-proto", incoming.protocol.replace(":", ""));
+  // Client address for API rate limiting. Next.js populates x-forwarded-for from the socket
+  // when no upstream proxy set it; the API only trusts this with TRUST_PROXY_HEADERS=true.
   const forwardedFor = request.headers.get("x-forwarded-for");
   if (forwardedFor) headers.set("x-forwarded-for", forwardedFor);
 

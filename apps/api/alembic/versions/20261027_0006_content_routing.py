@@ -148,13 +148,6 @@ def upgrade() -> None:
         "media_assets",
         sa.Column("classification_changed_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.add_column(
-        "publication_jobs",
-        sa.Column("revalidated_at", sa.DateTime(timezone=True), nullable=True),
-    )
-    op.add_column(
-        "publication_jobs", sa.Column("revalidated_by_label", sa.String(length=255), nullable=True)
-    )
     op.create_table(
         "media_content_categories",
         _uuid_pk(),
@@ -226,8 +219,6 @@ def downgrade() -> None:
     op.drop_index("ix_media_content_categories_org_category", table_name="media_content_categories")
     op.drop_index("uq_media_content_categories_primary", table_name="media_content_categories")
     op.drop_table("media_content_categories")
-    op.drop_column("publication_jobs", "revalidated_by_label")
-    op.drop_column("publication_jobs", "revalidated_at")
     op.drop_column("media_assets", "classification_changed_at")
     op.drop_index("ix_channel_category_rules_category_id", table_name="channel_category_rules")
     op.drop_index("ix_channel_category_rules_organization_id", table_name="channel_category_rules")
