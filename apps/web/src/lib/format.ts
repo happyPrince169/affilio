@@ -112,3 +112,68 @@ export function formatPercent(rate: string | number | null | undefined): string 
   if (Number.isNaN(value)) return "–";
   return `${(value * 100).toFixed((value * 100) % 1 === 0 ? 0 : 2)}%`;
 }
+
+/** Date-time in a specific IANA timezone (organization display zone); storage is always UTC. */
+export function formatInZone(
+  value: string | null | undefined,
+  timeZone: string | undefined,
+  options: Intl.DateTimeFormatOptions = {},
+): string {
+  if (!value) return "–";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "–";
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone,
+      ...options,
+    }).format(date);
+  } catch {
+    return formatDateTime(value);
+  }
+}
+
+/** `YYYY-MM-DDTHH:mm` for <input type="datetime-local"> in the given zone. */
+export function toLocalInputValue(value: string | Date, timeZone: string | undefined): string {
+  const date = typeof value === "string" ? new Date(value) : value;
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(date);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "00";
+    return `${get("year")}-${get("month")}-${get("day")}T${get("hour") === "24" ? "00" : get("hour")}:${get("minute")}`;
+  } catch {
+    return date.toISOString().slice(0, 16);
+  }
+}
+
+/** Interpret a `datetime-local` string as wall-clock time in `timeZone`; returns a UTC ISO string. */
+export function zonedInputToIso(local: string, timeZone: string | undefined): string | null {
+  if (!local) return null;
+  const [datePart, timePart] = local.split("T");
+  if (!datePart || !timePart) return null;
+  const [y, m, d] = datePart.split("-").map(Number);
+  const [hh, mm] = timePart.split(":").map(Number);
+  if ([y, m, d, hh, mm].some((n) => n === undefined || Number.isNaN(n))) return null;
+  const guess = Date.UTC(y!, m! - 1, d!, hh!, mm!);
+  if (!timeZone) return new Date(local).toISOString();
+  try {
+    // Offset of the zone at the guessed instant; good enough except in the DST switch hour.
+    const asZone = new Date(new Date(guess).toLocaleString("en-US", { timeZone }));
+    const asUtc = new Date(new Date(guess).toLocaleString("en-US", { timeZone: "UTC" }));
+    const offset = asZone.getTime() - asUtc.getTime();
+    return new Date(guess - offset).toISOString();
+  } catch {
+    return new Date(local).toISOString();
+  }
+}

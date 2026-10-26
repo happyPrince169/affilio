@@ -165,3 +165,87 @@ class ProductionMediaRole(StrEnum):
     FOOTAGE = "footage"
     FINAL = "final"
     REFERENCE = "reference"
+
+
+class SocialAccountType(StrEnum):
+    PAGE = "page"
+    PROFILE = "profile"
+    GROUP = "group"
+    CHANNEL = "channel"
+    SHOP = "shop"
+
+
+class SocialAccountSource(StrEnum):
+    MANUAL = "manual"  # registered by an operator; unverified until OAuth (M3B)
+    OAUTH = "oauth"
+
+
+class AffiliateLinkStatus(StrEnum):
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class AffiliateLinkSource(StrEnum):
+    MANUAL = "manual"
+    IMPORT = "import"
+
+
+class CampaignStatus(StrEnum):
+    DRAFT = "draft"
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    ARCHIVED = "archived"
+
+
+class PublicationStatus(StrEnum):
+    DRAFT = "draft"
+    READY_FOR_REVIEW = "ready_for_review"
+    APPROVED = "approved"
+    SCHEDULED = "scheduled"
+    READY_TO_PUBLISH = "ready_to_publish"
+    PUBLISHING = "publishing"
+    PUBLISHED = "published"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    NEEDS_RECONCILIATION = "needs_reconciliation"
+
+
+class PublicationAttemptStatus(StrEnum):
+    STARTED = "started"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    AMBIGUOUS = "ambiguous"
+
+
+class PublishMode(StrEnum):
+    ASSISTED = "assisted"  # operator publishes manually following a checklist
+    API = "api"  # reserved for authorized integrations (M3B+)
+
+
+class EvidenceKind(StrEnum):
+    OPERATOR_REPORTED = "operator_reported"
+    API_VERIFIED = "api_verified"
+
+
+class AuditActorKind(StrEnum):
+    USER = "user"
+    SERVICE = "service"
+    SYSTEM = "system"
+
+
+class CategoryStatus(StrEnum):
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class CategoryAssignmentSource(StrEnum):
+    FOLDER = "folder"
+    MANUAL = "manual"
+    IMPORT = "import"
+    AI_FUTURE = "ai_future"  # reserved; no AI classification exists yet
+
+
+class ChannelMatchPolicy(StrEnum):
+    ALLOW = "allow"
+    PREFER = "prefer"
+    BLOCK = "block"

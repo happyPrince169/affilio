@@ -12,11 +12,14 @@ from sqlalchemy.orm import Session
 
 from affilio.app import create_app
 from affilio.core.config import get_settings
-from affilio.core.enums import ScanTrigger
+from affilio.core.enums import MembershipRole, ScanTrigger
 from affilio.db.session import dispose_engine
+from affilio.modules.identity import service as identity_service
+from affilio.modules.identity.models import User
 from affilio.modules.media.models import MediaAsset
 from affilio.modules.media.scanner import MediaScanner
 from affilio.modules.media.service import enqueue_scan
+from tests.auth_helpers import sign_in
 from tests.media_helpers import FakeProber, build_settings, create_organization, write_bytes
 
 pytestmark = pytest.mark.database
@@ -37,13 +40,16 @@ PRODUCT = {
 
 
 @pytest.fixture
-def api(monkeypatch: pytest.MonkeyPatch, media_dirs, organization, schema) -> Iterator[TestClient]:
+def api(
+    monkeypatch: pytest.MonkeyPatch, media_dirs, organization, schema, db_session
+) -> Iterator[TestClient]:
     for key, value in media_dirs.env().items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("DEFAULT_ORGANIZATION_SLUG", organization.slug)
     monkeypatch.delenv("MEDIA_ADMIN_TOKEN", raising=False)
     get_settings.cache_clear()
     with TestClient(create_app(), raise_server_exceptions=False) as client:
+        sign_in(client, db_session, organization)
         yield client
     dispose_engine()
     get_settings.cache_clear()
@@ -187,6 +193,14 @@ def test_products_scoped_by_organization_header(api: TestClient, db_session: Ses
     other = create_organization(db_session)
     db_session.commit()
     product_id = api.post("/api/v1/products", json={"name": "Lamp"}).json()["id"]
+    # Not a member of `other`: selecting it is refused outright.
+    refused = api.get(f"/api/v1/products/{product_id}", headers={"X-Organization-Slug": other.slug})
+    assert refused.status_code == 403
+    # A member of both organizations sees strict tenant isolation.
+    me = api.get("/api/v1/auth/me").json()
+    user = db_session.get(User, uuid.UUID(me["id"]))
+    identity_service.add_membership(db_session, other, user, MembershipRole.ADMIN)
+    db_session.commit()
     foreign = api.get(f"/api/v1/products/{product_id}", headers={"X-Organization-Slug": other.slug})
     assert foreign.status_code == 404
     assert (
@@ -205,7 +219,7 @@ def test_writes_require_admin_token_when_configured(
     get_settings.cache_clear()
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         assert client.post("/api/v1/products", json={"name": "x"}).status_code == 401
-        assert client.get("/api/v1/products").status_code == 200
+        assert client.get("/api/v1/products").status_code == 401
         ok = client.post(
             "/api/v1/products", json={"name": "x"}, headers={"X-Affilio-Admin-Token": "tok"}
         )

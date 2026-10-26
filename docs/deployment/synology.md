@@ -116,7 +116,9 @@ Copy `infrastructure/docker/synology/.env.example` to `.env` **next to the compo
 | `AFFILIO_UID` / `AFFILIO_GID` | Container user (see §2). |
 | `AFFILIO_BIND_ADDRESS` / `AFFILIO_WEB_PORT` | Where the web UI listens. Use the NAS LAN IP. |
 | `POSTGRES_PASSWORD` | Generate: `openssl rand -hex 32`. |
-| `MEDIA_ADMIN_TOKEN` | Generate: `openssl rand -hex 32`. Required for scan triggers. The web container injects it server-side; it never reaches browsers. |
+| `MEDIA_ADMIN_TOKEN` | Generate: `openssl rand -hex 32`. Service token for CLI/cron calls (scan triggers, release-due). Since M3A the web container does **not** hold it; browsers authenticate with session cookies. |
+| `SESSION_COOKIE_SECURE` | `false` when the UI is served over plain HTTP on the LAN (no TLS); otherwise leave unset so the cookie is `Secure`. |
+| `SESSION_TTL_DAYS` | Session lifetime (sliding). Default 14. |
 | `MEDIA_PROXY_PATTERNS` | How a proxy filename derives from an original (`{stem}`, `{name}`, `{ext}` placeholders), same relative directory under the proxies root. **Confirm against the real proxy naming scheme before the first scan.** |
 | `MEDIA_VIDEO_EXTENSIONS` | Extensions to index. |
 | `*_CPUS` / `*_MEMORY` | Resource limits (§6). |
@@ -227,14 +229,22 @@ Rollback:
 Every migration in this repository has a tested `downgrade()`; the release notes list the
 revision for each version.
 
-## 10. Security posture (M1)
+## 10. Security posture (M3A)
 
-- There is **no authentication yet**. The UI and the read-only media API are reachable by anyone
-  on the LAN who can reach the web port. Keep the port LAN-only (DSM Firewall: allow the LAN
-  subnet, deny everything else) and never expose it through QuickConnect, a reverse proxy, or a
-  port forward until M3 ships authentication and organization scoping.
-- Mutating endpoints (scan trigger) require `MEDIA_ADMIN_TOKEN`; the web container holds it
-  server-side.
+- **Authentication is required** for every page and API call (session cookies, argon2id
+  passwords, roles viewer/editor/admin/owner; see `docs/architecture/security.md`). Create the
+  first owner with `docker compose exec api python -m affilio.scripts.create_user --email … --org demo-org --role admin`
+  after creating the organization with the seed (development) or a migration-time insert;
+  the development seed must not be used in production (`APP_ENV=production` refuses it).
+- Keep the port LAN-only regardless (DSM Firewall: allow the LAN subnet, deny everything else).
+  There is no login rate limiting yet; do not expose the UI through QuickConnect or a port
+  forward. If you terminate TLS on the DSM reverse proxy, leave `SESSION_COOKIE_SECURE` unset;
+  on plain HTTP set it to `false` or logins will not stick.
+- The service token (`MEDIA_ADMIN_TOKEN`) is only for CLI/cron calls against the API
+  container; the web container no longer receives it.
+- No platform credentials exist: manually registered Pages are labelled unverified, and
+  publishing is assisted (operator publishes, records the URL). API publishing arrives with
+  Meta authorization in M3B.
 - Interactive API docs are disabled (`DOCS_ENABLED=false`).
 - PostgreSQL has no published port; the password lives only in `.env` (mode 600).
 - Originals and proxies are read-only bind mounts; even a compromised container cannot alter them.

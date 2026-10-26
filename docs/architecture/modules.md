@@ -89,6 +89,41 @@ impossible: an asset from another organization is simply "not found".
 - **Finals are not footage.** The finals root produces `asset_kind = final` assets with their
   own duplicate scope, no proxy linking, and a human handoff gate (`handoff_status`).
 
+### accounts, content and publishing (M3A)
+
+```
+accounts/    models (social_accounts registry fields), schemas, service (manual registration,
+             PLATFORM_CAPABILITIES, publishable_url), router (admin writes)
+content/     models (affiliate_links), schemas, service (validation, normalized duplicates), router
+publishing/  models (campaigns, campaign_media, campaign_targets, publication_jobs, publication_links,
+             publication_snapshots, publication_attempts), lifecycle (ACTIONS table), errors, schemas,
+             service (state machine, snapshots, evidence, scheduling, queue, calendar), router,
+             adapters/ (base contract, assisted, facebook placeholder, registry)
+identity/    += schemas, service (credentials, sessions, memberships), router (/auth)
+core/        += security (argon2id, session tokens), audit (record_audit)
+api/deps.py  Identity resolution, CurrentIdentity / RequireEditor / RequireAdmin
+```
+
+Dependency direction is respected: `publishing` imports `accounts`, `content`, `media` and
+`products` services; `content` imports `products`; nothing imports `publishing`. Adapters live
+inside `publishing` and perform no network I/O in M3A.
+
+### taxonomy and routing (M3A.1)
+
+```
+taxonomy/    models (content_categories), schemas, errors, service (tree snapshot, cycle and slug
+             guards, reference registry for safe archiving), router (/content-categories)
+accounts/    += channel_profiles, channel_category_rules, PUT /accounts/{id}/channel-profile
+media/       += media_content_categories, folder_category_rules, classification.py (path
+             normalization, rule resolution, idempotent assignment), scanner hooks, filters
+routing/     engine.py (pure scoring, inheritance, BLOCK precedence), service, router
+             (/distribution/recommendations)
+```
+
+Order in `DOMAIN_MODULES`: identity, **taxonomy**, accounts, media, …, publishing, **routing**.
+`taxonomy` imports nothing domain-specific; `media` and `accounts` import `taxonomy`;
+`routing` reads `accounts`, `media`, `publishing` and `taxonomy` services and writes nothing.
+
 ## Rules
 
 1. **Tables belong to one module.** Another module reads them only through that module's
@@ -98,7 +133,12 @@ impossible: an asset from another organization is simply "not found".
    and applies it in the query. This is where organization isolation is enforced.
 3. **Routers are thin.** Validate with Pydantic, call a service, return a schema.
 4. **No platform calls outside `publishing`/`analytics`.** And only official APIs there.
-5. **Agents act through tools that call services.** Any tool that mutates or publishes
+   In M3A no adapter performs network publishing at all; see
+   `docs/architecture/distribution.md#adapter-interface`.
+5. **Routers declare roles.** `CurrentIdentity` for reads, `RequireEditor` for ordinary
+   writes, `RequireAdmin` for approvals, registry, members and reconciliation; services keep
+   `organization_id` scoping (`docs/architecture/security.md`).
+6. **Agents act through tools that call services.** Any tool that mutates or publishes
    returns a proposal that requires human approval before execution.
 
 ## Frontend mirror

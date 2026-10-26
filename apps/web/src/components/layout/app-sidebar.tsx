@@ -28,7 +28,7 @@ export function AppSidebar() {
         <div className="flex items-center justify-between rounded-lg border bg-card px-3 py-2.5">
           <div className="flex flex-col">
             <span className="text-xs font-medium">Milestone {siteConfig.currentMilestone}</span>
-            <span className="text-[11px] text-muted-foreground">Procurement & Production</span>
+            <span className="text-[11px] text-muted-foreground">Distribution Core</span>
           </div>
           <Badge variant="outline" className="font-mono text-[10px]">
             v{siteConfig.version}

@@ -1,4 +1,5 @@
-"""content — platform-agnostic content items, variants, calendar and approval states.
+"""content — reusable content assets: the affiliate link library (M3A).
 
-Implemented in M3. M0: module boundary only. No models, services, or routes.
+Links are organization-scoped, validated http(s) URLs. They are never invented or converted
+automatically; what gets published is the snapshot taken at approval time (publishing module).
 """

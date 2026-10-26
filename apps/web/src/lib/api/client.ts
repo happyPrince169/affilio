@@ -32,6 +32,9 @@ export class ApiUnreachableError extends Error {
 export const API_BASE_URL = env.NEXT_PUBLIC_API_URL;
 export const API_V1_PREFIX = "/api/v1";
 
+/** Fired (in the browser) whenever the API answers 401 so the auth provider can react. */
+export const UNAUTHENTICATED_EVENT = "affilio:unauthenticated";
+
 function isApiErrorBody(value: unknown): value is ApiErrorBody {
   return (
     typeof value === "object" &&
@@ -56,6 +59,8 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
         Accept: "application/json",
         ...init?.headers,
       },
+      // Session cookie travels with every request (same-origin proxy or CORS dev setup).
+      credentials: "include",
       cache: "no-store",
     });
   } catch (cause) {
@@ -69,11 +74,15 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     } catch {
       // Non-JSON error body; fall through with null.
     }
-    throw new ApiError(
+    const error = new ApiError(
       response.status,
       isApiErrorBody(body) ? body.error : null,
       `Request failed with status ${response.status}`,
     );
+    if (response.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(UNAUTHENTICATED_EVENT, { detail: error }));
+    }
+    throw error;
   }
 
   if (response.status === 204) {

@@ -5,12 +5,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Suspense } from "react";
 
+import { UserMenu } from "@/components/auth/user-menu";
 import { ApiStatusIndicator } from "@/components/layout/api-status-indicator";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { findNavItem } from "@/config/navigation";
 
 /** Reads the pathname at runtime; kept behind Suspense so dynamic routes can still prerender. */
@@ -39,18 +38,7 @@ export function TopNav() {
         <ApiStatusIndicator />
         <Separator orientation="vertical" className="mx-1 hidden h-6! sm:block" />
         <ThemeToggle />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Avatar className="ml-1 size-8 cursor-default">
-              <AvatarFallback className="bg-accent text-xs font-semibold text-accent-foreground">
-                DV
-              </AvatarFallback>
-            </Avatar>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">
-            Local developer session. Authentication arrives in a later milestone.
-          </TooltipContent>
-        </Tooltip>
+        <UserMenu />
       </div>
     </header>
   );

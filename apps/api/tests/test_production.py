@@ -32,6 +32,7 @@ from affilio.modules.production.schemas import (
 )
 from affilio.modules.products import service as products
 from affilio.modules.products.schemas import ProductCreate
+from tests.auth_helpers import sign_in
 from tests.media_helpers import FakeProber, build_settings, create_organization, write_bytes
 
 pytestmark = pytest.mark.database
@@ -228,13 +229,16 @@ def test_stats_upcoming_and_overdue(db_session: Session, organization) -> None:
 
 
 @pytest.fixture
-def api(monkeypatch: pytest.MonkeyPatch, media_dirs, organization, schema) -> Iterator[TestClient]:
+def api(
+    monkeypatch: pytest.MonkeyPatch, media_dirs, organization, schema, db_session
+) -> Iterator[TestClient]:
     for key, value in media_dirs.env().items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("DEFAULT_ORGANIZATION_SLUG", organization.slug)
     monkeypatch.delenv("MEDIA_ADMIN_TOKEN", raising=False)
     get_settings.cache_clear()
     with TestClient(create_app(), raise_server_exceptions=False) as client:
+        sign_in(client, db_session, organization)
         yield client
     dispose_engine()
     get_settings.cache_clear()

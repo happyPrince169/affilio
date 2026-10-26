@@ -29,14 +29,14 @@ export const milestones: Milestone[] = [
   {
     id: "M2",
     title: "Product Catalog",
-    summary: "Product catalog, research lifecycle, and product↔video mapping.",
-    status: "in-progress",
+    summary: "Product catalog, procurement, production tracker and final-video handoff.",
+    status: "done",
   },
   {
     id: "M3",
-    title: "Publishing Workflow",
-    summary: "Content calendar, approvals, and assisted Shopee Video publishing.",
-    status: "planned",
+    title: "Distribution",
+    summary: "M3A: auth, campaigns, approvals, assisted publishing. M3B: Meta API publishing.",
+    status: "in-progress",
   },
   {
     id: "M4",

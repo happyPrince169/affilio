@@ -92,8 +92,8 @@ Error codes specific to media: `invalid_media_path` (400), `media_root_not_confi
 
 ## Products (M2)
 
-Organization-scoped like media. Writes (`POST`/`PATCH`/`DELETE`) require the admin token when
-`MEDIA_ADMIN_TOKEN` is set. Decimal fields are strings (`"199000.00"`, rate `"0.0800"`).
+Organization-scoped like media. Writes (`POST`/`PATCH`/`DELETE`) require the `editor` role
+(session cookie) or the service token. Decimal fields are strings (`"199000.00"`, rate `"0.0800"`).
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -132,7 +132,91 @@ Organization-scoped like media. Writes (`POST`/`PATCH`/`DELETE`) require the adm
 | POST | `/api/v1/media/assets/{id}/handoff` | `{status: approved\|rejected\|pending_review, note?}` for `asset_kind = final` only; approve/reject need a note |
 | GET | `/api/v1/media/assets?asset_kind=final&handoff_status=pending_review` | Handoff queue |
 
+## Authentication and identity (M3A)
+
+All routes below `/api/v1` except `/health`, `/system/info`, `/auth/login` and `/auth/logout`
+require an identity. Errors: 401 `authentication_required` (no/invalid session), 403
+`forbidden` (role too low or non-member organization; details carry `required`/`role` or
+`slug`), 403 `csrf_rejected` (cookie-authenticated write from a foreign origin), 403
+`admin_endpoints_disabled` (service token sent but not configured).
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| POST | `/api/v1/auth/login` | `{email, password, organization_slug?}` → current user + `Set-Cookie: affilio_session` (HttpOnly, Lax, Secure outside dev). 401 `invalid_credentials` |
+| POST | `/api/v1/auth/logout` | Revokes the session, clears the cookie (204) |
+| GET | `/api/v1/auth/me` | `{id, email, display_name, identity_kind user\|service, organization{slug,name,timezone,role}, memberships[], permissions{view,edit,approve,manage_accounts,manage_members}}` |
+| POST | `/api/v1/auth/password` | `{current_password, new_password ≥ 10}`; other sessions are revoked |
+| GET/POST | `/api/v1/auth/members` | Members; create `{email, password, display_name?, role editor\|admin\|viewer}` (**admin**) |
+| PATCH | `/api/v1/auth/members/{user_id}` | `{role}` (**admin**; owners untouched) |
+| PATCH | `/api/v1/auth/organization` | `{name?, timezone? (IANA)}` (**admin**); 422 `invalid_timezone` |
+| GET | `/api/v1/auth/audit` | `entity_type`, `entity_id`, `limit` ≤ 200 (**admin**) |
+
+Role requirements: reads need any membership; product/procurement/production/link/campaign/
+publication writes need `editor`; approvals, revocations, reconciliation, account registry
+changes, members, audit, handoff review, purchase-request decisions and scan triggers need
+`admin`. `X-Organization-Slug` switches between organizations the user belongs to.
+
+## Social account registry (M3A)
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/api/v1/accounts` | `platform?`, `include_disabled?` |
+| POST | `/api/v1/accounts` | Manual registration `{platform, account_type, display_name, handle?, external_account_id?, profile_url?, notes?}` → `status: disconnected`, `is_verified: false`, `source: manual`, platform `capabilities` (**admin**). 409 on duplicate platform id |
+| GET/PATCH | `/api/v1/accounts/{id}` | Detail / edit label fields (**admin** for PATCH) |
+| POST | `/api/v1/accounts/{id}/status` | `{status: disabled\|disconnected, note?}` (**admin**). `connected` requires OAuth (M3B) |
+
+No credentials are stored or accepted. `connection_label` is the honest UI string.
+
+## Affiliate links (M3A)
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/api/v1/content/links` | `status` (default active; empty = all), `platform`, `product_id`, `q` |
+| POST | `/api/v1/content/links` | `{platform, label, url (http(s) only), product_id?, notes?}` (**editor**). 409 when the normalized URL is already active |
+| GET/PATCH | `/api/v1/content/links/{id}` | Edit / `status: archived` (**editor**) |
+
+## Distribution (M3A)
+
+See `docs/architecture/distribution.md` for the state machine and invariants.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/api/v1/publishing/stats` | `{by_status, due_now, needs_attention, campaigns_active, accounts_registered, links_active}` |
+| GET | `/api/v1/publishing/queue` | Non-terminal, non-draft jobs ordered by urgency |
+| POST | `/api/v1/publishing/queue/release-due` | SCHEDULED jobs whose time has come → READY_TO_PUBLISH (**editor** or service token); never publishes |
+| GET | `/api/v1/publishing/calendar` | `start`, `end` (UTC, ≤ 62 days; default −7/+35 days) → `{timezone, items[]}` |
+| GET/POST | `/api/v1/publishing/campaigns` | Paginated (`status`, `q`); create `{name, description?, starts_on?, ends_on?, notes?, media_asset_ids[], social_account_ids[]}` (**editor**). 422 `media_not_approved`, `target_unavailable` |
+| GET/PATCH | `/api/v1/publishing/campaigns/{id}` | Detail with media, targets, publications / edit incl. `status` |
+| POST/DELETE | `/api/v1/publishing/campaigns/{id}/media[/{asset_id}]`, `…/targets[/{account_id}]` | Manage approved finals and targets |
+| GET/POST | `/api/v1/publishing/publications` | Paginated (`status`, `statuses`, `campaign_id`, `social_account_id`, `media_asset_id`, `platform`, `q`, `scheduled_from/to`, `sort`); create `{campaign_id, media_asset_id, social_account_id, title?, caption?, cta?, hashtags[], link_ids[], content_notes?, scheduled_at?, idempotency_key?}` → 201, or 200 with the existing job for a repeated key. 409 `duplicate_publication` |
+| POST | `/api/v1/publishing/publications/batch` | `{campaign_id, media_asset_id, items[{social_account_id, …content, idempotency_key?}]}` → `{created[], reused[]}` |
+| GET | `/api/v1/publishing/publications/{id}` | Detail: live content, `links[]`, `approved_snapshot`, `snapshots[]`, `attempts[]`, evidence, `validation`, `allowed_actions[]`, platform `capabilities` |
+| PATCH | `/api/v1/publishing/publications/{id}` | Content edit with `version`; approved states drop back to DRAFT. 409 `version_conflict` |
+| GET | `/api/v1/publishing/publications/{id}/prepare` | Assisted checklist from the approved snapshot (409 without approval) |
+| POST | `…/{id}/submit`, `/return-to-draft`, `/approve`*, `/revoke-approval`*, `/unschedule`, `/start`, `/retry`, `/revise`, `/cancel` | `{version, note?}`; `*` = **admin**. 409 `invalid_publication_transition` |
+| POST | `…/{id}/schedule` | `{version, scheduled_at (tz-aware), allow_conflict?, note?}`; 422 `schedule_invalid`, 409 `schedule_conflict` (details list conflicts), 409 `target_blocked` / `revalidation_required` |
+| POST | `…/{id}/confirm` | `{version, external_post_url, external_post_id?, published_at?, note?}` → PUBLISHED with `evidence_kind: operator_reported`; 422 `evidence_invalid`, 409 `duplicate_evidence` |
+| POST | `…/{id}/fail` | `{version, reason, outcome: failed\|ambiguous}` → FAILED or NEEDS_RECONCILIATION |
+| POST | `…/{id}/reconcile` | `{version, outcome: published\|not_published\|still_unknown, external_post_url?, note?}` (**admin**) |
+| POST | `…/{id}/revalidate` | `{version, note?}` admin confirms the approved snapshot still applies after the video was reclassified; 409 `target_blocked` when the target is ineligible (**admin**) |
+
+## Content taxonomy, folder mapping, channel routing (M3A.1)
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET/POST | `/api/v1/content-categories` | Tree depth-first (`include_archived`); create `{name, slug?, parent_id?, description?, sort_order?}` (**admin**). 409 `duplicate_category_slug`, 422 `category_cycle` |
+| GET/PATCH/DELETE | `/api/v1/content-categories/{id}` | Edit/move/archive (**admin**); delete only unreferenced leaves, else 409 `category_in_use` |
+| POST | `/api/v1/content-categories/ensure-uncategorized` | Creates the fallback if missing (**admin**) |
+| GET/POST | `/api/v1/media/folder-rules` | Rules for FINAL roots: `{media_root_id, relative_folder_path, category_id, include_subfolders?, priority?, is_active?}` (**admin**). 422 `invalid_folder_path`, 409 on duplicate path, 409 for non-final roots |
+| PATCH/DELETE | `/api/v1/media/folder-rules/{id}` | Edit / disable / delete (**admin**) |
+| GET | `/api/v1/media/folder-rules/preview?media_root_id&relative_folder_path` | Winning rule, fallback flag, all candidates |
+| GET | `/api/v1/media/folder-rules/report` | Folders holding indexed finals with their mapping (`mapped=false` = unmapped) |
+| PUT | `/api/v1/media/assets/{id}/categories` | `{primary_category_id: id\|null, secondary_category_ids[]}` manual override (**editor**, finals only) |
+| GET | `/api/v1/media/assets?category_id=&uncategorized=` | Category filter includes descendants |
+| GET | `/api/v1/media/categories/counts` | Primary-category counts |
+| GET/PUT | `/api/v1/accounts/{id}/channel-profile` (alias GET `…/category-rules`) | Routing profile + rules `{primary_category_id?, description?, target_audience?, language?, country?, routing_enabled, rules[{category_id, match_policy allow\|prefer\|block, priority?}]}` (**admin** for PUT) |
+| GET | `/api/v1/distribution/recommendations?media_asset_id&campaign_id?` | `{primary_category, secondary_categories, media_approved, recommended[], low_relevance[], blocked[]}` with scores and reasons; read-only |
+
 ### Other module routers
 
-`identity`, `accounts`, `content`, `publishing`, `analytics`, `agents` mount **empty** routers
-at `/api/v1/<module>` until their milestone.
+`analytics` and `agents` mount **empty** routers until their milestone.

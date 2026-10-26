@@ -177,20 +177,51 @@ migration upgrade/downgrade/upgrade cycle, the seed twice, pytest, and a live he
 | GET    | `/api/v1/media/assets/{id}/thumbnail`  | JPEG thumbnail                                            |
 | GET    | `/api/v1/media/scans/status`           | Current + last scan, root availability                    |
 | GET    | `/api/v1/media/scans`, `/scans/{id}`   | Scan history and detail                                   |
-| POST   | `/api/v1/media/scans`                  | Queue a scan — **admin token** outside development        |
-| GET/POST | `/api/v1/products`                   | Product catalog list/search and creation (**admin** for writes) |
+| POST   | `/api/v1/media/scans`                  | Queue a scan — **admin** role or service token            |
+| GET/POST | `/api/v1/products`                   | Product catalog list/search and creation (**editor** for writes) |
 | GET/PATCH | `/api/v1/products/{id}`             | Product detail and edit                                   |
 | POST   | `/api/v1/products/{id}/status`         | Audited lifecycle change; WINNER needs confirmation        |
 | GET/POST/PATCH/DELETE | `/api/v1/products/{id}/media[/{asset_id}]` | Product ↔ video links                  |
-| POST   | `/api/v1/products/imports/preview`, `/imports` | MeoScout CSV preview and import (**admin**)    |
-| GET/POST | `/api/v1/procurement/requests`, `/orders` | Purchase requests, orders, receiving (**admin** writes) |
-| GET/POST | `/api/v1/production/jobs`              | Production jobs with optional product/video links (**admin** writes) |
+| POST   | `/api/v1/products/imports/preview`, `/imports` | MeoScout CSV preview and import (**editor**)   |
+| GET/POST | `/api/v1/procurement/requests`, `/orders` | Purchase requests, orders, receiving (**editor** writes, **admin** decisions) |
+| GET/POST | `/api/v1/production/jobs`              | Production jobs with optional product/video links (**editor** writes) |
 | POST   | `/api/v1/media/assets/{id}/handoff`    | Approve / reject a final video (**admin**)                |
+| POST   | `/api/v1/auth/login`, `/logout`, GET `/auth/me` | Session cookie sign-in / sign-out / current identity |
+| GET/POST/PATCH | `/api/v1/auth/members[/{user_id}]`, PATCH `/auth/organization`, GET `/auth/audit` | Team, timezone, audit log (**admin**) |
+| GET/POST/PATCH | `/api/v1/accounts[/{id}]`, POST `…/{id}/status` | Social account registry (manual = unverified; **admin** writes) |
+| GET/POST/PATCH | `/api/v1/content/links[/{id}]`   | Affiliate link library (**editor** writes)                |
+| GET/POST/PATCH | `/api/v1/publishing/campaigns[/{id}]`, `…/media`, `…/targets` | Campaigns of approved finals × target accounts |
+| GET/POST/PATCH | `/api/v1/publishing/publications[/{id}]`, `/batch` | Publication jobs with per-target content and optimistic `version` |
+| POST   | `/api/v1/publishing/publications/{id}/{submit,approve,schedule,start,confirm,fail,reconcile,…}` | State machine; approve/reconcile need **admin** |
+| GET    | `/api/v1/publishing/queue`, `/calendar`, `/stats`, `…/{id}/prepare` | Queue, UTC calendar window, counters, assisted checklist |
+| GET/POST/PATCH/DELETE | `/api/v1/content-categories[/{id}]` | Category tree (**admin** writes)                          |
+| GET/POST/PATCH/DELETE | `/api/v1/media/folder-rules[/{id}]`, GET `…/preview`, `…/report` | Folder → category mapping for finals (**admin** writes) |
+| PUT    | `/api/v1/media/assets/{id}/categories` | Manual category override (**editor**)                     |
+| GET/PUT | `/api/v1/accounts/{id}/channel-profile` | Channel routing profile and ALLOW/PREFER/BLOCK rules (**admin** writes) |
+| GET    | `/api/v1/distribution/recommendations` | Rule-based Page recommendations for a final video         |
 | GET    | `/docs`                                | Swagger UI (`DOCS_ENABLED=false` to disable)              |
 
-Organization scoping uses the `X-Organization-Slug` header (default `DEFAULT_ORGANIZATION_SLUG`)
-until authentication lands in M3. Mutating media endpoints require `X-Affilio-Admin-Token`
-when `MEDIA_ADMIN_TOKEN` is set, and are refused in production when it is not.
+**Authentication (M3A).** Every `/api/v1` endpoint except health, system info and login
+requires a session cookie obtained from `POST /api/v1/auth/login` (email + password, argon2id
+hashes, HttpOnly `SameSite=Lax` cookie). Roles are `viewer < editor < admin < owner`; the
+API enforces them and `GET /auth/me` reports the effective permissions. A signed-in user may
+select another organization they belong to with `X-Organization-Slug`. The service token
+(`X-Affilio-Admin-Token` = `MEDIA_ADMIN_TOKEN`) remains for CLI/cron calls only and acts as
+owner of `DEFAULT_ORGANIZATION_SLUG`; browsers never hold it. Details:
+`docs/architecture/security.md`.
+
+The development seed creates a local owner (`SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`,
+defaults `owner@affilio.local` / `affilio-dev-owner`; change after first login). Create
+further users with:
+
+```bash
+cd apps/api && AFFILIO_NEW_USER_PASSWORD='a-long-password' \
+  uv run python -m affilio.scripts.create_user --email you@example.com --org demo-org --role admin
+```
+
+In development the browser calls the API directly, so open the app and the API through the
+**same host name** (`http://localhost:3000` with `NEXT_PUBLIC_API_URL=http://localhost:8000`);
+cookies are host-scoped. Production uses the same-origin proxy.
 
 Errors always use `{"error": {"code", "message", "details?", "request_id"}}` and every
 response carries `X-Request-ID` (echoed if supplied). See `docs/api/README.md`.
@@ -208,8 +239,13 @@ response carries `X-Request-ID` (echoed if supplied). See `docs/api/README.md`.
   `docker exec affilio-postgres psql -U affilio -c 'CREATE DATABASE affilio_test'`.
 - **`ModuleNotFoundError: affilio`** — run `uv sync` inside `apps/api`.
 - **pnpm refuses to install** — Node ≥ 22 and pnpm 10 are required (`engine-strict`).
-- **Scan button says "admin token required"** — in production the web container needs
-  `MEDIA_ADMIN_TOKEN` (same value as the API); in development leave it unset on both.
+- **Signed out immediately / 401 on every call** — the web app and the API must share a host
+  name in development (`localhost` for both). Behind plain HTTP on the LAN set
+  `SESSION_COOKIE_SECURE=false`, otherwise the `Secure` cookie is dropped by the browser.
+- **"This action requires the admin role"** — ask an owner/admin to raise your role under
+  Settings → Members. Scan triggers from the CLI use `MEDIA_ADMIN_TOKEN`.
+- **Finals land in "Uncategorized"** — add a folder rule for that folder under Settings → Folder
+  mapping (see `docs/operations/nas-final-folder-convention.md`) and run a finals scan.
 - **Thumbnails stay pending** — the worker is not running (`pnpm dev:worker`) or
   `MEDIA_THUMBNAILS_PATH` is not writable.
 - **No proxies linked** — adjust `MEDIA_PROXY_PATTERNS` to the real proxy naming.

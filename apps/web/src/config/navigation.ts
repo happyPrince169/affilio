@@ -1,14 +1,14 @@
 import {
   Bot,
-  CalendarDays,
   ChartColumn,
   Clapperboard,
-  ShoppingCart,
   FolderOpen,
   LayoutDashboard,
   type LucideIcon,
   Package,
+  Send,
   Settings,
+  ShoppingCart,
   Users,
 } from "lucide-react";
 
@@ -67,12 +67,12 @@ export const mainNavigation: NavItem[] = [
     available: true,
   },
   {
-    title: "Publishing Calendar",
-    href: "/calendar",
-    icon: CalendarDays,
-    description: "Content planning, scheduling, and approval workflow.",
+    title: "Distribution",
+    href: "/distribution",
+    icon: Send,
+    description: "Campaigns, composer, calendar, publishing queue and assisted publishing.",
     milestone: "M3",
-    available: false,
+    available: true,
   },
   {
     title: "Analytics",
@@ -94,17 +94,17 @@ export const mainNavigation: NavItem[] = [
     title: "Accounts",
     href: "/accounts",
     icon: Users,
-    description: "Connected social and marketplace accounts.",
+    description: "Registered social accounts. Manual records stay unverified until OAuth (M3B).",
     milestone: "M3",
-    available: false,
+    available: true,
   },
   {
     title: "Settings",
     href: "/settings",
     icon: Settings,
-    description: "Organization, team, and workspace preferences.",
+    description: "Organization timezone, team members and roles, your password.",
     milestone: "M3",
-    available: false,
+    available: true,
   },
 ];
 

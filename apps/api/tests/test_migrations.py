@@ -33,6 +33,21 @@ EXPECTED_TABLES = {
     "production_jobs",
     "production_job_products",
     "production_job_media",
+    "user_sessions",
+    "audit_events",
+    "affiliate_links",
+    "campaigns",
+    "campaign_media",
+    "campaign_targets",
+    "publication_jobs",
+    "publication_links",
+    "publication_snapshots",
+    "publication_attempts",
+    "content_categories",
+    "channel_profiles",
+    "channel_category_rules",
+    "media_content_categories",
+    "folder_category_rules",
 }
 
 pytestmark = pytest.mark.database

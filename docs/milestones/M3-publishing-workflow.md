@@ -1,6 +1,13 @@
 # M3 — Publishing Workflow
 
-- **Status:** Planned
+> Split in October 2026 into **M3A — Distribution Core & Publishing Workflow**
+> (`M3A-distribution-core.md`, implemented) and **M3B — Meta API publishing**
+> (`M3B-meta-api-prerequisites.md`, planned). The original scope below is kept for history;
+> M3A delivered authentication, the account registry, campaigns, approvals, UTC scheduling and
+> assisted publishing with operator-reported evidence. Facebook Reels replaced Shopee Video as
+> the first target because Meta offers an official, documented publishing API path.
+
+- **Status:** Superseded by M3A / M3B
 - **Depends on:** M0, M1, M2 accepted; authentication + RBAC (delivered within this
   milestone or immediately before); **confirmation of Shopee Video API availability and
   permissions**

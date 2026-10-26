@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, status
 
-from affilio.api.deps import AdminRequired, CurrentOrganization, DbSession
+from affilio.api.deps import CurrentOrganization, DbSession, RequireAdmin, RequireEditor
 from affilio.core.enums import PurchaseOrderStatus, PurchaseRequestStatus
 from affilio.modules.procurement import service
 from affilio.modules.procurement.schemas import (
@@ -50,13 +50,13 @@ def list_requests(
     "/requests",
     response_model=PurchaseRequestResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Request a purchase (admin)",
+    summary="Request a purchase (editor)",
 )
 def create_request(
     body: PurchaseRequestCreate,
     session: DbSession,
     organization: CurrentOrganization,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> PurchaseRequestResponse:
     req = service.create_request(session, organization.id, body)
     session.commit()
@@ -73,7 +73,7 @@ def decide_request(
     body: PurchaseRequestDecision,
     session: DbSession,
     organization: CurrentOrganization,
-    _admin: AdminRequired,
+    identity: RequireAdmin,
 ) -> PurchaseRequestResponse:
     service.decide_request(session, organization.id, request_id, body)
     session.commit()
@@ -100,13 +100,13 @@ def list_orders(
     "/orders",
     response_model=PurchaseOrderDetail,
     status_code=status.HTTP_201_CREATED,
-    summary="Create a purchase order (admin)",
+    summary="Create a purchase order (editor)",
 )
 def create_order(
     body: PurchaseOrderCreate,
     session: DbSession,
     organization: CurrentOrganization,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> PurchaseOrderDetail:
     order = service.create_order(session, organization.id, body)
     session.commit()
@@ -121,14 +121,14 @@ def read_order(
 
 
 @router.patch(
-    "/orders/{order_id}", response_model=PurchaseOrderDetail, summary="Edit order fields (admin)"
+    "/orders/{order_id}", response_model=PurchaseOrderDetail, summary="Edit order fields (editor)"
 )
 def update_order(
     order_id: uuid.UUID,
     body: PurchaseOrderUpdate,
     session: DbSession,
     organization: CurrentOrganization,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> PurchaseOrderDetail:
     service.update_order(session, organization.id, order_id, body)
     session.commit()
@@ -138,14 +138,14 @@ def update_order(
 @router.post(
     "/orders/{order_id}/status",
     response_model=PurchaseOrderDetail,
-    summary="Change order status (admin)",
+    summary="Change order status (editor)",
 )
 def change_order_status(
     order_id: uuid.UUID,
     body: PurchaseOrderStatusChange,
     session: DbSession,
     organization: CurrentOrganization,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> PurchaseOrderDetail:
     service.change_order_status(session, organization.id, order_id, body)
     session.commit()
@@ -155,14 +155,14 @@ def change_order_status(
 @router.post(
     "/orders/{order_id}/items",
     response_model=PurchaseOrderDetail,
-    summary="Add an order line (admin)",
+    summary="Add an order line (editor)",
 )
 def add_item(
     order_id: uuid.UUID,
     body: OrderItemInput,
     session: DbSession,
     organization: CurrentOrganization,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> PurchaseOrderDetail:
     service.add_order_item(session, organization.id, order_id, body)
     session.commit()
@@ -172,14 +172,14 @@ def add_item(
 @router.delete(
     "/orders/{order_id}/items/{item_id}",
     response_model=PurchaseOrderDetail,
-    summary="Remove a draft order line (admin)",
+    summary="Remove a draft order line (editor)",
 )
 def remove_item(
     order_id: uuid.UUID,
     item_id: uuid.UUID,
     session: DbSession,
     organization: CurrentOrganization,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> PurchaseOrderDetail:
     service.remove_order_item(session, organization.id, order_id, item_id)
     session.commit()
@@ -189,14 +189,14 @@ def remove_item(
 @router.post(
     "/orders/{order_id}/receive",
     response_model=PurchaseOrderDetail,
-    summary="Record received quantities (admin)",
+    summary="Record received quantities (editor)",
 )
 def receive(
     order_id: uuid.UUID,
     body: ReceiveRequest,
     session: DbSession,
     organization: CurrentOrganization,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> PurchaseOrderDetail:
     service.receive(session, organization.id, order_id, body)
     session.commit()

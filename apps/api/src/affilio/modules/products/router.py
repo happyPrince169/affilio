@@ -8,7 +8,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
 
-from affilio.api.deps import AdminRequired, CurrentOrganization, DbSession, SettingsDep
+from affilio.api.deps import CurrentOrganization, DbSession, RequireEditor, SettingsDep
 from affilio.core.enums import Platform, ProductStatus
 from affilio.modules.products import imports, service
 from affilio.modules.products.schemas import (
@@ -72,13 +72,13 @@ def read_stats(session: DbSession, organization: CurrentOrganization) -> Product
     "",
     response_model=ProductDetail,
     status_code=status.HTTP_201_CREATED,
-    summary="Create a product (admin)",
+    summary="Create a product (editor)",
 )
 def create_product(
     body: ProductCreate,
     session: DbSession,
     organization: CurrentOrganization,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> ProductDetail:
     product = service.create_product(session, organization.id, body)
     session.commit()
@@ -160,12 +160,12 @@ async def preview_import(
     "/imports",
     response_model=ProductImportResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Import a MeoScout CSV (admin)",
+    summary="Import a MeoScout CSV (editor)",
 )
 async def run_import(
     session: DbSession,
     organization: CurrentOrganization,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
     file: Annotated[UploadFile, File()],
     mapping: Annotated[str | None, Form()] = None,
     on_duplicate: Annotated[imports.OnDuplicate, Form()] = "skip",
@@ -220,13 +220,13 @@ def read_product(
     )
 
 
-@router.patch("/{product_id}", response_model=ProductDetail, summary="Edit a product (admin)")
+@router.patch("/{product_id}", response_model=ProductDetail, summary="Edit a product (editor)")
 def update_product(
     product_id: uuid.UUID,
     body: ProductUpdate,
     session: DbSession,
     organization: CurrentOrganization,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> ProductDetail:
     service.update_product(session, organization.id, product_id, body)
     session.commit()
@@ -236,14 +236,14 @@ def update_product(
 
 
 @router.post(
-    "/{product_id}/status", response_model=ProductDetail, summary="Change product status (admin)"
+    "/{product_id}/status", response_model=ProductDetail, summary="Change product status (editor)"
 )
 def change_status(
     product_id: uuid.UUID,
     body: ProductStatusChange,
     session: DbSession,
     organization: CurrentOrganization,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> ProductDetail:
     service.change_status(session, organization.id, product_id, body)
     session.commit()
@@ -287,7 +287,7 @@ def list_media_links(
     "/{product_id}/media",
     response_model=ProductMediaLinkResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Link a video to a product (admin)",
+    summary="Link a video to a product (editor)",
 )
 def link_media(
     product_id: uuid.UUID,
@@ -295,7 +295,7 @@ def link_media(
     session: DbSession,
     organization: CurrentOrganization,
     settings: SettingsDep,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> ProductMediaLinkResponse:
     link = service.link_media(
         session,
@@ -311,7 +311,7 @@ def link_media(
 @router.patch(
     "/{product_id}/media/{media_asset_id}",
     response_model=ProductMediaLinkResponse,
-    summary="Update a product-video link (admin)",
+    summary="Update a product-video link (editor)",
 )
 def update_media_link(
     product_id: uuid.UUID,
@@ -320,7 +320,7 @@ def update_media_link(
     session: DbSession,
     organization: CurrentOrganization,
     settings: SettingsDep,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> ProductMediaLinkResponse:
     link = service.update_media_link(
         session,
@@ -337,14 +337,14 @@ def update_media_link(
 @router.delete(
     "/{product_id}/media/{media_asset_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Unlink a video from a product (admin)",
+    summary="Unlink a video from a product (editor)",
 )
 def unlink_media(
     product_id: uuid.UUID,
     media_asset_id: uuid.UUID,
     session: DbSession,
     organization: CurrentOrganization,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> Response:
     service.unlink_media(session, organization.id, product_id, media_asset_id)
     session.commit()

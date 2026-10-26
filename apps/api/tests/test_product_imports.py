@@ -21,6 +21,7 @@ from affilio.modules.products.imports import (
     suggest_mapping,
 )
 from affilio.modules.products.models import Product
+from tests.auth_helpers import sign_in
 
 pytestmark = pytest.mark.database
 
@@ -172,13 +173,16 @@ def test_partial_import_then_idempotent_reimport(db_session: Session, organizati
 
 
 @pytest.fixture
-def api(monkeypatch: pytest.MonkeyPatch, media_dirs, organization, schema) -> Iterator[TestClient]:
+def api(
+    monkeypatch: pytest.MonkeyPatch, media_dirs, organization, schema, db_session
+) -> Iterator[TestClient]:
     for key, value in media_dirs.env().items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("DEFAULT_ORGANIZATION_SLUG", organization.slug)
     monkeypatch.delenv("MEDIA_ADMIN_TOKEN", raising=False)
     get_settings.cache_clear()
     with TestClient(create_app(), raise_server_exceptions=False) as client:
+        sign_in(client, db_session, organization)
         yield client
     dispose_engine()
     get_settings.cache_clear()

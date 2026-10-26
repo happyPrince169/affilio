@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, status
 
-from affilio.api.deps import AdminRequired, CurrentOrganization, DbSession, SettingsDep
+from affilio.api.deps import CurrentOrganization, DbSession, RequireEditor, SettingsDep
 from affilio.core.enums import EditingStatus, ProductionStatus
 from affilio.modules.production import service
 from affilio.modules.production.schemas import (
@@ -68,14 +68,14 @@ def list_jobs(
     "/jobs",
     response_model=ProductionJobDetail,
     status_code=status.HTTP_201_CREATED,
-    summary="Create a job (admin)",
+    summary="Create a job (editor)",
 )
 def create_job(
     body: ProductionJobCreate,
     session: DbSession,
     organization: CurrentOrganization,
     settings: SettingsDep,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> ProductionJobDetail:
     job = service.create_job(session, organization.id, body)
     session.commit()
@@ -95,14 +95,14 @@ def read_job(
     )
 
 
-@router.patch("/jobs/{job_id}", response_model=ProductionJobDetail, summary="Edit a job (admin)")
+@router.patch("/jobs/{job_id}", response_model=ProductionJobDetail, summary="Edit a job (editor)")
 def update_job(
     job_id: uuid.UUID,
     body: ProductionJobUpdate,
     session: DbSession,
     organization: CurrentOrganization,
     settings: SettingsDep,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> ProductionJobDetail:
     service.update_job(session, organization.id, job_id, body)
     session.commit()
@@ -115,7 +115,7 @@ def update_job(
 @router.post(
     "/jobs/{job_id}/status",
     response_model=ProductionJobDetail,
-    summary="Change production / editing status (admin)",
+    summary="Change production / editing status (editor)",
 )
 def change_status(
     job_id: uuid.UUID,
@@ -123,7 +123,7 @@ def change_status(
     session: DbSession,
     organization: CurrentOrganization,
     settings: SettingsDep,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> ProductionJobDetail:
     service.change_status(session, organization.id, job_id, body)
     session.commit()
@@ -137,7 +137,7 @@ def change_status(
     "/jobs/{job_id}/products",
     response_model=ProductionJobDetail,
     status_code=status.HTTP_201_CREATED,
-    summary="Attach a product (admin)",
+    summary="Attach a product (editor)",
 )
 def add_product(
     job_id: uuid.UUID,
@@ -145,7 +145,7 @@ def add_product(
     session: DbSession,
     organization: CurrentOrganization,
     settings: SettingsDep,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> ProductionJobDetail:
     job = service.add_product(session, organization.id, job_id, body)
     session.commit()
@@ -158,7 +158,7 @@ def add_product(
 @router.delete(
     "/jobs/{job_id}/products/{product_id}",
     response_model=ProductionJobDetail,
-    summary="Detach a product (admin)",
+    summary="Detach a product (editor)",
 )
 def remove_product(
     job_id: uuid.UUID,
@@ -166,7 +166,7 @@ def remove_product(
     session: DbSession,
     organization: CurrentOrganization,
     settings: SettingsDep,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> ProductionJobDetail:
     job = service.remove_product(session, organization.id, job_id, product_id)
     session.commit()
@@ -180,7 +180,7 @@ def remove_product(
     "/jobs/{job_id}/media",
     response_model=ProductionJobDetail,
     status_code=status.HTTP_201_CREATED,
-    summary="Attach a video (admin)",
+    summary="Attach a video (editor)",
 )
 def add_media(
     job_id: uuid.UUID,
@@ -188,7 +188,7 @@ def add_media(
     session: DbSession,
     organization: CurrentOrganization,
     settings: SettingsDep,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> ProductionJobDetail:
     job = service.add_media(session, organization.id, job_id, body)
     session.commit()
@@ -201,7 +201,7 @@ def add_media(
 @router.delete(
     "/jobs/{job_id}/media/{media_asset_id}",
     response_model=ProductionJobDetail,
-    summary="Detach a video (admin)",
+    summary="Detach a video (editor)",
 )
 def remove_media(
     job_id: uuid.UUID,
@@ -209,7 +209,7 @@ def remove_media(
     session: DbSession,
     organization: CurrentOrganization,
     settings: SettingsDep,
-    _admin: AdminRequired,
+    _editor: RequireEditor,
 ) -> ProductionJobDetail:
     job = service.remove_media(session, organization.id, job_id, media_asset_id)
     session.commit()

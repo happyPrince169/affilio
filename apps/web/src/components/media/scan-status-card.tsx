@@ -104,8 +104,8 @@ export function ScanStatusCard() {
       const message =
         error instanceof ApiError && error.code === "scan_already_active"
           ? "A scan is already queued or running."
-          : error instanceof ApiError && error.code === "admin_token_required"
-            ? "Scans require the admin token. Configure MEDIA_ADMIN_TOKEN on the web server."
+          : error instanceof ApiError && error.code === "forbidden"
+            ? "Scans require the admin role. Ask an admin, or trigger it from the CLI with the service token."
             : error.message;
       toast.error("Could not start scan", { description: message });
     },

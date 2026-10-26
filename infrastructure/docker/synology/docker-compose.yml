@@ -24,6 +24,9 @@ x-api-env: &api-env
   CORS_ORIGINS: ${CORS_ORIGINS:-}
   DEFAULT_ORGANIZATION_SLUG: ${DEFAULT_ORGANIZATION_SLUG:-demo-org}
   MEDIA_ADMIN_TOKEN: ${MEDIA_ADMIN_TOKEN:?set MEDIA_ADMIN_TOKEN}
+  SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-}
+  SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-14}
+  PUBLICATION_MIN_GAP_MINUTES: ${PUBLICATION_MIN_GAP_MINUTES:-30}
   MEDIA_ORIGINALS_PATH: /media/originals
   MEDIA_PROXIES_PATH: /media/proxies
   MEDIA_FINALS_PATH: /media/finals
@@ -148,11 +151,12 @@ services:
     container_name: affilio-web
     restart: unless-stopped
     environment:
+      # The web container is identity-neutral: it forwards the browser's session cookie and
+      # never holds the service token (M3A).
       API_INTERNAL_URL: http://api:8000
-      MEDIA_ADMIN_TOKEN: ${MEDIA_ADMIN_TOKEN:?set MEDIA_ADMIN_TOKEN}
     ports:
-      # LAN only. Bind to the NAS LAN IP (AFFILIO_BIND_ADDRESS) and never port-forward this
-      # from the internet until authentication exists (M3).
+      # LAN only. Bind to the NAS LAN IP (AFFILIO_BIND_ADDRESS). Authentication exists since
+      # M3A but there is no login rate limiting yet: keep it off the internet.
       - "${AFFILIO_BIND_ADDRESS:-0.0.0.0}:${AFFILIO_WEB_PORT:-3080}:3000"
     depends_on:
       api:

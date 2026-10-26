@@ -179,8 +179,8 @@ export function ProductFormDialog({ trigger, product, onSaved }: ProductFormDial
           ? "A product with the same platform id or URL already exists."
           : error instanceof ApiError && error.code === "invalid_product_url"
             ? error.message
-            : error instanceof ApiError && error.code === "admin_token_required"
-              ? "Writes require the admin token (MEDIA_ADMIN_TOKEN on the web server)."
+            : error instanceof ApiError && error.code === "forbidden"
+              ? "Your role cannot edit products. Ask an admin to grant the editor role."
               : error.message;
       toast.error(editing ? "Could not update product" : "Could not create product", {
         description: message,

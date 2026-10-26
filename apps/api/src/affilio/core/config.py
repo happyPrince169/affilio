@@ -115,6 +115,20 @@ class Settings(BaseSettings):
     # Required (header X-Affilio-Admin-Token) for mutating media endpoints outside development.
     media_admin_token: SecretStr | None = None
 
+    # --- authentication (M3A) ---
+    session_cookie_name: str = "affilio_session"
+    session_ttl_days: int = 14
+    # None → secure cookies outside development/test. Set explicitly behind plain-HTTP LAN setups.
+    session_cookie_secure: bool | None = None
+    session_cookie_domain: str | None = None
+    auth_login_max_attempts_per_minute: int = 10
+    # Development seed only (affilio.scripts.seed_dev refuses to run outside dev/test).
+    seed_admin_email: str = "owner@affilio.local"
+    seed_admin_password: SecretStr = SecretStr("affilio-dev-owner")
+
+    # --- publishing (M3A) ---
+    publication_min_gap_minutes: int = 30
+
     # --- background worker ---
     worker_poll_interval_seconds: float = 5.0
     worker_heartbeat_path: Path = Path("/tmp/affilio-worker-heartbeat")  # noqa: S108
@@ -181,6 +195,12 @@ class Settings(BaseSettings):
     @property
     def is_development(self) -> bool:
         return self.app_env in {"development", "test"}
+
+    @property
+    def cookie_secure(self) -> bool:
+        if self.session_cookie_secure is not None:
+            return self.session_cookie_secure
+        return not self.is_development
 
     @property
     def database_dialect(self) -> str:

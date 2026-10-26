@@ -192,13 +192,66 @@ media_assets += asset_kind footage|final,     reference, notes      UNIQUE (job,
 media_roots.kind / media_file_variants.kind += final
 ```
 
+## Authentication, registry, links and distribution (migration `0005_distribution_core`)
+
+```
+organizations += timezone (IANA, display only; storage is UTC)
+users += display_name, last_login_at            user_sessions
+                                                  id, user_id FK CASCADE, token_hash UNIQUE (sha256 of the cookie),
+audit_events (append-only)                        expires_at, last_seen_at, revoked_at, user_agent, ip_address
+  id, organization_id FK?, actor_kind user|service|system, actor_user_id FK SET NULL, actor_label,
+  action, entity_type, entity_id, data jsonb, request_id, created_at
+
+social_accounts += handle, account_type page|profile|group|channel|shop, capabilities jsonb,
+  is_verified bool (false until OAuth), source manual|oauth, profile_url, notes, registered_by
+
+affiliate_links                                 campaigns
+  id, organization_id, platform, product_id FK    id, organization_id, name, description,
+  SET NULL, label, url, url_normalized, source     status draft|active|completed|archived,
+  manual|import, status active|archived, notes,    starts_on, ends_on, notes, created_by_user_id
+  created_by; UNIQUE(org, platform, url_normalized) campaign_media (campaign_id, media_asset_id) UNIQUE
+  WHERE status = 'active'                          campaign_targets (campaign_id, social_account_id) UNIQUE
+
+publication_jobs                                publication_snapshots (immutable)
+  id, organization_id, campaign_id, media_asset_id, id, job_id FK CASCADE, content_version, title,
+  social_account_id, platform, intent_id UNIQUE,     caption, cta, hashtags, links, media, target (jsonb),
+  idempotency_key UNIQUE(org) WHERE NOT NULL,        approved_by_user_id, approved_by_label, approved_at
+  status (10 values), version, title, caption, cta, publication_links (job_id, affiliate_link_id, position)
+  hashtags jsonb, content_notes, content_version,    UNIQUE(job, link)
+  scheduled_at, approved_snapshot_id FK SET NULL,  publication_attempts
+  published_at, external_post_id, external_post_url, id, job_id, attempt_no UNIQUE(job), mode assisted|api,
+  evidence_kind operator_reported|api_verified,      adapter, status started|succeeded|failed|ambiguous,
+  confirmed_by_user_id/label/at, confirmation_note,  snapshot_id FK SET NULL, started_by_label, started_at,
+  last_error, created_by_user_id, status_changed_at  finished_at, detail jsonb, error
+  UNIQUE(campaign_id, media_asset_id, social_account_id)
+  UNIQUE(social_account_id, external_post_id) WHERE external_post_id IS NOT NULL
+```
+
+## Content taxonomy, folder classification, channel routing (migration `0006_content_routing`)
+
+```
+content_categories                              channel_profiles (1:1 social_accounts)
+  id, organization_id, parent_id FK RESTRICT,     id, organization_id, social_account_id UNIQUE,
+  slug, name, description, status active|archived, primary_category_id FK SET NULL, description,
+  sort_order; UNIQUE(org, coalesce(parent,0), slug) target_audience, language, country(2), routing_enabled
+media_assets += classification_changed_at      channel_category_rules
+media_content_categories                          id, organization_id, social_account_id, category_id
+  id, organization_id, media_asset_id, category_id  FK RESTRICT, match_policy allow|prefer|block, priority
+  FK RESTRICT, is_primary, assignment_source        UNIQUE(account, category)
+  folder|manual|import|ai_future; UNIQUE(asset, category);
+  partial UNIQUE(asset) WHERE is_primary
+folder_category_rules
+  id, organization_id, media_root_id FK CASCADE, relative_folder_path (normalized, '' = root),
+  category_id FK RESTRICT, include_subfolders, priority, is_active; UNIQUE(root, path)
+```
+
 ## Growth plan (not implemented)
 
 | Milestone | Tables (indicative)                                                              |
 | --------- | -------------------------------------------------------------------------------- |
 | M1 (later)| `media_tags`, `media_asset_tags` once tagging is prioritised                     |
 | M2 (later)| `product_price_history` when analytics needs price trends                        | `products`, `product_links`, `product_media`                                     |
-| M3        | `content_items`, `content_variants`, `publish_jobs`, `account_credentials` (encrypted) |
+| M3B       | `account_credentials` (encrypted, separate from `social_accounts`), OAuth state, API-verified evidence columns |
 | M4        | `performance_imports`, `performance_metrics`, `commission_records`               |
 | M5        | `agent_runs`, `agent_tool_calls`, `approvals`                                    |
 

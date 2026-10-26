@@ -14,7 +14,7 @@ export default function DashboardPage() {
         description={siteConfig.tagline}
         actions={
           <Badge variant="secondary" className="font-mono">
-            {siteConfig.currentMilestone} · Foundation
+            {siteConfig.currentMilestone} · Distribution Core
           </Badge>
         }
       />

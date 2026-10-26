@@ -1,18 +1,28 @@
 /**
  * Same-origin API proxy.
  *
- * In production the browser only talks to the web container; this handler forwards
- * `/api/*` to the FastAPI service on the internal Docker network and attaches the
- * media admin token server-side, so the token never reaches the browser and the API
- * never needs a published port.
+ * The browser only talks to the web container; this handler forwards `/api/*` to the FastAPI
+ * service on the internal Docker network so the API never needs a published port.
+ *
+ * Security (M3A): the proxy is identity-neutral. It forwards the browser's session cookie and
+ * origin headers unchanged and never attaches a service token, so an unauthenticated browser
+ * request stays unauthenticated at the API. `Set-Cookie` from login/logout is passed back as is.
  */
 
 const API_INTERNAL_URL = (process.env.API_INTERNAL_URL ?? "http://localhost:8000").replace(
   /\/+$/,
   "",
 );
-const ADMIN_TOKEN = process.env.MEDIA_ADMIN_TOKEN ?? "";
-const FORWARD_REQUEST_HEADERS = ["accept", "content-type", "x-organization-slug", "x-request-id"];
+const FORWARD_REQUEST_HEADERS = [
+  "accept",
+  "content-type",
+  "cookie",
+  "origin",
+  "sec-fetch-site",
+  "user-agent",
+  "x-organization-slug",
+  "x-request-id",
+];
 const FORWARD_RESPONSE_HEADERS = [
   "content-type",
   "content-length",
@@ -34,7 +44,11 @@ async function proxy(request: Request, ctx: Context): Promise<Response> {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
-  if (ADMIN_TOKEN) headers.set("x-affilio-admin-token", ADMIN_TOKEN);
+  // Lets the API compare `Origin` against the host the browser actually used (CSRF check).
+  headers.set("x-forwarded-host", request.headers.get("host") ?? incoming.host);
+  headers.set("x-forwarded-proto", incoming.protocol.replace(":", ""));
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  if (forwardedFor) headers.set("x-forwarded-for", forwardedFor);
 
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
   let upstream: Response;
@@ -63,6 +77,9 @@ async function proxy(request: Request, ctx: Context): Promise<Response> {
   for (const name of FORWARD_RESPONSE_HEADERS) {
     const value = upstream.headers.get(name);
     if (value) responseHeaders.set(name, value);
+  }
+  for (const cookie of upstream.headers.getSetCookie()) {
+    responseHeaders.append("set-cookie", cookie);
   }
   return new Response(upstream.body, { status: upstream.status, headers: responseHeaders });
 }

@@ -37,7 +37,7 @@ packages/shared-types ◀── mirrors schemas ──────▶ │       
 
 | Process | Entry point | Responsibility |
 | --- | --- | --- |
-| web | `apps/web` (Next.js standalone) | UI; in production also proxies `/api/*` to the API and injects the admin token |
+| web | `apps/web` (Next.js standalone) | UI; in production also proxies `/api/*` to the API, forwarding the session cookie (identity-neutral) |
 | api | `uvicorn affilio.main:app` | HTTP API; enqueues work, never runs ffmpeg |
 | worker | `python -m affilio.worker` | Claims scan jobs and pending thumbnails from PostgreSQL (`SKIP LOCKED`), runs ffprobe/ffmpeg |
 | postgres | container | Only state besides regenerable thumbnails |
@@ -70,25 +70,24 @@ container/host paths from settings. Originals and proxies are read-only.
   Instagram, or YouTube is data, not schema.
 - Content will be modeled as platform-agnostic items with per-platform variants (M3).
 
-## Organization isolation and RBAC (plan for later milestones)
+## Organization isolation and RBAC (implemented in M3A)
 
-Not implemented in M0. The intended enforcement, to be delivered with authentication:
-
-1. **Authentication** (M3 at the latest) — session or token identifies a `users` row.
-   `password_hash` is nullable until the mechanism (local password vs. OIDC) is decided.
-2. **Organization context** — every request under `/api/v1` resolves an active organization
-   (path parameter or header) and verifies an `organization_memberships` row exists for the
-   user; otherwise 403.
-3. **Repository scoping** — module service functions take `organization_id` as a required
-   argument and apply it to every query. No endpoint queries a tenant table without it.
-   Until then, `X-Organization-Slug` (default `DEFAULT_ORGANIZATION_SLUG`) selects the
-   organization and `X-Affilio-Admin-Token` gates mutating media endpoints
-   (`affilio/api/deps.py`). The production deployment is LAN-only.
-4. **Roles** — `owner`, `admin`, `editor`, `viewer`. A FastAPI dependency
-   `require_role(...)` guards mutating routes; publishing and credential actions require
-   `admin`+ and, for AI-initiated actions, explicit human approval.
-5. **Defense in depth** — PostgreSQL row-level security is an option once the access model
-   stabilizes; it is not planned for the MVP.
+1. **Authentication** — local email + password (argon2id) and server-side sessions delivered as
+   HttpOnly `SameSite=Lax` cookies (`affilio.core.security`, `identity/service.py`). A service
+   token (`MEDIA_ADMIN_TOKEN`) authenticates CLI/cron calls only.
+2. **Organization context** — `affilio/api/deps.py` resolves an `Identity` for every request:
+   the session's user plus the organization named by `X-Organization-Slug` *if the user is a
+   member*, else the first membership. Missing identity → 401; non-member slug → 403.
+3. **Repository scoping** — unchanged: service functions take `organization_id` and apply it
+   to every query, so a valid identity still gets 404 for another tenant's rows.
+4. **Roles** — `viewer < editor < admin < owner`. `RequireEditor` guards ordinary writes,
+   `RequireAdmin` guards approvals, reconciliation, account registry, members, audit, handoff
+   review, purchase decisions and scan triggers. `GET /auth/me` returns the permission set
+   the UI uses to hide actions; the API remains the enforcement point.
+5. **Audit** — `audit_events` records the acting user id for every security-relevant and
+   publishing action. Details and threat notes: `docs/architecture/security.md`.
+6. **Defense in depth** — PostgreSQL row-level security remains an option once the access
+   model stabilizes; it is not planned for the MVP.
 
 ## Observability
 

@@ -17,6 +17,7 @@ from affilio.modules.media.models import MediaAsset
 from affilio.modules.media.scanner import MediaScanner
 from affilio.modules.media.service import enqueue_scan
 from affilio.modules.media.thumbnails import thumbnail_relative_path
+from tests.auth_helpers import sign_in
 from tests.media_helpers import FakeProber, build_settings, write_bytes
 
 pytestmark = pytest.mark.database
@@ -24,7 +25,7 @@ pytestmark = pytest.mark.database
 
 @pytest.fixture
 def media_client(
-    monkeypatch: pytest.MonkeyPatch, media_dirs, organization, schema
+    monkeypatch: pytest.MonkeyPatch, media_dirs, organization, schema, db_session
 ) -> Iterator[TestClient]:
     for key, value in media_dirs.env().items():
         monkeypatch.setenv(key, value)
@@ -33,6 +34,7 @@ def media_client(
     get_settings.cache_clear()
     app = create_app()
     with TestClient(app, raise_server_exceptions=False) as client:
+        sign_in(client, db_session, organization)
         yield client
     dispose_engine()
     get_settings.cache_clear()
@@ -162,8 +164,10 @@ def test_unknown_asset_and_invalid_ids(media_client: TestClient) -> None:
 
 
 def test_unknown_organization_header(media_client: TestClient) -> None:
+    # A signed-in user may only select organizations they belong to (fail closed).
     response = media_client.get("/api/v1/media/assets", headers={"X-Organization-Slug": "nope"})
-    assert response.status_code == 404
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
     assert response.json()["error"]["details"] == {"slug": "nope"}
 
 
@@ -202,7 +206,7 @@ def test_scan_requires_admin_token_when_configured(
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         denied = client.post("/api/v1/media/scans", json={})
         assert denied.status_code == 401
-        assert denied.json()["error"]["code"] == "admin_token_required"
+        assert denied.json()["error"]["code"] == "authentication_required"
         wrong = client.post(
             "/api/v1/media/scans", json={}, headers={"X-Affilio-Admin-Token": "nope"}
         )
@@ -211,8 +215,11 @@ def test_scan_requires_admin_token_when_configured(
             "/api/v1/media/scans", json={}, headers={"X-Affilio-Admin-Token": "s3cret-token"}
         )
         assert ok.status_code == 202
-        # Read endpoints stay open (LAN-only deployment; see deployment guide).
-        assert client.get("/api/v1/media/assets").status_code == 200
+        # The service token is a narrow service identity, visible as such.
+        me = client.get("/api/v1/auth/me", headers={"X-Affilio-Admin-Token": "s3cret-token"})
+        assert me.status_code == 200 and me.json()["identity_kind"] == "service"
+        # Reads are NOT open without identity (fail closed).
+        assert client.get("/api/v1/media/assets").status_code == 401
     dispose_engine()
     get_settings.cache_clear()
 
@@ -227,7 +234,11 @@ def test_scan_refused_in_production_without_token(
     monkeypatch.delenv("MEDIA_ADMIN_TOKEN", raising=False)
     get_settings.cache_clear()
     with TestClient(create_app(), raise_server_exceptions=False) as client:
-        response = client.post("/api/v1/media/scans", json={})
+        anonymous = client.post("/api/v1/media/scans", json={})
+        assert anonymous.status_code == 401
+        response = client.post(
+            "/api/v1/media/scans", json={}, headers={"X-Affilio-Admin-Token": "anything"}
+        )
         assert response.status_code == 403
         assert response.json()["error"]["code"] == "admin_endpoints_disabled"
     dispose_engine()
@@ -236,7 +247,7 @@ def test_scan_refused_in_production_without_token(
 
 
 def test_scan_without_configured_root(
-    monkeypatch: pytest.MonkeyPatch, organization, schema
+    monkeypatch: pytest.MonkeyPatch, organization, schema, db_session
 ) -> None:
     for key in (
         "MEDIA_ORIGINALS_PATH",
@@ -248,6 +259,7 @@ def test_scan_without_configured_root(
     monkeypatch.setenv("DEFAULT_ORGANIZATION_SLUG", organization.slug)
     get_settings.cache_clear()
     with TestClient(create_app(), raise_server_exceptions=False) as client:
+        sign_in(client, db_session, organization)
         roots = client.get("/api/v1/media/roots").json()
         assert all(r["configured"] is False for r in roots)
         response = client.post("/api/v1/media/scans", json={})
