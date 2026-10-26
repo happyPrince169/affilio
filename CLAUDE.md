@@ -53,6 +53,17 @@ They exist to keep the modular monolith coherent while the product grows milesto
   (Shopee Video publishing is), say so in code comments, docs, and UI.
 - The UI must never show fabricated data or imply an account is connected when it is not.
 
+## 6b. Media and the NAS
+
+- The originals and proxies roots are read-only by policy and by mount. Never open a file
+  there for writing, never rename, move, or delete under them, and never "clean up" the NAS.
+- Only the thumbnails and exports roots are written, always via `RootBinding.resolve()` and an
+  atomic temp-file + rename. No absolute host path is stored in the database.
+- Never transcode originals during indexing. Read at most the sampled bytes
+  (`quick_fingerprint`); full hashes only to confirm duplicates.
+- Do not assume HEVC 10-bit proxies are publish-ready; exports are a separate pipeline.
+- Do not deploy to the real NAS without explicit approval.
+
 ## 7. Database
 
 - Every schema change ships with an Alembic migration that has a working `downgrade`.

@@ -1,0 +1,165 @@
+# AFFILIO on Synology DSM (Container Manager / docker compose v2).
+#
+# Copy .env.example → .env in this directory and fill in the host paths and secrets.
+# Only the web container publishes a port. PostgreSQL and the API stay on the internal network.
+# Originals and proxies are mounted READ-ONLY; AFFILIO can only write thumbnails and exports.
+
+name: affilio
+
+x-api-image: &api-image
+  image: ${AFFILIO_API_IMAGE:-affilio-api:latest}
+  build:
+    context: ../../../apps/api
+    dockerfile: Dockerfile
+    args:
+      APP_UID: ${AFFILIO_UID:-1026}
+      APP_GID: ${AFFILIO_GID:-100}
+
+x-api-env: &api-env
+  APP_ENV: production
+  LOG_FORMAT: json
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DOCS_ENABLED: ${DOCS_ENABLED:-false}
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-affilio}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-affilio}
+  CORS_ORIGINS: ${CORS_ORIGINS:-}
+  DEFAULT_ORGANIZATION_SLUG: ${DEFAULT_ORGANIZATION_SLUG:-demo-org}
+  MEDIA_ADMIN_TOKEN: ${MEDIA_ADMIN_TOKEN:?set MEDIA_ADMIN_TOKEN}
+  MEDIA_ORIGINALS_PATH: /media/originals
+  MEDIA_PROXIES_PATH: /media/proxies
+  MEDIA_FINALS_PATH: /media/finals
+  MEDIA_THUMBNAILS_PATH: /data/thumbnails
+  MEDIA_EXPORTS_PATH: /data/exports
+  MEDIA_PROXY_PATTERNS: ${MEDIA_PROXY_PATTERNS:-{stem}.mp4,{stem}_proxy.mp4,{name}.mp4,{stem}.mov}
+  MEDIA_VIDEO_EXTENSIONS: ${MEDIA_VIDEO_EXTENSIONS:-.mp4,.mov,.m4v,.mkv,.avi,.mts,.m2ts,.webm,.mxf,.3gp}
+  MEDIA_THUMBNAIL_CONCURRENCY: ${MEDIA_THUMBNAIL_CONCURRENCY:-1}
+  MEDIA_THUMBNAIL_WIDTH: ${MEDIA_THUMBNAIL_WIDTH:-640}
+  MEDIA_PROBE_TIMEOUT_SECONDS: ${MEDIA_PROBE_TIMEOUT_SECONDS:-60}
+  MEDIA_FINAL_SETTLE_SECONDS: ${MEDIA_FINAL_SETTLE_SECONDS:-120}
+  MEDIA_THUMBNAIL_TIMEOUT_SECONDS: ${MEDIA_THUMBNAIL_TIMEOUT_SECONDS:-120}
+  WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-5}
+
+x-media-mounts: &media-mounts
+  - type: bind
+    source: ${AFFILIO_ORIGINALS_HOST_PATH:?set AFFILIO_ORIGINALS_HOST_PATH}
+    target: /media/originals
+    read_only: true
+  - type: bind
+    source: ${AFFILIO_PROXIES_HOST_PATH:?set AFFILIO_PROXIES_HOST_PATH}
+    target: /media/proxies
+    read_only: true
+  - type: bind
+    source: ${AFFILIO_FINALS_HOST_PATH:?set AFFILIO_FINALS_HOST_PATH}
+    target: /media/finals
+    read_only: true
+  - type: bind
+    source: ${AFFILIO_THUMBNAILS_HOST_PATH:?set AFFILIO_THUMBNAILS_HOST_PATH}
+    target: /data/thumbnails
+  - type: bind
+    source: ${AFFILIO_EXPORTS_HOST_PATH:?set AFFILIO_EXPORTS_HOST_PATH}
+    target: /data/exports
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: affilio-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-affilio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-affilio}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - type: bind
+        source: ${AFFILIO_DATA_HOST_PATH:?set AFFILIO_DATA_HOST_PATH}/postgres
+        target: /var/lib/postgresql/data
+    # No `ports:` on purpose — never reachable from outside the compose network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-affilio} -d ${POSTGRES_DB:-affilio}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    shm_size: 128m
+    deploy:
+      resources:
+        limits:
+          cpus: "${POSTGRES_CPUS:-1.0}"
+          memory: ${POSTGRES_MEMORY:-512M}
+    logging: &logging
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  api:
+    <<: *api-image
+    container_name: affilio-api
+    restart: unless-stopped
+    command: ["api"]
+    environment:
+      <<: *api-env
+      RUN_MIGRATIONS_ON_START: "true"
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-1}
+    volumes: *media-mounts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # No `ports:` — the web container proxies /api/* internally.
+    deploy:
+      resources:
+        limits:
+          cpus: "${API_CPUS:-1.0}"
+          memory: ${API_MEMORY:-512M}
+    logging: *logging
+
+  worker:
+    <<: *api-image
+    container_name: affilio-worker
+    restart: unless-stopped
+    command: ["worker"]
+    environment:
+      <<: *api-env
+    volumes: *media-mounts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy # api applies migrations first
+    healthcheck:
+      test: ["CMD", "python", "-m", "affilio.worker", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "${WORKER_CPUS:-2.0}"
+          memory: ${WORKER_MEMORY:-768M}
+    logging: *logging
+
+  web:
+    image: ${AFFILIO_WEB_IMAGE:-affilio-web:latest}
+    build:
+      context: ../../..
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ""
+        APP_UID: ${AFFILIO_UID:-1026}
+        APP_GID: ${AFFILIO_GID:-100}
+    container_name: affilio-web
+    restart: unless-stopped
+    environment:
+      API_INTERNAL_URL: http://api:8000
+      MEDIA_ADMIN_TOKEN: ${MEDIA_ADMIN_TOKEN:?set MEDIA_ADMIN_TOKEN}
+    ports:
+      # LAN only. Bind to the NAS LAN IP (AFFILIO_BIND_ADDRESS) and never port-forward this
+      # from the internet until authentication exists (M3).
+      - "${AFFILIO_BIND_ADDRESS:-0.0.0.0}:${AFFILIO_WEB_PORT:-3080}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "${WEB_CPUS:-1.0}"
+          memory: ${WEB_MEMORY:-384M}
+    logging: *logging

@@ -2,6 +2,8 @@ import {
   Bot,
   CalendarDays,
   ChartColumn,
+  Clapperboard,
+  ShoppingCart,
   FolderOpen,
   LayoutDashboard,
   type LucideIcon,
@@ -17,8 +19,10 @@ export interface NavItem {
   href: string;
   icon: LucideIcon;
   description: string;
-  /** Milestone in which this area becomes functional. `M0` means available now. */
+  /** Milestone in which this area becomes functional. */
   milestone: MilestoneId;
+  /** True once the area is implemented; planned areas render a placeholder. */
+  available: boolean;
 }
 
 export const mainNavigation: NavItem[] = [
@@ -28,13 +32,15 @@ export const mainNavigation: NavItem[] = [
     icon: LayoutDashboard,
     description: "System overview and milestone progress.",
     milestone: "M0",
+    available: true,
   },
   {
     title: "Content Library",
     href: "/content",
     icon: FolderOpen,
-    description: "Centralized media library synced from the Synology NAS.",
+    description: "Centralized media library indexed from the Synology NAS.",
     milestone: "M1",
+    available: true,
   },
   {
     title: "Products",
@@ -42,6 +48,23 @@ export const mainNavigation: NavItem[] = [
     icon: Package,
     description: "Affiliate product catalog and research workspace.",
     milestone: "M2",
+    available: true,
+  },
+  {
+    title: "Purchases",
+    href: "/purchases",
+    icon: ShoppingCart,
+    description: "Purchase requests, orders, deliveries and received units.",
+    milestone: "M2",
+    available: true,
+  },
+  {
+    title: "Production",
+    href: "/production",
+    icon: Clapperboard,
+    description: "Filming and editing jobs with optional product and video associations.",
+    milestone: "M2",
+    available: true,
   },
   {
     title: "Publishing Calendar",
@@ -49,6 +72,7 @@ export const mainNavigation: NavItem[] = [
     icon: CalendarDays,
     description: "Content planning, scheduling, and approval workflow.",
     milestone: "M3",
+    available: false,
   },
   {
     title: "Analytics",
@@ -56,6 +80,7 @@ export const mainNavigation: NavItem[] = [
     icon: ChartColumn,
     description: "Affiliate performance, revenue, and commission insights.",
     milestone: "M4",
+    available: false,
   },
   {
     title: "AI Assistant",
@@ -63,6 +88,7 @@ export const mainNavigation: NavItem[] = [
     icon: Bot,
     description: "Claude-powered content planning and optimization.",
     milestone: "M5",
+    available: false,
   },
   {
     title: "Accounts",
@@ -70,6 +96,7 @@ export const mainNavigation: NavItem[] = [
     icon: Users,
     description: "Connected social and marketplace accounts.",
     milestone: "M3",
+    available: false,
   },
   {
     title: "Settings",
@@ -77,6 +104,7 @@ export const mainNavigation: NavItem[] = [
     icon: Settings,
     description: "Organization, team, and workspace preferences.",
     milestone: "M3",
+    available: false,
   },
 ];
 

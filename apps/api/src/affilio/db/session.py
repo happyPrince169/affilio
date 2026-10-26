@@ -18,6 +18,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from affilio.core.config import Settings, get_settings
+from affilio.db import registry as _registry  # noqa: F401 - configure every mapper up front
 
 log = structlog.get_logger(__name__)
 

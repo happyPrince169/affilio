@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Suspense } from "react";
 
 import { BrandLogo } from "@/components/brand/brand-logo";
 import { SidebarNav } from "@/components/layout/sidebar-nav";
@@ -18,14 +19,16 @@ export function AppSidebar() {
         <p className="mb-2 px-3 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
           Workspace
         </p>
-        <SidebarNav />
+        <Suspense fallback={null}>
+          <SidebarNav />
+        </Suspense>
       </div>
 
       <div className="border-t border-sidebar-border p-4">
         <div className="flex items-center justify-between rounded-lg border bg-card px-3 py-2.5">
           <div className="flex flex-col">
             <span className="text-xs font-medium">Milestone {siteConfig.currentMilestone}</span>
-            <span className="text-[11px] text-muted-foreground">Foundation</span>
+            <span className="text-[11px] text-muted-foreground">Procurement & Production</span>
           </div>
           <Badge variant="outline" className="font-mono text-[10px]">
             v{siteConfig.version}

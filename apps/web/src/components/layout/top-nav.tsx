@@ -3,6 +3,7 @@
 import { ChevronRight } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { Suspense } from "react";
 
 import { ApiStatusIndicator } from "@/components/layout/api-status-indicator";
 import { MobileNav } from "@/components/layout/mobile-nav";
@@ -12,10 +13,14 @@ import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { findNavItem } from "@/config/navigation";
 
-export function TopNav() {
+/** Reads the pathname at runtime; kept behind Suspense so dynamic routes can still prerender. */
+function CurrentSection() {
   const pathname = usePathname();
   const current = findNavItem(pathname);
+  return <span className="truncate font-medium">{current?.title ?? "Not found"}</span>;
+}
 
+export function TopNav() {
   return (
     <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur sm:px-6">
       <MobileNav />
@@ -25,7 +30,9 @@ export function TopNav() {
           Workspace
         </Link>
         <ChevronRight className="hidden size-4 text-muted-foreground/60 sm:inline" />
-        <span className="truncate font-medium">{current?.title ?? "Not found"}</span>
+        <Suspense fallback={<span className="truncate font-medium">&nbsp;</span>}>
+          <CurrentSection />
+        </Suspense>
       </nav>
 
       <div className="ml-auto flex items-center gap-1.5">

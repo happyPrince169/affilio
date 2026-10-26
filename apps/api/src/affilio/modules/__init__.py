@@ -18,6 +18,8 @@ DOMAIN_MODULES: tuple[str, ...] = (
     "accounts",
     "media",
     "products",
+    "procurement",
+    "production",
     "content",
     "publishing",
     "analytics",

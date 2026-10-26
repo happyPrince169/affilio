@@ -1,7 +1,7 @@
 "use client";
 
 import { Menu } from "lucide-react";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 
 import { BrandLogo } from "@/components/brand/brand-logo";
 import { SidebarNav } from "@/components/layout/sidebar-nav";
@@ -24,7 +24,9 @@ export function MobileNav() {
           <BrandLogo />
         </SheetHeader>
         <div className="px-3 py-4">
-          <SidebarNav onNavigate={() => setOpen(false)} />
+          <Suspense fallback={null}>
+            <SidebarNav onNavigate={() => setOpen(false)} />
+          </Suspense>
         </div>
       </SheetContent>
     </Sheet>

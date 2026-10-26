@@ -14,7 +14,26 @@ from sqlalchemy import Engine, inspect
 from affilio.db.registry import Base
 
 API_DIR = Path(__file__).resolve().parents[1]
-EXPECTED_TABLES = {"organizations", "users", "organization_memberships", "social_accounts"}
+EXPECTED_TABLES = {
+    "organizations",
+    "users",
+    "organization_memberships",
+    "social_accounts",
+    "media_roots",
+    "media_assets",
+    "media_file_variants",
+    "media_scan_jobs",
+    "products",
+    "product_status_events",
+    "product_media_links",
+    "product_imports",
+    "purchase_requests",
+    "purchase_orders",
+    "purchase_order_items",
+    "production_jobs",
+    "production_job_products",
+    "production_job_media",
+}
 
 pytestmark = pytest.mark.database
 

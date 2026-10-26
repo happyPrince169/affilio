@@ -1,33 +1,23 @@
-import { CalendarDays, Film, Package, Users } from "lucide-react";
+import { CalendarDays, Users } from "lucide-react";
 
+import { MediaStatsTile } from "@/components/dashboard/media-stats-tile";
+import { ProductStatsTile } from "@/components/dashboard/product-stats-tile";
 import { Card, CardContent } from "@/components/ui/card";
 import type { MilestoneId } from "@/config/navigation";
 
 interface Tile {
   label: string;
-  icon: typeof Film;
+  icon: typeof Users;
   milestone: MilestoneId;
   note: string;
 }
 
-const tiles: Tile[] = [
+const plannedTiles: Tile[] = [
   {
     label: "Connected accounts",
     icon: Users,
     milestone: "M3",
     note: "No platform is connected. Official integrations only.",
-  },
-  {
-    label: "Media assets",
-    icon: Film,
-    milestone: "M1",
-    note: "Synology NAS sync is not configured yet.",
-  },
-  {
-    label: "Products tracked",
-    icon: Package,
-    milestone: "M2",
-    note: "Product catalog arrives with M2.",
   },
   {
     label: "Scheduled posts",
@@ -38,13 +28,15 @@ const tiles: Tile[] = [
 ];
 
 /**
- * Overview tiles intentionally show no numbers: there is no real data in M0,
- * and fabricated metrics are explicitly out of bounds.
+ * Overview tiles. The media tile is live (M1); the others intentionally show no numbers
+ * because there is no real data behind them yet.
  */
 export function OverviewTiles() {
   return (
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      {tiles.map((tile) => {
+      <MediaStatsTile />
+      <ProductStatsTile />
+      {plannedTiles.map((tile) => {
         const Icon = tile.icon;
         return (
           <Card key={tile.label} className="gap-3 py-5">

@@ -24,7 +24,7 @@ export function SidebarNav({ onNavigate, className }: SidebarNavProps) {
       {mainNavigation.map((item) => {
         const active = isActive(pathname, item);
         const Icon = item.icon;
-        const planned = item.milestone !== "M0";
+        const planned = !item.available;
 
         return (
           <Tooltip key={item.href}>

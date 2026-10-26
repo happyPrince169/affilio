@@ -4,5 +4,5 @@ export const siteConfig = {
   description:
     "AI-Powered Affiliate Content Operating System for managing, distributing, analyzing, and optimizing affiliate content across platforms.",
   version: "0.1.0",
-  currentMilestone: "M0",
+  currentMilestone: "M2",
 } as const;

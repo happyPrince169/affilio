@@ -2,7 +2,7 @@
   "name": "affilio",
   "version": "0.1.0",
   "private": true,
-  "description": "AFFILIO — AI-Powered Affiliate Content Operating System. Create Once. Distribute Everywhere. Optimize Everything.",
+  "description": "AFFILIO \u2014 AI-Powered Affiliate Content Operating System. Create Once. Distribute Everywhere. Optimize Everything.",
   "packageManager": "pnpm@10.34.7",
   "engines": {
     "node": ">=22",
@@ -23,7 +23,10 @@
     "db:down": "docker compose down",
     "db:reset": "docker compose down -v && docker compose up -d postgres",
     "db:migrate": "pnpm --filter @affilio/api migrate",
-    "db:seed": "pnpm --filter @affilio/api seed"
+    "db:seed": "pnpm --filter @affilio/api seed",
+    "dev:worker": "pnpm --filter @affilio/api worker",
+    "media:scan": "pnpm --filter @affilio/api scan",
+    "db:backup": "./scripts/db-backup.sh"
   },
   "devDependencies": {
     "@affilio/config": "workspace:*",

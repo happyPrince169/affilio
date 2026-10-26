@@ -1,0 +1,13 @@
+**/node_modules
+**/.next
+**/.turbo
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+.git
+.env
+.env.*
+!.env.example
+infrastructure/docker/synology/.env
+docs

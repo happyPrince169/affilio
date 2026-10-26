@@ -33,6 +33,18 @@ packages/shared-types ◀── mirrors schemas ──────▶ │       
                                                   └────────────────────────────────────┘
 ```
 
+## Processes
+
+| Process | Entry point | Responsibility |
+| --- | --- | --- |
+| web | `apps/web` (Next.js standalone) | UI; in production also proxies `/api/*` to the API and injects the admin token |
+| api | `uvicorn affilio.main:app` | HTTP API; enqueues work, never runs ffmpeg |
+| worker | `python -m affilio.worker` | Claims scan jobs and pending thumbnails from PostgreSQL (`SKIP LOCKED`), runs ffprobe/ffmpeg |
+| postgres | container | Only state besides regenerable thumbnails |
+
+Media files are addressed as logical root + relative path (ADR 0005); roots are bound to
+container/host paths from settings. Originals and proxies are read-only.
+
 ## Request lifecycle (API)
 
 1. `CORSMiddleware` (outermost) — allows configured web origins, exposes `X-Request-ID`.
@@ -69,6 +81,9 @@ Not implemented in M0. The intended enforcement, to be delivered with authentica
    user; otherwise 403.
 3. **Repository scoping** — module service functions take `organization_id` as a required
    argument and apply it to every query. No endpoint queries a tenant table without it.
+   Until then, `X-Organization-Slug` (default `DEFAULT_ORGANIZATION_SLUG`) selects the
+   organization and `X-Affilio-Admin-Token` gates mutating media endpoints
+   (`affilio/api/deps.py`). The production deployment is LAN-only.
 4. **Roles** — `owner`, `admin`, `editor`, `viewer`. A FastAPI dependency
    `require_role(...)` guards mutating routes; publishing and credential actions require
    `admin`+ and, for AI-initiated actions, explicit human approval.

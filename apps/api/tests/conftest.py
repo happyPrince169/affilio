@@ -70,3 +70,47 @@ def app() -> Iterator[FastAPI]:
 def client(app: FastAPI) -> Iterator[TestClient]:
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client
+
+
+# --------------------------------------------------------------------------- media fixtures
+from pathlib import Path  # noqa: E402
+
+from sqlalchemy.orm import Session  # noqa: E402
+
+API_DIR = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="session")
+def schema(engine: Engine) -> Engine:
+    """Guarantee the schema is at head for tests that need tables (never downgrades)."""
+    from tests.media_helpers import ensure_schema
+
+    ensure_schema(engine, API_DIR)
+    return engine
+
+
+@pytest.fixture
+def db_session(schema: Engine) -> Iterator[Session]:
+    # autoflush=False mirrors the production session factory (affilio.db.session).
+    with Session(schema, autoflush=False) as session:
+        yield session
+        session.rollback()
+
+
+@pytest.fixture
+def organization(db_session: Session):
+    from tests.media_helpers import create_organization
+
+    org = create_organization(db_session)
+    db_session.commit()
+    yield org
+    db_session.rollback()
+    db_session.delete(org)
+    db_session.commit()
+
+
+@pytest.fixture
+def media_dirs(tmp_path: Path):
+    from tests.media_helpers import make_dirs
+
+    return make_dirs(tmp_path)

@@ -1,6 +1,6 @@
 # M0 — Foundation
 
-- **Status:** Implemented 2026-10-26, pending acceptance review
+- **Status:** Accepted 2026-10-26 (committed as `M0`)
 - **Depends on:** nothing
 - **Unlocks:** M1 (and every later milestone)
 
