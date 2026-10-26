@@ -15,6 +15,7 @@ from fastapi import APIRouter
 
 DOMAIN_MODULES: tuple[str, ...] = (
     "identity",
+    "taxonomy",
     "accounts",
     "media",
     "products",
@@ -22,6 +23,7 @@ DOMAIN_MODULES: tuple[str, ...] = (
     "production",
     "content",
     "publishing",
+    "routing",
     "analytics",
     "agents",
 )

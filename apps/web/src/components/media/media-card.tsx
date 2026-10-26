@@ -5,6 +5,7 @@ import Link from "next/link";
 import { HandoffBadge } from "@/components/media/handoff-badge";
 import { AssetStatusBadge } from "@/components/media/media-badges";
 import { MediaThumbnail } from "@/components/media/media-thumbnail";
+import { CategoryBadgeList } from "@/components/taxonomy/category-badges";
 import { Badge } from "@/components/ui/badge";
 import { codecLabel, formatBytes, formatDuration, formatResolution } from "@/lib/format";
 
@@ -43,6 +44,9 @@ export function MediaCard({ asset }: { asset: MediaAssetSummary }) {
         <p className="truncate text-sm font-medium" title={asset.file_name ?? asset.title}>
           {asset.title}
         </p>
+        {asset.asset_kind === "final" ? (
+          <CategoryBadgeList categories={asset.categories} max={2} />
+        ) : null}
         <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
           <span className="font-mono">{formatResolution(asset.width, asset.height)}</span>
           {asset.orientation ? <span className="capitalize">· {asset.orientation}</span> : null}

@@ -1,3 +1,5 @@
+import type { CategoryAssignmentSource } from "./domain";
+
 /**
  * Media library contracts (M1). Mirrors `apps/api/src/affilio/modules/media/schemas.py`.
  */
@@ -31,6 +33,7 @@ export const MEDIA_SORT_KEYS = [
 export type MediaSortKey = (typeof MEDIA_SORT_KEYS)[number];
 
 export interface MediaRootStatus {
+  id: string;
   key: string;
   kind: MediaRootKind;
   access: "read_only" | "read_write";
@@ -71,9 +74,22 @@ export interface MediaVariant {
   missing_since: string | null;
 }
 
+export interface AssetCategory {
+  category_id: string;
+  slug: string;
+  name: string;
+  path: string;
+  is_primary: boolean;
+  assignment_source: CategoryAssignmentSource;
+}
+
 export interface MediaAssetSummary {
   id: string;
   title: string;
+  /** Folder of the main file relative to its root ("" = root). */
+  folder_path: string | null;
+  categories: AssetCategory[];
+  classification_changed_at: string | null;
   status: MediaAssetStatus;
   asset_kind: MediaAssetKind;
   handoff_status: HandoffStatus | null;
@@ -192,7 +208,71 @@ export interface MediaAssetFilters {
   has_proxy?: boolean;
   video_codec?: string;
   duplicates_only?: boolean;
+  category_id?: string;
+  uncategorized?: boolean;
   sort?: MediaSortKey;
   page?: number;
   page_size?: number;
+}
+
+// ---------------------------------------------------------------- classification (M3A.1)
+
+export interface AssetCategoriesUpdate {
+  primary_category_id: string | null;
+  secondary_category_ids: string[];
+}
+
+export interface FolderRule {
+  id: string;
+  media_root_id: string;
+  root_key: string;
+  relative_folder_path: string;
+  category_id: string;
+  category_name: string;
+  category_path: string;
+  include_subfolders: boolean;
+  priority: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FolderRuleCreate {
+  media_root_id: string;
+  relative_folder_path: string;
+  category_id: string;
+  include_subfolders?: boolean;
+  priority?: number;
+  is_active?: boolean;
+}
+
+export interface FolderRuleUpdate {
+  relative_folder_path?: string;
+  category_id?: string;
+  include_subfolders?: boolean;
+  priority?: number;
+  is_active?: boolean;
+}
+
+export interface FolderPreview {
+  relative_folder_path: string;
+  rule: FolderRule | null;
+  category_id: string;
+  category_name: string;
+  fallback: boolean;
+  candidates: FolderRule[];
+}
+
+export interface FolderReportEntry {
+  media_root_id: string;
+  root_key: string;
+  folder: string;
+  file_count: number;
+  rule: FolderRule | null;
+  mapped: boolean;
+}
+
+export interface CategoryCount {
+  category_id: string;
+  primary_count: number;
 }

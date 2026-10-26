@@ -32,6 +32,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from affilio.core.enums import (
+    CategoryAssignmentSource,
     HandoffStatus,
     MediaAssetKind,
     MediaAssetStatus,
@@ -45,6 +46,8 @@ from affilio.core.enums import (
 )
 from affilio.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from affilio.db.types import str_enum
+from affilio.modules.taxonomy import service as taxonomy_service
+from affilio.modules.taxonomy.models import ContentCategory
 
 
 class MediaRoot(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -147,7 +150,15 @@ class MediaAsset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     missing_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set whenever the folder-derived classification changes (publications compare it with
+    # their approved snapshot to flag stale approvals). M3A.1.
+    classification_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
+    category_assignments: Mapped[list[MediaContentCategory]] = relationship(
+        back_populates="asset", cascade="all, delete-orphan"
+    )
     variants: Mapped[list[MediaFileVariant]] = relationship(
         back_populates="asset", cascade="all, delete-orphan", order_by="MediaFileVariant.kind"
     )
@@ -296,3 +307,84 @@ class MediaScanJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     def __repr__(self) -> str:
         return f"<MediaScanJob status={self.status} attempt={self.attempt}>"
+
+
+# ---------------------------------------------------------------- classification (M3A.1)
+
+
+class MediaContentCategory(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A category assigned to a media asset with its provenance. One primary per asset."""
+
+    __tablename__ = "media_content_categories"
+    __table_args__ = (
+        UniqueConstraint(
+            "media_asset_id", "category_id", name="uq_media_content_categories_asset_category"
+        ),
+        Index(
+            "uq_media_content_categories_primary",
+            "media_asset_id",
+            unique=True,
+            postgresql_where=text("is_primary"),
+        ),
+        Index("ix_media_content_categories_org_category", "organization_id", "category_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    media_asset_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("media_assets.id", ondelete="CASCADE"), nullable=False
+    )
+    category_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("content_categories.id", ondelete="RESTRICT"), nullable=False
+    )
+    is_primary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    assignment_source: Mapped[CategoryAssignmentSource] = mapped_column(
+        str_enum(CategoryAssignmentSource, "category_assignment_source"), nullable=False
+    )
+
+    asset: Mapped[MediaAsset] = relationship(back_populates="category_assignments")
+    category: Mapped[ContentCategory] = relationship()
+
+
+class FolderCategoryRule(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Maps a folder (relative to a FINAL root) to a category. Paths are normalized POSIX
+    paths without leading/trailing slashes; "" means the root itself."""
+
+    __tablename__ = "folder_category_rules"
+    __table_args__ = (
+        UniqueConstraint(
+            "media_root_id", "relative_folder_path", name="uq_folder_category_rules_root_path"
+        ),
+        Index("ix_folder_category_rules_organization_id", "organization_id"),
+        Index("ix_folder_category_rules_category_id", "category_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    media_root_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("media_roots.id", ondelete="CASCADE"), nullable=False
+    )
+    relative_folder_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    category_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("content_categories.id", ondelete="RESTRICT"), nullable=False
+    )
+    include_subfolders: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+
+    root: Mapped[MediaRoot] = relationship()
+    category: Mapped[ContentCategory] = relationship()
+
+
+taxonomy_service.register_reference("media_content_categories", "category_id")
+taxonomy_service.register_reference("folder_category_rules", "category_id")

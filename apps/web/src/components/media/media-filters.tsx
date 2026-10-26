@@ -4,6 +4,7 @@ import type { MediaAssetFilters, MediaSortKey } from "@affilio/shared-types";
 import { Search, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { CategorySelect } from "@/components/taxonomy/category-select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -55,7 +56,9 @@ export function MediaFilters({ filters, onChange, disabled }: MediaFiltersProps)
     Boolean(filters.status) ||
     Boolean(filters.orientation) ||
     filters.has_proxy !== undefined ||
-    Boolean(filters.duplicates_only);
+    Boolean(filters.duplicates_only) ||
+    Boolean(filters.category_id) ||
+    Boolean(filters.uncategorized);
 
   return (
     <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
@@ -139,6 +142,25 @@ export function MediaFilters({ filters, onChange, disabled }: MediaFiltersProps)
             ))}
           </SelectContent>
         </Select>
+        <CategorySelect
+          value={filters.category_id ?? null}
+          onChange={(id) => update({ category_id: id ?? undefined, uncategorized: undefined })}
+          noneLabel="All categories"
+          placeholder="Category"
+          className="w-44"
+          disabled={disabled}
+        />
+        <Button
+          variant={filters.uncategorized ? "secondary" : "outline"}
+          size="sm"
+          onClick={() =>
+            update({ uncategorized: !filters.uncategorized || undefined, category_id: undefined })
+          }
+          disabled={disabled}
+          aria-pressed={Boolean(filters.uncategorized)}
+        >
+          Uncategorized
+        </Button>
         <Button
           variant={filters.duplicates_only ? "secondary" : "outline"}
           size="sm"

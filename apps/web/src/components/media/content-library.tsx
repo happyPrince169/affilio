@@ -54,6 +54,8 @@ function parseFilters(params: URLSearchParams): MediaAssetFilters {
         : undefined,
     has_proxy: hasProxy === "true" ? true : hasProxy === "false" ? false : undefined,
     duplicates_only: params.get("duplicates_only") === "true" || undefined,
+    category_id: params.get("category_id") ?? undefined,
+    uncategorized: params.get("uncategorized") === "true" || undefined,
     sort: SORTS.includes(sort as MediaSortKey) ? (sort as MediaSortKey) : "newest",
     page: Math.max(1, Number(params.get("page") ?? 1) || 1),
     page_size: PAGE_SIZE,
@@ -69,6 +71,8 @@ function serializeFilters(filters: MediaAssetFilters): string {
   if (filters.orientation) params.set("orientation", filters.orientation);
   if (filters.has_proxy !== undefined) params.set("has_proxy", String(filters.has_proxy));
   if (filters.duplicates_only) params.set("duplicates_only", "true");
+  if (filters.category_id) params.set("category_id", filters.category_id);
+  if (filters.uncategorized) params.set("uncategorized", "true");
   if (filters.sort && filters.sort !== "newest") params.set("sort", filters.sort);
   if (filters.page && filters.page > 1) params.set("page", String(filters.page));
   const query = params.toString();
@@ -99,7 +103,9 @@ export function ContentLibrary() {
     filters.has_proxy !== undefined ||
     Boolean(filters.duplicates_only) ||
     Boolean(filters.asset_kind) ||
-    Boolean(filters.handoff_status);
+    Boolean(filters.handoff_status) ||
+    Boolean(filters.category_id) ||
+    Boolean(filters.uncategorized);
 
   return (
     <div className="space-y-6">

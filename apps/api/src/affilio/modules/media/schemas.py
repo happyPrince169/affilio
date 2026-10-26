@@ -6,9 +6,10 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from affilio.core.enums import (
+    CategoryAssignmentSource,
     HandoffStatus,
     MediaAssetKind,
     MediaAssetStatus,
@@ -30,6 +31,7 @@ class MediaModel(BaseModel):
 
 
 class MediaRootStatus(MediaModel):
+    id: uuid.UUID
     key: str
     kind: MediaRootKind
     access: MediaRootAccess
@@ -70,9 +72,21 @@ class MediaVariantResponse(MediaModel):
     missing_since: datetime | None = None
 
 
+class AssetCategoryResponse(MediaModel):
+    category_id: uuid.UUID
+    slug: str
+    name: str
+    path: str
+    is_primary: bool
+    assignment_source: CategoryAssignmentSource
+
+
 class MediaAssetSummary(MediaModel):
     id: uuid.UUID
     title: str
+    folder_path: str | None = None
+    categories: list[AssetCategoryResponse] = Field(default_factory=list)
+    classification_changed_at: datetime | None = None
     status: MediaAssetStatus
     asset_kind: MediaAssetKind = MediaAssetKind.FOOTAGE
     handoff_status: HandoffStatus | None = None
@@ -186,3 +200,79 @@ class CreateScanRequest(BaseModel):
 
     root_key: str = "originals"
     full_rescan: bool = False
+
+
+# ---------------------------------------------------------------- classification (M3A.1)
+
+
+class AssetCategoriesUpdate(BaseModel):
+    """Manual override. `primary_category_id=None` hands primacy back to the folder rule."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    primary_category_id: uuid.UUID | None = None
+    secondary_category_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
+
+    @field_validator("secondary_category_ids")
+    @classmethod
+    def _unique(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
+        return list(dict.fromkeys(value))
+
+
+class FolderRuleCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    media_root_id: uuid.UUID
+    relative_folder_path: str = Field(max_length=1024)
+    category_id: uuid.UUID
+    include_subfolders: bool = True
+    priority: int = Field(default=0, ge=0, le=1000)
+    is_active: bool = True
+
+
+class FolderRuleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relative_folder_path: str | None = Field(default=None, max_length=1024)
+    category_id: uuid.UUID | None = None
+    include_subfolders: bool | None = None
+    priority: int | None = Field(default=None, ge=0, le=1000)
+    is_active: bool | None = None
+
+
+class FolderRuleResponse(MediaModel):
+    id: uuid.UUID
+    media_root_id: uuid.UUID
+    root_key: str
+    relative_folder_path: str
+    category_id: uuid.UUID
+    category_name: str
+    category_path: str
+    include_subfolders: bool
+    priority: int
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class FolderPreviewResponse(MediaModel):
+    relative_folder_path: str
+    rule: FolderRuleResponse | None
+    category_id: uuid.UUID
+    category_name: str
+    fallback: bool
+    candidates: list[FolderRuleResponse]
+
+
+class FolderReportEntry(MediaModel):
+    media_root_id: uuid.UUID
+    root_key: str
+    folder: str
+    file_count: int
+    rule: FolderRuleResponse | None
+    mapped: bool
+
+
+class CategoryCountEntry(MediaModel):
+    category_id: uuid.UUID
+    primary_count: int

@@ -31,3 +31,10 @@ class ScanAlreadyActiveError(AppError):
 
 class ScanConfigurationError(Exception):
     """Raised inside the worker when a scan cannot run (root missing/unreadable)."""
+
+
+class InvalidFolderPathError(AppError):
+    """Folder rule path is unsafe or malformed (M3A.1)."""
+
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "invalid_folder_path"

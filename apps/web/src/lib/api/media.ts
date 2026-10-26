@@ -8,6 +8,13 @@ import type {
   PaginatedAssets,
   ScanJob,
   ScanStatus,
+  AssetCategoriesUpdate,
+  CategoryCount,
+  FolderPreview,
+  FolderReportEntry,
+  FolderRule,
+  FolderRuleCreate,
+  FolderRuleUpdate,
 } from "@affilio/shared-types";
 import { queryOptions } from "@tanstack/react-query";
 
@@ -108,6 +115,62 @@ export const mediaQueries = {
     queryOptions({
       queryKey: [...mediaQueries.all(), "scans", "history", limit] as const,
       queryFn: () => fetchScanHistory(limit),
+      staleTime: 5_000,
+    }),
+};
+
+// ---------------------------------------------------------------- classification (M3A.1)
+
+const JSON_HEADERS_MEDIA = { "Content-Type": "application/json" };
+const sendMedia = <T>(path: string, body: unknown, method = "POST") =>
+  apiFetch<T>(path, { method, headers: JSON_HEADERS_MEDIA, body: JSON.stringify(body) });
+
+export const setAssetCategories = (assetId: string, body: AssetCategoriesUpdate) =>
+  sendMedia<MediaAssetDetail>(
+    `${MEDIA}/assets/${encodeURIComponent(assetId)}/categories`,
+    body,
+    "PUT",
+  );
+export const fetchFolderRules = () => apiFetch<FolderRule[]>(`${MEDIA}/folder-rules`);
+export const createFolderRule = (body: FolderRuleCreate) =>
+  sendMedia<FolderRule>(`${MEDIA}/folder-rules`, body);
+export const updateFolderRule = (id: string, body: FolderRuleUpdate) =>
+  sendMedia<FolderRule>(`${MEDIA}/folder-rules/${encodeURIComponent(id)}`, body, "PATCH");
+export const deleteFolderRule = (id: string) =>
+  apiFetch<void>(`${MEDIA}/folder-rules/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const fetchFolderReport = () =>
+  apiFetch<FolderReportEntry[]>(`${MEDIA}/folder-rules/report`);
+export const fetchFolderPreview = (rootId: string, path: string) =>
+  apiFetch<FolderPreview>(
+    `${MEDIA}/folder-rules/preview?${new URLSearchParams({ media_root_id: rootId, relative_folder_path: path })}`,
+  );
+export const fetchCategoryCounts = () => apiFetch<CategoryCount[]>(`${MEDIA}/categories/counts`);
+
+export const classificationQueries = {
+  all: () => ["media", "classification"] as const,
+  rules: () =>
+    queryOptions({
+      queryKey: [...classificationQueries.all(), "rules"] as const,
+      queryFn: fetchFolderRules,
+      staleTime: 5_000,
+    }),
+  report: () =>
+    queryOptions({
+      queryKey: [...classificationQueries.all(), "report"] as const,
+      queryFn: fetchFolderReport,
+      staleTime: 5_000,
+    }),
+  preview: (rootId: string | null, path: string) =>
+    queryOptions({
+      queryKey: [...classificationQueries.all(), "preview", rootId, path] as const,
+      queryFn: () => fetchFolderPreview(rootId!, path),
+      staleTime: 2_000,
+      enabled: Boolean(rootId),
+    }),
+  counts: () =>
+    queryOptions({
+      queryKey: [...classificationQueries.all(), "counts"] as const,
+      queryFn: fetchCategoryCounts,
       staleTime: 5_000,
     }),
 };

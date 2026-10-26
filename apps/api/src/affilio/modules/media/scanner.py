@@ -39,6 +39,7 @@ from affilio.core.enums import (
     MediaVariantStatus,
     ThumbnailStatus,
 )
+from affilio.modules.media import classification
 from affilio.modules.media.errors import InvalidMediaPathError, ScanConfigurationError
 from affilio.modules.media.fingerprint import full_hash, quick_fingerprint
 from affilio.modules.media.models import MediaAsset, MediaFileVariant, MediaRoot, MediaScanJob
@@ -70,6 +71,7 @@ class ScanStats:
     errors: int = 0
     directories: int = 0
     settling: int = 0  # finals root: files still being uploaded, not indexed yet
+    reclassified: int = 0  # finals root: folder-derived category changed (moves, rule edits)
 
     def as_dict(self) -> dict[str, int]:
         return asdict(self)
@@ -93,6 +95,8 @@ class _ScanContext:
     errors: list[dict[str, str]] = field(default_factory=list)
     touched_assets: dict[uuid.UUID, MediaAsset] = field(default_factory=dict)
     pending_commit: int = 0
+    folder_rules: list | None = None  # loaded once per scan for FINAL roots (M3A.1)
+    reclassified: int = 0
 
     @property
     def is_final_root(self) -> bool:
@@ -157,6 +161,10 @@ class MediaScanner:
         )
         log.info("media.scan.start", root=root.key, job_id=str(job.id))
 
+        if ctx.is_final_root:
+            ctx.folder_rules = classification.rules_for_root(
+                self.session, ctx.organization_id, root.id
+            )
         existing = self._load_existing(ctx)
         seen: set[str] = set()
         new_entries: list[_Entry] = []
@@ -182,6 +190,7 @@ class MediaScanner:
         self._link_proxies(ctx)
         self._queue_thumbnails(ctx)
 
+        ctx.stats.reclassified = ctx.reclassified
         root.last_scan_at = ctx.now
         job.stats = ctx.stats.as_dict()
         job.errors = ctx.errors[: self.settings.media_scan_max_errors]
@@ -286,6 +295,8 @@ class MediaScanner:
         if unchanged and not full_rescan:
             if not was_missing:
                 ctx.stats.unchanged += 1
+            # Rules may have changed since the last scan; a no-op when nothing differs.
+            self._classify(ctx, asset, entry.relative_path)
             return
 
         fingerprint = self._fingerprint(ctx, entry)
@@ -334,6 +345,7 @@ class MediaScanner:
                 variant.asset.title = _title_from_name(entry.path.name)
                 ctx.stats.moved += 1
                 ctx.touched_assets[variant.asset.id] = variant.asset
+                self._classify(ctx, variant.asset, entry.relative_path)
             else:
                 self._create_asset(ctx, entry, fingerprint)
             self._maybe_commit(ctx, job)
@@ -367,6 +379,7 @@ class MediaScanner:
         self._probe_into(ctx, variant, entry.path, asset)
         ctx.stats.added += 1
         ctx.touched_assets[asset.id] = asset
+        self._classify(ctx, asset, entry.relative_path)
 
     def _mark_missing(self, ctx: _ScanContext, missing_variants: list[MediaFileVariant]) -> None:
         for variant in missing_variants:
@@ -544,6 +557,26 @@ class MediaScanner:
         except OSError as exc:
             self._record_error(ctx, "read_error", entry.relative_path, str(exc))
         return None
+
+    def _classify(self, ctx: _ScanContext, asset: MediaAsset, relative_path: str) -> None:
+        """Folder-derived category for FINAL roots. Never touches the file or manual rows."""
+        if not ctx.is_final_root:
+            return
+        try:
+            changed = classification.apply_folder_classification(
+                self.session,
+                asset,
+                root=ctx.root,
+                relative_path=relative_path,
+                rules=ctx.folder_rules or [],
+                now=ctx.now,
+            )
+        except Exception as exc:
+            self._record_error(ctx, "classification_error", relative_path, str(exc))
+            return
+        if changed:
+            ctx.reclassified += 1
+            ctx.touched_assets[asset.id] = asset
 
     def _apply_location(self, variant: MediaFileVariant, entry: _Entry) -> None:
         variant.relative_path = entry.relative_path

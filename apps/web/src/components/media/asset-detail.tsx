@@ -8,6 +8,7 @@ import Link from "next/link";
 import { PageHeader } from "@/components/layout/page-header";
 import { AssetStatusBadge, ThumbnailStatusBadge } from "@/components/media/media-badges";
 import { HandoffBadge } from "@/components/media/handoff-badge";
+import { AssetCategoriesCard } from "@/components/media/asset-categories-card";
 import { HandoffReviewCard } from "@/components/media/handoff-review";
 import { MediaThumbnail } from "@/components/media/media-thumbnail";
 import { LinkedProductsCard } from "@/components/products/linked-products-card";
@@ -208,6 +209,7 @@ function Detail({ asset }: { asset: MediaAssetDetail }) {
       </div>
 
       {asset.asset_kind === "final" ? <HandoffReviewCard asset={asset} /> : null}
+      <AssetCategoriesCard key={asset.updated_at} asset={asset} />
 
       <LinkedProductsCard assetId={asset.id} />
 

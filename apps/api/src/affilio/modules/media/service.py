@@ -22,14 +22,21 @@ from affilio.core.enums import (
     ThumbnailStatus,
 )
 from affilio.core.errors import AppError, NotFoundError
+from affilio.modules.media import classification
 from affilio.modules.media.errors import (
     MediaRootNotConfiguredError,
     MediaRootUnavailableError,
     ScanAlreadyActiveError,
 )
-from affilio.modules.media.models import MediaAsset, MediaFileVariant, MediaScanJob
+from affilio.modules.media.models import (
+    MediaAsset,
+    MediaContentCategory,
+    MediaFileVariant,
+    MediaScanJob,
+)
 from affilio.modules.media.roots import ROOT_KEYS, SCANNABLE_KINDS, MediaRootRegistry
 from affilio.modules.media.schemas import (
+    AssetCategoryResponse,
     HandoffDecision,
     MediaAssetDetail,
     MediaAssetSummary,
@@ -42,6 +49,7 @@ from affilio.modules.media.schemas import (
     ScanStatusResponse,
     SortKey,
 )
+from affilio.modules.taxonomy import service as taxonomy_service
 
 MAX_PAGE_SIZE = 100
 
@@ -56,6 +64,8 @@ class AssetFilters:
     has_proxy: bool | None = None
     video_codec: str | None = None
     duplicates_only: bool = False
+    category_id: uuid.UUID | None = None  # includes descendants
+    uncategorized: bool = False  # no assignment at all, or only the Uncategorized fallback
     sort: SortKey = "newest"
     page: int = 1
     page_size: int = 24
@@ -75,6 +85,7 @@ def root_statuses(
         availability = binding.availability() if binding else None
         statuses.append(
             MediaRootStatus(
+                id=row.id,
                 key=key,
                 kind=kind,
                 access=access,
@@ -248,7 +259,26 @@ def _has_proxy_exists():
     )
 
 
-def _apply_filters(stmt: Select, filters: AssetFilters, original) -> Select:
+def _apply_filters(
+    stmt: Select, filters: AssetFilters, original, *, organization_id: uuid.UUID, session: Session
+) -> Select:
+    if filters.category_id:
+        tree = classification.tree_for(session, organization_id)
+        ids = {filters.category_id, *tree.descendants(filters.category_id)}
+        stmt = stmt.where(
+            MediaAsset.id.in_(classification.asset_ids_in_categories(session, organization_id, ids))
+        )
+    if filters.uncategorized:
+        fallback = taxonomy_service.ensure_uncategorized(session, organization_id)
+        real = (
+            select(MediaContentCategory.media_asset_id)
+            .where(
+                MediaContentCategory.organization_id == organization_id,
+                MediaContentCategory.category_id != fallback.id,
+            )
+            .scalar_subquery()
+        )
+        stmt = stmt.where(MediaAsset.id.not_in(real))
     if filters.q:
         pattern = f"%{filters.q.strip()}%"
         stmt = stmt.where(
@@ -293,7 +323,7 @@ def list_assets(
         .outerjoin(original, original.c.asset_id == MediaAsset.id)
         .where(MediaAsset.organization_id == organization_id)
     )
-    base = _apply_filters(base, filters, original)
+    base = _apply_filters(base, filters, original, organization_id=organization_id, session=session)
 
     count_stmt = select(func.count()).select_from(base.order_by(None).subquery())
     total = int(session.scalar(count_stmt) or 0)
@@ -307,7 +337,12 @@ def list_assets(
         "last_seen": [MediaAsset.last_seen_at.desc(), MediaAsset.id.desc()],
     }[filters.sort]
     stmt = (
-        base.options(selectinload(MediaAsset.variants))
+        base.options(
+            selectinload(MediaAsset.variants),
+            selectinload(MediaAsset.category_assignments).selectinload(
+                MediaContentCategory.category
+            ),
+        )
         .order_by(*order)
         .offset((page - 1) * page_size)
         .limit(page_size)
@@ -326,12 +361,43 @@ def list_assets(
 def get_asset(session: Session, organization_id: uuid.UUID, asset_id: uuid.UUID) -> MediaAsset:
     asset = session.scalar(
         select(MediaAsset)
-        .options(selectinload(MediaAsset.variants).selectinload(MediaFileVariant.root))
+        .options(
+            selectinload(MediaAsset.variants).selectinload(MediaFileVariant.root),
+            selectinload(MediaAsset.category_assignments).selectinload(
+                MediaContentCategory.category
+            ),
+        )
         .where(MediaAsset.organization_id == organization_id, MediaAsset.id == asset_id)
     )
     if asset is None:
         raise NotFoundError("Media asset not found")
     return asset
+
+
+def _asset_categories(asset: MediaAsset) -> list[AssetCategoryResponse]:
+    out: list[AssetCategoryResponse] = []
+    for a in sorted(
+        asset.category_assignments,
+        key=lambda x: (not x.is_primary, x.created_at or datetime.min.replace(tzinfo=UTC)),
+    ):
+        chain: list[str] = []
+        node = a.category
+        guard = 0
+        while node is not None and guard < 10:
+            chain.append(node.name)
+            node = node.parent
+            guard += 1
+        out.append(
+            AssetCategoryResponse(
+                category_id=a.category_id,
+                slug=a.category.slug,
+                name=a.category.name,
+                path=" / ".join(reversed(chain)),
+                is_primary=a.is_primary,
+                assignment_source=a.assignment_source,
+            )
+        )
+    return out
 
 
 def _summary_fields(asset: MediaAsset, *, thumbnail_url_prefix: str) -> dict:
@@ -340,6 +406,11 @@ def _summary_fields(asset: MediaAsset, *, thumbnail_url_prefix: str) -> dict:
     return {
         "id": asset.id,
         "title": asset.title,
+        "folder_path": (
+            classification.folder_of(original.relative_path) if original is not None else None
+        ),
+        "categories": _asset_categories(asset),
+        "classification_changed_at": asset.classification_changed_at,
         "status": asset.status,
         "asset_kind": asset.asset_kind,
         "handoff_status": asset.handoff_status,
