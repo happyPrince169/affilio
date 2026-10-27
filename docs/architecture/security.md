@@ -185,20 +185,41 @@ Error text that ends up in the database and in API responses (`media_scan_jobs.e
 `errors[]`, `media_assets.probe_error` / `thumbnail_error`, `media_file_variants.probe_error`,
 `publication_uploads.last_error`, `publication_jobs.last_error`, `publication_attempts.error`)
 goes through `affilio.core.redaction.Redactor` **before it is stored**, so neither the row nor
-the response ever holds the raw text:
+the response ever holds the raw text. Rules, in order:
 
-- paths under a configured media root become `<root key>/<relative path>` (container paths
-  such as `/media/originals/…` and host paths such as `/volume1/…/originals/…` alike, symlink
-  real paths included); any other absolute path keeps only its last component
-  (`[redacted]/ffmpeg`);
-- connection URLs lose their credentials (`scheme://***:***@host/db`), `key=value` and JSON
-  secrets (`password`, `token`, `secret`, `api_key`, `cookie`, `authorization`, …) and bearer
-  tokens are masked; prose that merely mentions a token stays readable;
-- ANSI escapes and control characters are removed, whitespace collapsed, length bounded.
+1. ANSI escapes and control characters are removed; the input is capped at 20 000 characters.
+2. Credentials in URLs: `scheme://user:pass@host/db` → `scheme://***:***@host/db` (user-only
+   and password-only forms too).
+3. `Bearer <token>` → `Bearer ***`.
+4. Secret fields. A key is an identifier that *ends* with a secret word (`password`, `passwd`,
+   `pwd`, `secret`, `token`, `api_key`, `credential(s)`, `cookie`, `authorization`,
+   `private_key`, `session_id`; prefixes allowed: `client_secret`, `x-api-key`,
+   `MEDIA_ADMIN_TOKEN`); identifiers that merely contain one (`token_invalid`,
+   `credential_unavailable`) are error codes and stay readable. `key=value` and `key:value`
+   mask one token (shell style; quote values that contain spaces), `key: value with spaces`
+   masks up to the next `,` `;` `|` `}` `]` or the end, and quoted values (`"key": "value"`,
+   `'key': 'value'`) are masked inside their quotes.
+5. Paths under a configured media root → `<root key>/<relative path>`: container paths
+   (`/media/originals/…`), host paths (`/volume1/…/originals/…`) and the symlink real path
+   alike, spaces and Unicode intact.
+6. Any other absolute path keeps only its last component: quoted (`'/x/y/clip one.mp4'` →
+   `'[redacted]/clip one.mp4'`) or unquoted, with or without spaces. A space followed by `-`
+   or `/` ends a path, so command lines keep their arguments (`[redacted]/ffmpeg -i
+   proxies/x.mp4`). URL paths are not filesystem paths and are left alone.
+7. Whitespace is collapsed and the output bounded (500 characters for scan, probe and
+   thumbnail errors, 1 000 for job errors, 2 000 for publishing errors; `…` marks truncation).
 
-The error category (`kind` / `code`), the affected asset or scan id and the file name stay, so
-the message remains actionable. Logs carry the same redacted text. `GET /media/roots` never
-returned paths, and the generic 500 handler never echoes exception text.
+Every quantifier that could backtrack is possessive and every rule is anchored at a token
+boundary, so the cost is linear in the capped input; `tests/test_redaction.py` includes
+adversarial inputs with a time budget. The error category (`kind` / `code`), the affected
+asset or scan id and the file name stay, so the message remains actionable. Logs carry the
+same redacted text. `GET /media/roots` never returned paths, and the generic 500 handler never
+echoes exception text.
+
+Known limits: an unquoted `key=value` whose value contains spaces masks only the first token;
+a word inside a directory name that starts with `-` ends the path early and may remain as
+prose; and prose placed right after a field-like `token:` / `password:` label is masked with
+the value (by design: a label followed by a value is treated as a field).
 
 ## Known limitations
 

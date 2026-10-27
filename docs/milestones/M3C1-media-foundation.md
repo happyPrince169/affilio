@@ -122,6 +122,11 @@ limit 1000) and the publishing engine's `_record_error` / `_fail` / `_park` / pa
 failure (limit 2000). Rules and examples: `docs/architecture/security.md`, "Error redaction".
 Existing rows are not rewritten (production has none); the next scan or attempt overwrites.
 
+**Hardening follow-up (same day).** Unquoted `key: value with spaces` fields, quoted keys
+(`'password': 'x'`), quoted and unquoted paths with spaces, command lines inside quotes,
+linear-time patterns (possessive quantifiers, boundary anchors; the URL-credential rule was
+quadratic on long words), an input cap, and adversarial tests with a time budget.
+
 **Tests.** `tests/test_redaction.py` (container and NAS paths, quoted and Unicode names,
 root directories, paths outside the roots, multi-line ANSI ffmpeg output, connection URLs,
 `key=value`/JSON/bearer secrets, prose false positives, URL paths, truncation, realpath of a
