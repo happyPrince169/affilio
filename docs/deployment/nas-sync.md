@@ -99,11 +99,13 @@ in this repository has a tested `downgrade()`.
 To run the preflight with the laptop's copy of the script (for example after fixing it, before
 syncing) stream it over SSH: `ssh leosunnas 'AFFILIO_PROJECT_DIR=/volume1/docker/affilio bash -s check' < scripts/nas-deploy-remote.sh`.
 
-## Status (`scripts/nas-status.sh`)
+## Status (`scripts/nas-status.sh` → `scripts/nas-status-remote.sh` on the NAS)
 
 Prints the synced revision, last deployment, `.env` and runtime folder presence, disk, the
-`affilio` containers with health, image tags and the health endpoints. Read-only. The
-container section needs the sudo password; without it the rest is still shown.
+`affilio` containers with health, image tags and the health endpoints. Read-only. Like the
+deploy, it runs the synced copy of its remote script so the SSH session keeps a terminal and
+`sudo` can prompt for the container section; without a password (or `NAS_SSH_TTY=0`) the
+rest is still shown.
 
 ## Persistent data vs replaceable source
 

@@ -200,7 +200,11 @@ deploy() {
   {
     printf 'deployed_at=%s\n' "$(date -u '+%FT%TZ')"
     [[ -f "$DEPLOY_DIR/source-revision" ]] && cat "$DEPLOY_DIR/source-revision"
-    printf 'images=%s\n' "$(${DOCKER} images --format '{{.Repository}}:{{.Tag}}@{{.ID}}' affilio-api:latest affilio-web:latest | tr '\n' ' ')"
+    local image ids=""
+    for image in "${IMAGES[@]}"; do  # `docker images` takes one repository at a time
+      ids+="$({ ${DOCKER} images --format '{{.Repository}}:{{.Tag}}@{{.ID}}' "$image:latest" 2>/dev/null || true; } | head -1) "
+    done
+    printf 'images=%s\n' "$ids"
   } > "$DEPLOY_DIR/last-deploy"
   log "deployment complete: $(tr '\n' ' ' < "$DEPLOY_DIR/last-deploy")"
   log "post-deploy: open the UI, check Content → root chips, Distribution → Queue → engine card"
