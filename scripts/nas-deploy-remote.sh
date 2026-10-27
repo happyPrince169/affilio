@@ -102,7 +102,9 @@ preflight() {
 }
 
 first_deployment() {
-  [[ ! -f "$DEPLOY_DIR/last-deploy" ]] && ! ${DOCKER} ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}' | grep -q .
+  local existing
+  existing="$({ ${DOCKER} ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}' 2>/dev/null || true; } | head -1)"
+  [[ ! -f "$DEPLOY_DIR/last-deploy" && -z "$existing" ]]
 }
 
 confirm() {
@@ -141,13 +143,16 @@ tag_previous() {
   done
 }
 
+# Health by container name through `docker inspect`: works on every Compose version (the NAS
+# runs Compose v2.20, whose `ps --format` accepts only table|json), and the substitution never
+# fails, so the ERR trap cannot fire inside it.
 wait_healthy() {
   local service="$1" waited=0 state
   while :; do
-    state="$(compose ps --format '{{.Service}} {{.Health}} {{.State}}' 2>/dev/null | awk -v s="$service" '$1==s {print $2":"$3}')"
+    state="$({ ${DOCKER} inspect --format '{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "affilio-$service" 2>/dev/null || true; } | tr -d '\r')"
     case "$state" in
-      healthy:*) return 0 ;;
-      *:exited|*:dead|unhealthy:*) fail "service $service is $state" ;;
+      running:healthy|running:none) return 0 ;;
+      exited:*|dead:*|running:unhealthy) fail "service $service is $state" ;;
     esac
     [[ $waited -lt $HEALTH_TIMEOUT ]] || fail "service $service not healthy after ${HEALTH_TIMEOUT}s (state: ${state:-missing})"
     sleep 5; waited=$((waited + 5))
