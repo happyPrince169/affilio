@@ -113,6 +113,8 @@ class Identity:
             "approve": self.has_role(MembershipRole.ADMIN),
             "manage_accounts": self.has_role(MembershipRole.ADMIN),
             "manage_members": self.has_role(MembershipRole.ADMIN),
+            # Start or cancel media scans (M3C.1): the API enforces it, the UI hides the controls.
+            "trigger_scans": self.has_role(MembershipRole.ADMIN),
         }
 
 

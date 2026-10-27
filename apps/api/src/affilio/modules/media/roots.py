@@ -30,6 +30,10 @@ ROOT_KEYS: dict[str, tuple[MediaRootKind, MediaRootAccess, str]] = {
 
 _MAX_RELATIVE_PATH = 1024
 SCANNABLE_KINDS: frozenset[MediaRootKind] = frozenset({MediaRootKind.ORIGINAL, MediaRootKind.FINAL})
+# Keys a scan may target (`originals`, `finals`); proxies are variants, never scanned.
+SCANNABLE_ROOT_KEYS: tuple[str, ...] = tuple(
+    key for key, spec in ROOT_KEYS.items() if spec[0] in SCANNABLE_KINDS
+)
 
 
 @dataclass(frozen=True, slots=True)

@@ -65,6 +65,7 @@ export function ScanHistory() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Status</TableHead>
+                  <TableHead>Root</TableHead>
                   <TableHead>Started</TableHead>
                   <TableHead>Duration</TableHead>
                   <TableHead>Trigger</TableHead>
@@ -84,6 +85,7 @@ export function ScanHistory() {
                         <span className="ml-1 text-[10px] text-muted-foreground">full</span>
                       ) : null}
                     </TableCell>
+                    <TableCell className="capitalize">{job.root_key}</TableCell>
                     <TableCell className="whitespace-nowrap text-muted-foreground">
                       {formatDateTime(job.started_at ?? job.created_at)}
                     </TableCell>

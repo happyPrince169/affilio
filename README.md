@@ -82,6 +82,7 @@ MEDIA_THUMBNAILS_PATH=$PWD/var/thumbnails        # read-write (create it)
 MEDIA_EXPORTS_PATH=$PWD/var/exports              # read-write (create it)
 
 pnpm media:scan -- --thumbnails   # one-off synchronous scan + thumbnails (no worker needed)
+pnpm media:scan -- --root finals  # same for the finals root (defaults to originals)
 pnpm dev:worker                   # or keep the worker running and press "Scan now" in the UI
 ```
 

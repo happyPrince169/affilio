@@ -1,6 +1,6 @@
 # M3C.1 — Media foundation (make the NAS library visible and keep it that way)
 
-- **Status:** In progress. Step 1 implemented 2026-10-27 (verified locally; not deployed).
+- **Status:** In progress. Steps 1 and 2 implemented 2026-10-27 (verified locally; not deployed).
   Steps 2–5 approved in principle, each started only on explicit approval.
 - **Depends on:** M1 (scanner, roots, worker), M2B (finals root), M3A (auth/RBAC).
 - **Not in scope:** `media_asset_relations` (deferred until `media_file_variants` +
@@ -18,7 +18,7 @@ runs on the NAS the scanner must be able to survive a worker crash and be stoppa
 | # | Step | Status |
 | --- | --- | --- |
 | 1 | Scan watchdog + safe cancellation (this document) | implemented, tested locally |
-| 2 | Finals scanning from the UI and the CLI (`--root`) | approved, not started |
+| 2 | Finals scanning from the UI and the CLI (`--root`) | implemented, tested locally |
 | 3 | Path-safe error strings (no container paths in stored errors) | approved, not started |
 | 4 | Identity across scans: missing file reappearing elsewhere keeps its asset | approved, not started |
 | 5 | Scheduled incremental rescan (`MEDIA_SCAN_INTERVAL_MINUTES`, default off) | approved, not started |
@@ -83,7 +83,32 @@ a single file (ffprobe is capped at 60 s, full hashing of a multi-GB original on
 well under 10 minutes); if that ever happens the job is simply retried once the worker is
 free, and the fence prevents double writes.
 
-## Acceptance criteria (step 1)
+## Step 2 — Finals scanning from the UI and the CLI
+
+**Problem.** The scan card and the CLI only ever scanned `originals`; the 92 finished videos
+in the finals root (the ones publishing needs) could be indexed only by calling the API by
+hand with `root_key: "finals"`.
+
+**Design (no migration, same scanner and queue).**
+
+- `GET /media/scans/status` gains `by_root[{root_key, current, last_completed}]` for the two
+  scannable roots. `current`/`last_completed` keep their organization-wide meaning, so older
+  callers see no change.
+- `POST /media/scans` is unchanged (`root_key` defaults to `originals`; one active job per
+  root is still enforced by the 409 `scan_already_active` guard).
+- CLI: `python -m affilio.scripts.media_scan --root originals|finals`; the choices come from
+  `roots.SCANNABLE_ROOT_KEYS`, so `proxies` is refused before anything is queued.
+- A `trigger_scans` permission (admin and owner) is reported by `/auth/me`; the API already
+  enforced the role, the UI now hides the controls for other members.
+- Scan card: one row per root ("Scan now" for originals, "Scan finals" for finals) with the
+  root's own current job, progress counters, last result, error and a visible Cancel button
+  for its active job. A root whose mount is not configured or readable has its action
+  disabled; a busy root blocks only its own second request. Scan history shows the root.
+- Web component tests (vitest + Testing Library, `pnpm --filter @affilio/web test`): root
+  actions and posted body, unavailable root, duplicate-request blocking and cancellation,
+  per-root results and errors, hidden controls without the permission.
+
+## Acceptance criteria (steps 1–2)
 
 - [x] A running job whose heartbeat is older than the stale window is re-queued (attempt kept,
       backoff applied) or failed when attempts are spent; fresh jobs are never touched.
@@ -93,3 +118,8 @@ free, and the fence prevents double writes.
 - [x] Admin cancel for queued and running jobs; 409 once finished; editors get 403; the
       service token may cancel; the root is free for a new scan immediately after.
 - [x] Existing scan behaviour and API responses unchanged (existing media suites pass).
+- [x] `--root finals` indexes the finals root from the CLI; `--root proxies` is refused.
+- [x] The UI offers "Scan finals" to admins only, blocks a second request for a busy root
+      without blocking the other root, and shows status, counters, errors and cancellation
+      per root.
+- [x] Existing clients of `POST /media/scans` and the legacy status fields are unchanged.

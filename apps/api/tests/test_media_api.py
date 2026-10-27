@@ -268,3 +268,34 @@ def test_scan_without_configured_root(
         assert response.json()["error"]["code"] == "media_root_not_configured"
     dispose_engine()
     get_settings.cache_clear()
+
+
+def test_scan_status_tracks_each_scannable_root(media_client: TestClient) -> None:
+    """M3C.1 step 2: one active job per root, reported per root and in the legacy fields."""
+    before = media_client.get("/api/v1/media/scans/status").json()
+    assert [entry["root_key"] for entry in before["by_root"]] == ["originals", "finals"]
+    assert all(entry["current"] is None for entry in before["by_root"])
+
+    finals = media_client.post("/api/v1/media/scans", json={"root_key": "finals"})
+    assert finals.status_code == 202 and finals.json()["root_key"] == "finals"
+    again = media_client.post("/api/v1/media/scans", json={"root_key": "finals"})
+    assert again.status_code == 409 and again.json()["error"]["code"] == "scan_already_active"
+    originals = media_client.post("/api/v1/media/scans", json={})  # other root still free
+    assert originals.status_code == 202 and originals.json()["root_key"] == "originals"
+
+    status = media_client.get("/api/v1/media/scans/status").json()
+    by_root = {entry["root_key"]: entry for entry in status["by_root"]}
+    assert by_root["finals"]["current"]["id"] == finals.json()["id"]
+    assert by_root["originals"]["current"]["id"] == originals.json()["id"]
+    assert status["current"]["id"] == originals.json()["id"]  # legacy field: newest active job
+
+    cancelled = media_client.post(f"/api/v1/media/scans/{finals.json()['id']}/cancel")
+    assert cancelled.status_code == 200
+    status = media_client.get("/api/v1/media/scans/status").json()
+    by_root = {entry["root_key"]: entry for entry in status["by_root"]}
+    assert by_root["finals"]["current"] is None
+    assert by_root["finals"]["last_completed"]["status"] == "cancelled"
+    assert by_root["originals"]["current"]["id"] == originals.json()["id"]
+    assert by_root["originals"]["last_completed"] is None
+    assert status["last_completed"]["id"] == finals.json()["id"]
+    assert media_client.post("/api/v1/media/scans", json={"root_key": "proxies"}).status_code == 404

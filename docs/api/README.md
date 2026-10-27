@@ -81,10 +81,10 @@ All media routes are organization-scoped: send `X-Organization-Slug: <slug>` or 
 | GET | `/api/v1/media/assets` | Query: `q`, `status`, `orientation` (vertical\|horizontal\|square), `has_proxy`, `video_codec`, `duplicates_only`, `sort` (newest\|oldest\|title\|duration\|size\|last_seen), `page`, `page_size` (≤100). Returns `{items, page, page_size, total, total_pages}`. |
 | GET | `/api/v1/media/assets/{id}` | Summary + `variants[]` (original/proxy/thumbnail/export with per-file probe data) + `duplicates[]` |
 | GET | `/api/v1/media/assets/{id}/thumbnail` | `image/jpeg`, `Cache-Control: private, max-age=3600`; 404 until the worker renders it |
-| GET | `/api/v1/media/scans/status` | `{current, last_completed, roots, worker_hint}` |
+| GET | `/api/v1/media/scans/status` | `{current, last_completed, by_root[{root_key, current, last_completed}], roots, worker_hint}`. `current`/`last_completed` are the organization-wide view (any root); `by_root` lists `originals` and `finals` separately (one active job per root) |
 | GET | `/api/v1/media/scans?limit=` | History, newest first |
 | GET | `/api/v1/media/scans/{id}` | One job incl. `stats` and up to 200 `errors[{kind,path,message}]` |
-| POST | `/api/v1/media/scans` | Body `{root_key?: "originals", full_rescan?: false}` → 202 queued job. Requires `X-Affilio-Admin-Token` when `MEDIA_ADMIN_TOKEN` is set (always in production). 409 `scan_already_active`, 409 `media_root_not_configured`, 503 `media_root_unavailable`. |
+| POST | `/api/v1/media/scans` | Body `{root_key?: "originals" \| "finals", full_rescan?: false}` → 202 queued job (404 for roots that cannot be scanned, e.g. `proxies`). Requires `X-Affilio-Admin-Token` when `MEDIA_ADMIN_TOKEN` is set (always in production). 409 `scan_already_active`, 409 `media_root_not_configured`, 503 `media_root_unavailable`. |
 | POST | `/api/v1/media/scans/{id}/cancel` | Admin (or service token). Cancels a queued or running scan → 200 job with `status: cancelled`. A running worker stops at its next checkpoint and discards uncommitted work; files indexed so far stay. 404 unknown job, 409 `scan_not_cancellable` once finished. Running jobs whose heartbeat is older than `MEDIA_SCAN_STALE_AFTER_SECONDS` are re-queued by the worker watchdog (or failed when `max_attempts` is spent). |
 
 Error codes specific to media: `invalid_media_path` (400), `media_root_not_configured` (409),

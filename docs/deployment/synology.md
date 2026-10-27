@@ -158,6 +158,7 @@ You can also scan from the shell:
 
 ```bash
 docker compose --env-file .env exec worker python -m affilio.scripts.media_scan --thumbnails
+docker compose --env-file .env exec worker python -m affilio.scripts.media_scan --root finals
 ```
 
 In Container Manager, the stack appears under **Project** once you import the compose file

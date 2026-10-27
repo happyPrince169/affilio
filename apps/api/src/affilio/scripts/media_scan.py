@@ -1,8 +1,11 @@
 """Run a media scan synchronously from the command line (no worker needed).
 
-    uv run python -m affilio.scripts.media_scan [--org demo-org] [--full] [--thumbnails]
+    uv run python -m affilio.scripts.media_scan [--org demo-org] [--root originals|finals]
+                                               [--full] [--thumbnails]
 
 Useful on the workstation and for one-off operations on the NAS. Prints a stats summary.
+`--root` defaults to `originals` (camera footage + proxies); `finals` indexes the finished
+edits root with its handoff review gate (M3C.1 step 2). Same scanner and job queue as the UI.
 """
 
 from __future__ import annotations
@@ -19,14 +22,20 @@ from affilio.core.logging import configure_logging
 from affilio.db.session import get_session_factory
 from affilio.modules.identity.models import Organization
 from affilio.modules.media import service
-from affilio.modules.media.roots import MediaRootRegistry
+from affilio.modules.media.roots import SCANNABLE_ROOT_KEYS, MediaRootRegistry
 from affilio.modules.media.thumbnails import ThumbnailGenerator
 from affilio.worker.runner import claim_next_scan_job, execute_scan_job
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Scan the originals media root now.")
+    parser = argparse.ArgumentParser(description="Scan a media root (originals or finals) now.")
     parser.add_argument("--org", default=None, help="organization slug (default from settings)")
+    parser.add_argument(
+        "--root",
+        default="originals",
+        choices=SCANNABLE_ROOT_KEYS,
+        help="which read-only root to index (default: originals)",
+    )
     parser.add_argument("--full", action="store_true", help="re-fingerprint and re-probe all files")
     parser.add_argument("--thumbnails", action="store_true", help="also render pending thumbnails")
     args = parser.parse_args(argv)
@@ -47,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
                 session,
                 organization.id,
                 registry,
+                root_key=args.root,
                 trigger=ScanTrigger.CLI,
                 requested_by="cli",
                 full_rescan=args.full,
@@ -62,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         session.commit()
         job = execute_scan_job(session, claimed, settings=settings, registry=registry)
-        print(f"scan {job.status} (attempt {job.attempt})")
+        print(f"scan of {args.root} {job.status} (attempt {job.attempt})")
         print(json.dumps(job.stats, indent=2))
         if job.errors:
             print(f"{len(job.errors)} error(s); first: {job.errors[0]}")

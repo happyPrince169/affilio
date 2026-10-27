@@ -179,9 +179,20 @@ class ScanJobResponse(MediaModel):
     error: str | None = None
 
 
-class ScanStatusResponse(MediaModel):
+class RootScanState(MediaModel):
+    """Scan state of one scannable root (originals, finals). M3C.1 step 2."""
+
+    root_key: str
     current: ScanJobResponse | None = None
     last_completed: ScanJobResponse | None = None
+
+
+class ScanStatusResponse(MediaModel):
+    # `current` / `last_completed` stay the organization-wide view (any root) for callers
+    # that predate per-root scanning; `by_root` carries the same per scannable root.
+    current: ScanJobResponse | None = None
+    last_completed: ScanJobResponse | None = None
+    by_root: list[RootScanState] = Field(default_factory=list)
     roots: list[MediaRootStatus]
     worker_hint: str
 

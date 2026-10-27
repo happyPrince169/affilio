@@ -1,11 +1,12 @@
 "use client";
 
-import type { MediaRootStatus, ScanJob } from "@affilio/shared-types";
+import type { MediaRootStatus, RootScanState, ScanJob } from "@affilio/shared-types";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "cn";
-import { ChevronDown, LoaderCircle, RefreshCw, ScanSearch } from "lucide-react";
+import { ChevronDown, LoaderCircle, RefreshCw, ScanSearch, Square } from "lucide-react";
 import { toast } from "sonner";
 
+import { useAuth } from "@/components/auth/auth-provider";
 import { ScanStatusBadge } from "@/components/media/media-badges";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,8 +31,27 @@ const STAT_LABELS: Array<[string, string]> = [
   ["unsupported", "unsupported"],
   ["duplicates", "duplicates"],
   ["proxies_linked", "proxies"],
+  ["settling", "settling"],
   ["errors", "errors"],
 ];
+
+/** Copy per scannable root. Unknown roots (future) fall back to their key. */
+const ROOT_COPY: Record<string, { title: string; description: string; action: string }> = {
+  originals: {
+    title: "Originals",
+    description: "Camera footage; proxies are linked by file name.",
+    action: "Scan now",
+  },
+  finals: {
+    title: "Finals",
+    description: "Finished edits from editors; new files enter handoff review.",
+    action: "Scan finals",
+  },
+};
+
+function rootCopy(key: string) {
+  return ROOT_COPY[key] ?? { title: key, description: "", action: `Scan ${key}` };
+}
 
 function RootChip({ root }: { root: MediaRootStatus }) {
   const ok = root.configured && (root.access === "read_only" ? root.readable : root.writable);
@@ -91,30 +111,152 @@ function ScanSummary({ job }: { job: ScanJob }) {
   );
 }
 
+interface RootScanRowProps {
+  state: RootScanState;
+  root: MediaRootStatus | undefined;
+  canTrigger: boolean;
+  scanPendingFor: string | null;
+  cancelPending: boolean;
+  onScan: (rootKey: string, fullRescan: boolean) => void;
+  onCancel: (job: ScanJob) => void;
+}
+
+function RootScanRow({
+  state,
+  root,
+  canTrigger,
+  scanPendingFor,
+  cancelPending,
+  onScan,
+  onCancel,
+}: RootScanRowProps) {
+  const copy = rootCopy(state.root_key);
+  const available = Boolean(root?.configured && root.readable);
+  const current = state.current;
+  const last = state.last_completed;
+  const scanPending = scanPendingFor === state.root_key;
+  // One active job per root is enforced by the API (409 scan_already_active); the UI simply
+  // never offers a second request while one is queued or running.
+  const canScan = canTrigger && available && !current && !scanPending;
+
+  return (
+    <section
+      aria-label={`${copy.title} scan`}
+      className={cn("space-y-2 rounded-lg border p-3", current && "border-brand/30 bg-accent/40")}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="space-y-0.5">
+          <h3 className="text-sm font-medium">{copy.title}</h3>
+          <p className="text-xs text-muted-foreground">
+            {copy.description}
+            {!root?.configured ? " Root not configured." : null}
+            {root?.configured && !root.readable ? " Root not readable right now." : null}
+          </p>
+        </div>
+        {canTrigger ? (
+          <div className="flex items-center gap-1">
+            {current ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onCancel(current)}
+                disabled={cancelPending}
+                aria-label={`Cancel ${copy.title.toLowerCase()} scan`}
+              >
+                <Square />
+                Cancel
+              </Button>
+            ) : null}
+            <Button
+              size="sm"
+              onClick={() => onScan(state.root_key, false)}
+              disabled={!canScan}
+              aria-label={copy.action}
+            >
+              {scanPending || current ? <LoaderCircle className="animate-spin" /> : <RefreshCw />}
+              {current ? "Scanning…" : copy.action}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  size="icon-sm"
+                  variant="outline"
+                  aria-label={`More ${copy.title.toLowerCase()} scan options`}
+                >
+                  <ChevronDown />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem disabled={!canScan} onClick={() => onScan(state.root_key, true)}>
+                  Full rescan (re-probe every file)
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        ) : null}
+      </div>
+      {current ? (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between gap-2 text-sm">
+            <span className="flex items-center gap-2 font-medium">
+              <ScanStatusBadge status={current.status} />
+              {current.status === "running"
+                ? `Running for ${formatElapsed(current.started_at, null)}`
+                : `Queued ${formatRelative(current.created_at)}`}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              attempt {current.attempt}/{current.max_attempts}
+            </span>
+          </div>
+          <ScanSummary job={current} />
+        </div>
+      ) : last ? (
+        <div className="space-y-1.5 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <ScanStatusBadge status={last.status} />
+            <span className="text-muted-foreground">
+              Last scan {formatRelative(last.finished_at ?? last.created_at)} · took{" "}
+              {formatElapsed(last.started_at, last.finished_at)}
+            </span>
+          </div>
+          <ScanSummary job={last} />
+          {last.error ? <p className="text-xs text-destructive">{last.error}</p> : null}
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">No scan has run yet.</p>
+      )}
+    </section>
+  );
+}
+
 export function ScanStatusCard() {
   const queryClient = useQueryClient();
+  const { can } = useAuth();
+  const canTrigger = can("trigger_scans");
   const status = useQuery(mediaQueries.scanStatus());
   const scan = useMutation({
     mutationFn: createScan,
-    onSuccess: () => {
-      toast.success("Scan queued", { description: "The worker will pick it up shortly." });
+    onSuccess: (job) => {
+      toast.success(`${rootCopy(job.root_key).title} scan queued`, {
+        description: "The worker will pick it up shortly.",
+      });
       void queryClient.invalidateQueries({ queryKey: mediaQueries.all() });
     },
     onError: (error) => {
       const message =
         error instanceof ApiError && error.code === "scan_already_active"
-          ? "A scan is already queued or running."
+          ? "A scan of this root is already queued or running."
           : error instanceof ApiError && error.code === "forbidden"
             ? "Scans require the admin role. Ask an admin, or trigger it from the CLI with the service token."
             : error.message;
       toast.error("Could not start scan", { description: message });
+      void queryClient.invalidateQueries({ queryKey: mediaQueries.all() });
     },
   });
-
   const cancel = useMutation({
     mutationFn: cancelScan,
-    onSuccess: () => {
-      toast.success("Scan cancelled", {
+    onSuccess: (job) => {
+      toast.success(`${rootCopy(job.root_key).title} scan cancelled`, {
         description: "A running worker stops at its next checkpoint. Files indexed so far stay.",
       });
       void queryClient.invalidateQueries({ queryKey: mediaQueries.all() });
@@ -127,13 +269,12 @@ export function ScanStatusCard() {
             ? "Cancelling a scan requires the admin role."
             : error.message;
       toast.error("Could not cancel scan", { description: message });
+      void queryClient.invalidateQueries({ queryKey: mediaQueries.all() });
     },
   });
 
-  const originals = status.data?.roots.find((root) => root.key === "originals");
-  const canScan = Boolean(originals?.configured && originals.readable) && !status.data?.current;
-  const current = status.data?.current ?? null;
-  const last = status.data?.last_completed ?? null;
+  const rootsByKey = new Map((status.data?.roots ?? []).map((root) => [root.key, root]));
+  const byRoot = status.data?.by_root ?? [];
 
   return (
     <Card>
@@ -142,47 +283,22 @@ export function ScanStatusCard() {
           <div className="space-y-1">
             <CardTitle className="flex items-center gap-2">
               <ScanSearch className="size-4 text-brand" />
-              Library scan
+              Library scans
             </CardTitle>
             <CardDescription>
-              Incremental indexing of the originals root. Nothing under originals or proxies is ever
-              written.
+              Incremental indexing of the originals and finals roots. Nothing under originals,
+              proxies or finals is ever written.
             </CardDescription>
           </div>
-          <div className="flex items-center gap-1">
-            <Button size="sm" onClick={() => scan.mutate({})} disabled={!canScan || scan.isPending}>
-              {scan.isPending || current ? (
-                <LoaderCircle className="animate-spin" />
-              ) : (
-                <RefreshCw />
-              )}
-              {current ? "Scanning…" : "Scan now"}
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="icon-sm" variant="outline" aria-label="More scan options">
-                  <ChevronDown />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  disabled={!canScan || scan.isPending}
-                  onClick={() => scan.mutate({ full_rescan: true })}
-                >
-                  Full rescan (re-probe every file)
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  disabled={!current || cancel.isPending}
-                  onClick={() => current && cancel.mutate(current.id)}
-                >
-                  Cancel current scan
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => void status.refetch()}>
-                  Refresh status
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => void status.refetch()}
+            aria-label="Refresh scan status"
+          >
+            <RefreshCw />
+            Refresh
+          </Button>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -202,37 +318,27 @@ export function ScanStatusCard() {
                 <RootChip key={root.key} root={root} />
               ))}
             </div>
-            {current ? (
-              <div className="space-y-1.5 rounded-lg border border-brand/30 bg-accent/40 p-3">
-                <div className="flex items-center justify-between gap-2 text-sm">
-                  <span className="flex items-center gap-2 font-medium">
-                    <ScanStatusBadge status={current.status} />
-                    {current.status === "running"
-                      ? `Running for ${formatElapsed(current.started_at, null)}`
-                      : `Queued ${formatRelative(current.created_at)}`}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    attempt {current.attempt}/{current.max_attempts}
-                  </span>
-                </div>
-                <ScanSummary job={current} />
-              </div>
+            {!canTrigger ? (
+              <p className="text-xs text-muted-foreground">
+                Starting or cancelling scans requires the admin role.
+              </p>
             ) : null}
-            {last ? (
-              <div className="space-y-1.5 text-sm">
-                <div className="flex flex-wrap items-center gap-2">
-                  <ScanStatusBadge status={last.status} />
-                  <span className="text-muted-foreground">
-                    Last scan {formatRelative(last.finished_at ?? last.created_at)} · took{" "}
-                    {formatElapsed(last.started_at, last.finished_at)}
-                  </span>
-                </div>
-                <ScanSummary job={last} />
-                {last.error ? <p className="text-xs text-destructive">{last.error}</p> : null}
-              </div>
-            ) : !current ? (
-              <p className="text-sm text-muted-foreground">No scan has run yet.</p>
-            ) : null}
+            <div className="grid gap-3 md:grid-cols-2">
+              {byRoot.map((state) => (
+                <RootScanRow
+                  key={state.root_key}
+                  state={state}
+                  root={rootsByKey.get(state.root_key)}
+                  canTrigger={canTrigger}
+                  scanPendingFor={scan.isPending ? (scan.variables?.root_key ?? null) : null}
+                  cancelPending={cancel.isPending}
+                  onScan={(rootKey, fullRescan) =>
+                    scan.mutate({ root_key: rootKey, full_rescan: fullRescan })
+                  }
+                  onCancel={(job) => cancel.mutate(job.id)}
+                />
+              ))}
+            </div>
           </>
         )}
       </CardContent>

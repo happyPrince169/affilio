@@ -182,9 +182,18 @@ export interface ScanJob {
   error: string | null;
 }
 
-export interface ScanStatus {
+/** Scan state of one scannable root (originals, finals). */
+export interface RootScanState {
+  root_key: string;
   current: ScanJob | null;
   last_completed: ScanJob | null;
+}
+
+export interface ScanStatus {
+  /** Organization-wide view (any root); `by_root` carries the same per scannable root. */
+  current: ScanJob | null;
+  last_completed: ScanJob | null;
+  by_root: RootScanState[];
   roots: MediaRootStatus[];
   worker_hint: string;
 }

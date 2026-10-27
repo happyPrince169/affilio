@@ -33,6 +33,7 @@ from affilio.modules.media.models import (
     MediaAsset,
     MediaContentCategory,
     MediaFileVariant,
+    MediaRoot,
     MediaScanJob,
 )
 from affilio.modules.media.roots import ROOT_KEYS, SCANNABLE_KINDS, MediaRootRegistry
@@ -46,6 +47,7 @@ from affilio.modules.media.schemas import (
     MediaVariantResponse,
     Orientation,
     PaginatedAssets,
+    RootScanState,
     ScanJobResponse,
     ScanStatusResponse,
     SortKey,
@@ -271,16 +273,18 @@ def scan_status(
     session: Session, organization_id: uuid.UUID, registry: MediaRootRegistry
 ) -> ScanStatusResponse:
     roots = root_statuses(session, organization_id, registry)
-    current = session.scalar(
-        select(MediaScanJob)
-        .options(selectinload(MediaScanJob.root))
-        .where(
-            MediaScanJob.organization_id == organization_id,
-            MediaScanJob.status.in_([ScanJobStatus.QUEUED, ScanJobStatus.RUNNING]),
+    active_jobs = list(
+        session.scalars(
+            select(MediaScanJob)
+            .options(selectinload(MediaScanJob.root))
+            .where(
+                MediaScanJob.organization_id == organization_id,
+                MediaScanJob.status.in_([ScanJobStatus.QUEUED, ScanJobStatus.RUNNING]),
+            )
+            .order_by(MediaScanJob.created_at.desc())
         )
-        .order_by(MediaScanJob.created_at.desc())
     )
-    last_completed = session.scalar(
+    finished = (
         select(MediaScanJob)
         .options(selectinload(MediaScanJob.root))
         .where(
@@ -289,11 +293,32 @@ def scan_status(
                 [ScanJobStatus.SUCCEEDED, ScanJobStatus.FAILED, ScanJobStatus.CANCELLED]
             ),
         )
-        .order_by(MediaScanJob.finished_at.desc().nulls_last(), MediaScanJob.created_at.desc())
     )
+    newest_first = (MediaScanJob.finished_at.desc().nulls_last(), MediaScanJob.created_at.desc())
+    last_completed = session.scalar(finished.order_by(*newest_first))
+
+    by_root: list[RootScanState] = []
+    for root in roots:
+        if root.kind not in SCANNABLE_KINDS:
+            continue
+        current = next((job for job in active_jobs if job.root.key == root.key), None)
+        last = session.scalar(
+            finished.join(MediaScanJob.root)
+            .where(MediaRoot.key == root.key)
+            .order_by(*newest_first)
+        )
+        by_root.append(
+            RootScanState(
+                root_key=root.key,
+                current=scan_job_response(current) if current else None,
+                last_completed=scan_job_response(last) if last else None,
+            )
+        )
+    current = active_jobs[0] if active_jobs else None
     return ScanStatusResponse(
         current=scan_job_response(current) if current else None,
         last_completed=scan_job_response(last_completed) if last_completed else None,
+        by_root=by_root,
         roots=roots,
         worker_hint="Scans and thumbnails run in the background worker (pnpm dev:worker).",
     )
