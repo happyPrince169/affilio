@@ -30,7 +30,7 @@ Security findings from the review are listed in §7.
 1. DSM 7.2, Container Manager installed, SSH enabled for setup.
 2. Create the folders and ownership (uid 1026 / gid 100 by default):
    ```bash
-   sudo mkdir -p /volume1/docker/affilio/{compose,data/postgres,thumbnails,exports,backups}
+   sudo mkdir -p /volume1/docker/affilio/{data/postgres,thumbnails,exports,backups}
    sudo chown -R 1026:100 /volume1/docker/affilio
    sudo chmod -R u+rwX,g+rwX,o-rwx /volume1/docker/affilio
    ```
@@ -54,8 +54,10 @@ from commit `HEAD` of 2026-10-29). Record the tag in `.env` (`AFFILIO_API_IMAGE`
 
 ## 3. Configure `.env`
 
-Copy `infrastructure/docker/synology/.env.example` to `.env` next to the compose file and
-set, at minimum:
+The project directory on the NAS is `/volume1/docker/affilio/` (filled by `pnpm nas:sync`,
+see `nas-sync.md`); the compose directory is
+`/volume1/docker/affilio/infrastructure/docker/synology/`. Copy its `.env.example` to `.env`
+there (the sync never touches that file) and set, at minimum:
 
 | Variable | Value |
 | --- | --- |
@@ -75,7 +77,7 @@ set, at minimum:
 ## 4. First start
 
 ```bash
-cd /volume1/docker/affilio/compose
+cd /volume1/docker/affilio/infrastructure/docker/synology
 docker compose --env-file .env up -d
 docker compose --env-file .env ps                 # five services healthy
 docker compose --env-file .env logs -f api        # "applying database migrations" → 0010 → uvicorn
@@ -97,7 +99,7 @@ Checks:
 ## 5. Daily operation
 
 - Backups: DSM Task Scheduler → user-defined script, daily:
-  `POSTGRES_PASSWORD=… /volume1/docker/affilio/src/scripts/db-backup.sh /volume1/docker/affilio/backups affilio-postgres`;
+  `POSTGRES_PASSWORD=… /volume1/docker/affilio/scripts/db-backup.sh /volume1/docker/affilio/backups affilio-postgres`;
   include `backups/`, `thumbnails/` and the `.env` (key) in Hyper Backup.
 - Health: `docker compose ps`; `docker compose exec publisher python -m affilio.worker.publisher --healthcheck`.
 - Missed schedules after an outage: jobs within the grace window publish on their own;

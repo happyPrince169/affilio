@@ -139,6 +139,7 @@ also run hourly by the worker); key rotation: `uv run python -m affilio.scripts.
 | `pnpm db:seed`            | Idempotent DEV-ONLY seed (refuses outside development/test)    |
 | `pnpm dev:worker`         | Background worker: scan jobs + thumbnails                      |
 | `pnpm media:scan`         | Synchronous CLI scan (`-- --full`, `-- --thumbnails`)          |
+| `pnpm nas:watch` / `nas:sync` / `nas:dry-run` | Mirror the source tree to the NAS project folder (`/volume1/docker/affilio/`) over Tailscale SSH (`docs/deployment/nas-sync.md`); never deploys |
 | `pnpm db:backup`          | `pg_dump` from the postgres container to `./backups`           |
 
 ## Database migrations

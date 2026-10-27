@@ -2,7 +2,7 @@
   "name": "affilio",
   "version": "0.1.0",
   "private": true,
-  "description": "AFFILIO \u2014 AI-Powered Affiliate Content Operating System. Create Once. Distribute Everywhere. Optimize Everything.",
+  "description": "AFFILIO — AI-Powered Affiliate Content Operating System. Create Once. Distribute Everywhere. Optimize Everything.",
   "packageManager": "pnpm@10.34.7",
   "engines": {
     "node": ">=22",
@@ -27,7 +27,10 @@
     "dev:worker": "pnpm --filter @affilio/api worker",
     "media:scan": "pnpm --filter @affilio/api scan",
     "db:backup": "./scripts/db-backup.sh",
-    "dev:publisher": "pnpm --filter @affilio/api publisher"
+    "dev:publisher": "pnpm --filter @affilio/api publisher",
+    "nas:dry-run": "./scripts/nas-sync.sh dry-run",
+    "nas:sync": "./scripts/nas-sync.sh once",
+    "nas:watch": "./scripts/nas-sync.sh watch"
   },
   "devDependencies": {
     "@affilio/config": "workspace:*",

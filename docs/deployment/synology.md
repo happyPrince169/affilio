@@ -27,12 +27,13 @@ Check the architecture over SSH: `uname -m` → `x86_64` or `aarch64`.
 Create the AFFILIO-owned folders. Example for volume 1:
 
 ```
-/volume1/docker/affilio/
-├── compose/           docker-compose.yml + .env   (this repo's infrastructure/docker/synology)
-├── data/postgres/     PostgreSQL data directory
-├── thumbnails/        generated thumbnails (read-write)
-├── exports/           future publish-ready exports (read-write)
-└── backups/           pg_dump files
+/volume1/docker/affilio/           the project directory: the source tree synced from the laptop
+├── apps/, packages/, infrastructure/, docs/, scripts/, …   (pnpm nas:watch, docs/deployment/nas-sync.md)
+├── infrastructure/docker/synology/   docker-compose.yml + .env (the compose directory)
+├── data/postgres/     PostgreSQL data directory          (runtime, never synced or deleted)
+├── thumbnails/        generated thumbnails (read-write)  (runtime)
+├── exports/           future publish-ready exports       (runtime)
+└── backups/           pg_dump files                      (runtime)
 ```
 
 Existing media stays where it is, for example:
@@ -60,7 +61,7 @@ account and the `users` group). That identity must be able to:
 Set ownership over SSH once:
 
 ```bash
-sudo mkdir -p /volume1/docker/affilio/{compose,data/postgres,thumbnails,exports,backups}
+sudo mkdir -p /volume1/docker/affilio/{data/postgres,thumbnails,exports,backups}
 sudo chown -R 1026:100 /volume1/docker/affilio
 sudo chmod -R u+rwX,g+rwX,o-rwx /volume1/docker/affilio
 ```
@@ -79,11 +80,12 @@ Two images, built from this repository:
 | `affilio-api` | `apps/api/Dockerfile` | Python 3.12, FastAPI, Alembic, **ffmpeg/ffprobe**, worker. Non-root. |
 | `affilio-web` | `apps/web/Dockerfile` | Next.js standalone server. Non-root. |
 
-**Option A — build on the NAS** (x86_64, slower but no registry):
+**Option A — build on the NAS** (x86_64, slower but no registry). The source arrives in
+`/volume1/docker/affilio/` through `pnpm nas:sync` (or a `git clone` into that folder):
 
 ```bash
 ssh admin@nas
-git clone <repo> /volume1/docker/affilio/src && cd /volume1/docker/affilio/src
+cd /volume1/docker/affilio
 cp infrastructure/docker/synology/.env.example infrastructure/docker/synology/.env
 # edit .env (paths, secrets)
 docker compose -f infrastructure/docker/synology/docker-compose.yml \
@@ -103,7 +105,9 @@ container only, which proxies `/api/*` to the API over the internal network.
 
 ## 4. Configuration (`.env`)
 
-Copy `infrastructure/docker/synology/.env.example` to `.env` **next to the compose file** and set:
+Copy `infrastructure/docker/synology/.env.example` to `.env` **next to the compose file**
+(`/volume1/docker/affilio/infrastructure/docker/synology/.env`, never synced or overwritten by
+`nas-sync`) and set:
 
 | Variable | Meaning |
 | --- | --- |
@@ -133,7 +137,7 @@ roots and relative paths, never host paths, so moving a share only requires a `.
 ## 5. First start
 
 ```bash
-cd /volume1/docker/affilio/src/infrastructure/docker/synology
+cd /volume1/docker/affilio/infrastructure/docker/synology
 docker compose --env-file .env up -d
 docker compose --env-file .env ps          # all four "healthy"
 docker compose --env-file .env logs -f api # "applying database migrations" then uvicorn
@@ -198,7 +202,7 @@ credential vault key in `.env`: dumps contain only ciphertext, so keep a copy of
 
 ```bash
 # Logical dump (compressed, custom format), keeps the last 14 files
-POSTGRES_PASSWORD=... ./scripts/db-backup.sh /volume1/docker/affilio/backups affilio-postgres
+POSTGRES_PASSWORD=... /volume1/docker/affilio/scripts/db-backup.sh /volume1/docker/affilio/backups affilio-postgres
 ```
 
 Schedule it with DSM **Task Scheduler → User-defined script** (daily, as root or the AFFILIO

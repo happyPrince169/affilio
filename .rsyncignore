@@ -1,0 +1,105 @@
+# AFFILIO → NAS source sync exclusions (rsync filter syntax; first matching rule wins).
+# Goal: ship everything needed to build the images and run compose on the NAS, nothing that
+# is generated, local-only, secret, or runtime data. Review when the repo layout changes.
+
+# --- always ship the web app's static assets, whatever their extension ---
++ /apps/web/public/
++ /apps/web/public/**
+
+# --- version control and editor/agent state ---
+.git/
+.gitattributes.local
+.claude/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Node / pnpm / Turborepo / Next.js (rebuilt on the NAS by docker compose build) ---
+node_modules/
+.pnpm-store/
+.turbo/
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# --- Python (uv recreates the environment inside the image) ---
+.venv/
+venv/
+.uv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+htmlcov/
+.coverage
+coverage.xml
+coverage/
+
+# --- environment files and secrets: only the committed examples travel ---
++ .env.example
+- .env
+- .env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+secrets/
+credentials/
+id_ed25519*
+id_rsa*
+*.secret
+docker-compose.override.yml
+
+# --- logs and temporary files ---
+logs/
+*.log
+tmp/
+temp/
+*.tmp
+*.part
+*.orig
+*.rej
+
+# --- databases, dumps, Docker volumes, backups (root-anchored: the NAS keeps data/, backups/
+#     etc. next to the source in /volume1/docker/affilio/) ---
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.sql.gz
+/backups/
+/data/
+postgres-data/
+postgres_data/
+/infrastructure/docker/data/
+redis-data/
+
+# --- runtime uploads, thumbnails, exports, media (never source; ContentFactory stays on the NAS) ---
+/var/
+/uploads/
+/thumbnails/
+/exports/
+/media/
+*.mp4
+*.mov
+*.m4v
+*.mkv
+*.avi
+*.mts
+*.m2ts
+*.webm
+*.mxf
+*.3gp
+*.wav
+*.mp3
