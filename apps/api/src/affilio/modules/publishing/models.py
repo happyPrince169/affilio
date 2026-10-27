@@ -217,6 +217,11 @@ class PublicationJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # reclassified (M3A.1 hardening). Cleared implicitly by a new approval.
     revalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revalidated_by_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Set when a SCHEDULED job was missed beyond the overdue grace window (M3B.2A restart
+    # policy): it waits for an operator's explicit release. Cleared by release/reschedule.
+    overdue_review_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

@@ -460,6 +460,11 @@ class PublicationSummary(PubModel):
     revalidation_required: bool = False
     revalidated_at: datetime | None = None
     revalidated_by_label: str | None = None
+    # Overdue schedule policy (M3B.2A): minutes past the scheduled time while still SCHEDULED,
+    # and whether an operator must release it explicitly (missed beyond the grace window).
+    overdue_minutes: int | None = None
+    overdue_review_required: bool = False
+    overdue_review_at: datetime | None = None
     link_count: int
     attempt_count: int
     last_error: str | None

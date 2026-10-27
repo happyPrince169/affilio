@@ -41,6 +41,7 @@ import {
 import { toLocalInputValue, zonedInputToIso } from "@/lib/format";
 
 const SIMPLE_LABEL: Record<SimpleAction, string> = {
+  release: "Release now",
   submit: "Submit for review",
   return_to_draft: "Return to draft",
   approve: "Approve",

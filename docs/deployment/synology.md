@@ -245,8 +245,8 @@ revision for each version.
   after creating the organization with the seed (development) or a migration-time insert;
   the development seed must not be used in production (`APP_ENV=production` refuses it).
 - Keep the port LAN-only regardless (DSM Firewall: allow the LAN subnet, deny everything else).
-  There is no login rate limiting yet; do not expose the UI through QuickConnect or a port
-  forward. If you terminate TLS on the DSM reverse proxy, leave `SESSION_COOKIE_SECURE` unset;
+  Login rate limiting exists (pre-M3B hardening) but the UI still must not be exposed
+  through QuickConnect or a port forward without TLS in front. If you terminate TLS on the DSM reverse proxy, leave `SESSION_COOKIE_SECURE` unset;
   on plain HTTP set it to `false` or logins will not stick.
 - The service token (`MEDIA_ADMIN_TOKEN`) is only for CLI/cron calls against the API
   container; the web container no longer receives it.

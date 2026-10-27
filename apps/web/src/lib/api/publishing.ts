@@ -96,6 +96,7 @@ export type SimpleAction =
   | "approve"
   | "revoke_approval"
   | "unschedule"
+  | "release"
   | "start"
   | "retry"
   | "revise"

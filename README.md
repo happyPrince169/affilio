@@ -117,6 +117,8 @@ setup set `WEB_BASE_URL=http://localhost:3000` so the OAuth callback returns to 
 `uv run python -m affilio.worker.publisher`) runs the publisher worker that drives API
 attempts for connected Pages; in mock mode it simulates the whole lifecycle. Live publishing
 stays off (`META_LIVE_PUBLISHING_ENABLED=false`) until the activation checklist is done.
+Schedules missed while the stack was down follow `PUBLISHER_OVERDUE_GRACE_MINUTES` /
+`PUBLISHER_OVERDUE_POLICY` (older than the grace window → operator review in the queue).
 Maintenance: `uv run python -m affilio.scripts.maintenance` (session and OAuth-attempt purge,
 also run hourly by the worker); key rotation: `uv run python -m affilio.scripts.rotate_credential_keys`.
 

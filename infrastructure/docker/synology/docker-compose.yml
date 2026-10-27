@@ -41,6 +41,8 @@ x-api-env: &api-env
   CREDENTIAL_ENCRYPTION_ACTIVE_KEY_ID: ${CREDENTIAL_ENCRYPTION_ACTIVE_KEY_ID:-}
   SESSION_RETENTION_DAYS: ${SESSION_RETENTION_DAYS:-30}
   OAUTH_STATE_RETENTION_HOURS: ${OAUTH_STATE_RETENTION_HOURS:-24}
+  PUBLISHER_OVERDUE_GRACE_MINUTES: ${PUBLISHER_OVERDUE_GRACE_MINUTES:-120}
+  PUBLISHER_OVERDUE_POLICY: ${PUBLISHER_OVERDUE_POLICY:-review}
   # Reels publishing engine (M3B.2A). Live publishing stays off until activation.
   META_LIVE_PUBLISHING_ENABLED: ${META_LIVE_PUBLISHING_ENABLED:-false}
   PUBLISHER_MAX_CONCURRENT_UPLOADS: ${PUBLISHER_MAX_CONCURRENT_UPLOADS:-1}
@@ -208,8 +210,8 @@ services:
       # never holds the service token (M3A).
       API_INTERNAL_URL: http://api:8000
     ports:
-      # LAN only. Bind to the NAS LAN IP (AFFILIO_BIND_ADDRESS). Authentication exists since
-      # M3A but there is no login rate limiting yet: keep it off the internet.
+      # LAN only. Bind to the NAS LAN IP (AFFILIO_BIND_ADDRESS). Authentication and login
+      # rate limiting exist, but keep it off the internet until TLS terminates in front.
       - "${AFFILIO_BIND_ADDRESS:-0.0.0.0}:${AFFILIO_WEB_PORT:-3080}:3000"
     depends_on:
       api:

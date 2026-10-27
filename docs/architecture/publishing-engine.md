@@ -121,6 +121,24 @@ mode (and vice versa), blocked targets and held Pages are never dispatched; assi
 stay in `READY_TO_PUBLISH` for the operator. A job that leaves `PUBLISHING` while an upload is
 live is abandoned on the next worker pass and its publish request is never sent.
 
+### 5.1 Missed schedules (restart / downtime policy)
+
+`release_due` compares each due job's lateness with `PUBLISHER_OVERDUE_GRACE_MINUTES`
+(default 120). Within the grace window the job is released after the usual revalidation and
+the lateness is recorded on the `publication.release` audit event. Beyond it:
+
+- policy `review` (default): the job stays `SCHEDULED`, `overdue_review_at` is set once and
+  `publication.release_held` (`reason = overdue_beyond_grace`, lateness, grace) is audited
+  once; the queue shows "overdue · operator review" and the detail page offers **Release
+  now** (`POST /publishing/publications/{id}/release`, editor), which re-runs the eligibility
+  checks and audits `publication.release` with `overdue_override = true`. Rescheduling or
+  unscheduling clears the flag.
+- policy `publish`: the job is released like any due job and the release is audited with
+  `reason = overdue_published_by_policy`.
+
+The policy runs on every publisher pass, so a restarted or long-stopped stack applies it to
+everything that accumulated while it was down (`test_overdue_policy.py`).
+
 ## 6. Exactly-once? No — at-least-once with duplicate guards
 
 Execution is at-least-once: a step can run twice if a worker dies after the provider call and

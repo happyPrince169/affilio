@@ -329,6 +329,15 @@ def _summary_fields(job: PublicationJob, *, thumbnail_url_prefix: str) -> dict[s
         "revalidation_required": stale or blocked_reason is not None,
         "revalidated_at": job.revalidated_at,
         "revalidated_by_label": job.revalidated_by_label,
+        "overdue_minutes": (
+            int((_now() - job.scheduled_at).total_seconds() // 60)
+            if job.status == PublicationStatus.SCHEDULED
+            and job.scheduled_at is not None
+            and job.scheduled_at < _now()
+            else None
+        ),
+        "overdue_review_required": job.overdue_review_at is not None,
+        "overdue_review_at": job.overdue_review_at,
         "link_count": len(job.links),
         "attempt_count": len(job.attempts),
         "last_error": job.last_error,
@@ -1337,6 +1346,7 @@ def schedule(
 ) -> PublicationJob:
     job = _lock_job(session, organization_id, job_id, expected_version=data.version)
     lifecycle.assert_transition("schedule", job.status)
+    job.overdue_review_at = None
     if (
         job.approved_snapshot is None
         or job.approved_snapshot.content_version != job.content_version
@@ -1394,6 +1404,7 @@ def unschedule(
 ) -> PublicationJob:
     job = _lock_job(session, organization_id, job_id, expected_version=version)
     lifecycle.assert_transition("unschedule", job.status)
+    job.overdue_review_at = None
     job.scheduled_at = None
     return _transition(
         session, organization_id, job, action="unschedule", identity=identity, note=note
@@ -1403,14 +1414,25 @@ def unschedule(
 def release_due(
     session: Session, organization_id: uuid.UUID, *, identity: Identity | None
 ) -> list[uuid.UUID]:
-    """Move SCHEDULED jobs whose time has come to READY_TO_PUBLISH. No publishing happens."""
+    """Move SCHEDULED jobs whose time has come to READY_TO_PUBLISH. No publishing happens.
+
+    Overdue policy (M3B.2A): a job missed by more than `PUBLISHER_OVERDUE_GRACE_MINUTES`
+    (downtime, stopped worker) is not released blindly. With policy `review` it is flagged
+    once (`overdue_review_at`, audit `publication.release_held` reason
+    `overdue_beyond_grace`) and waits for an operator's `release`; with policy `publish` it is
+    released like any due job and the lateness is audited. Routing/classification checks
+    apply to every release.
+    """
+    settings = get_settings()
+    now = _now()
+    grace = timedelta(minutes=settings.publisher_overdue_grace_minutes)
     due = list(
         session.scalars(
             select(PublicationJob)
             .where(
                 PublicationJob.organization_id == organization_id,
                 PublicationJob.status == PublicationStatus.SCHEDULED,
-                PublicationJob.scheduled_at <= _now(),
+                PublicationJob.scheduled_at <= now,
             )
             .with_for_update(skip_locked=True)
         )
@@ -1418,6 +1440,27 @@ def release_due(
     released: list[uuid.UUID] = []
     tree = taxonomy_service.load_tree(session, organization_id)
     for job in due:
+        lateness = now - (job.scheduled_at or now)
+        late_minutes = int(lateness.total_seconds() // 60)
+        if lateness > grace and settings.publisher_overdue_policy == "review":
+            if job.overdue_review_at is None:
+                job.overdue_review_at = now
+                _bump(job)
+                record_audit(
+                    session,
+                    organization_id=organization_id,
+                    identity=identity,
+                    action="publication.release_held",
+                    entity_type="publication_job",
+                    entity_id=job.id,
+                    data={
+                        "reason": "overdue_beyond_grace",
+                        "lateness_minutes": late_minutes,
+                        "grace_minutes": settings.publisher_overdue_grace_minutes,
+                        "status": job.status.value,
+                    },
+                )
+            continue
         # Re-check routing eligibility and classification before any automated step.
         full = get_job(session, organization_id, job.id)
         reason = _blocked_reason(full, tree)
@@ -1436,7 +1479,13 @@ def release_due(
             )
             continue
         _set_status(job, PublicationStatus.READY_TO_PUBLISH)
+        job.overdue_review_at = None
         _bump(job)
+        extra: dict[str, Any] = {"from_status": "scheduled", "to_status": "ready_to_publish"}
+        if late_minutes > 0:
+            extra["lateness_minutes"] = late_minutes
+        if lateness > grace:
+            extra["reason"] = "overdue_published_by_policy"
         record_audit(
             session,
             organization_id=organization_id,
@@ -1444,11 +1493,48 @@ def release_due(
             action="publication.release",
             entity_type="publication_job",
             entity_id=job.id,
-            data={"from_status": "scheduled", "to_status": "ready_to_publish"},
+            data=extra,
         )
         released.append(job.id)
     session.flush()
     return released
+
+
+def release_one(
+    session: Session,
+    organization_id: uuid.UUID,
+    job_id: uuid.UUID,
+    *,
+    version: int,
+    note: str | None,
+    identity: Identity,
+) -> PublicationJob:
+    """Operator decision for one due SCHEDULED job (typically an overdue one): release it to
+    READY_TO_PUBLISH after the same eligibility checks, bypassing the grace policy."""
+    job = _lock_job(session, organization_id, job_id, expected_version=version)
+    lifecycle.assert_transition("release", job.status)
+    if job.scheduled_at is None or job.scheduled_at > _now():
+        raise InvalidPublicationTransitionError(
+            "This publication is not due yet; it will be released at its scheduled time"
+        )
+    if (
+        job.approved_snapshot is None
+        or job.approved_snapshot.content_version != job.content_version
+    ):
+        raise InvalidPublicationTransitionError("Release requires a current approved snapshot")
+    assert_publishable_target(session, job, step="release")
+    lateness = int((_now() - job.scheduled_at).total_seconds() // 60)
+    overdue = job.overdue_review_at is not None
+    job.overdue_review_at = None
+    return _transition(
+        session,
+        organization_id,
+        job,
+        action="release",
+        identity=identity,
+        note=note,
+        extra={"lateness_minutes": lateness, "overdue_override": overdue},
+    )
 
 
 def start(

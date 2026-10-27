@@ -29,7 +29,10 @@ const GROUPS: { status: PublicationStatus; hint: string }[] = [
     status: "needs_reconciliation",
     hint: "Outcome uncertain. An admin checks with the provider (never re-sends) or reconciles manually.",
   },
-  { status: "scheduled", hint: "Waiting for their time. Release moves due items up." },
+  {
+    status: "scheduled",
+    hint: 'Waiting for their time. Missed schedules beyond the grace window show "operator review" and need an explicit release.',
+  },
   { status: "approved", hint: "Approved, not yet scheduled." },
   { status: "failed", hint: "Failed attempts. Retry explicitly or revise the content." },
 ];

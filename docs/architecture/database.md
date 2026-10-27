@@ -321,6 +321,13 @@ publisher_workers   id, worker_id UNIQUE, hostname, pid, version, max_concurrenc
 social_accounts    += publish_hold_until, publish_hold_reason (rate limit / quota holds)
 ```
 
+## Overdue schedule policy (migration `0010_overdue_review`)
+
+```
+publication_jobs += overdue_review_at (set when a SCHEDULED job was missed beyond the grace
+                    window and waits for an operator's release; cleared by release/reschedule)
+```
+
 ## Growth plan (not implemented)
 
 | Milestone | Tables (indicative)                                                              |

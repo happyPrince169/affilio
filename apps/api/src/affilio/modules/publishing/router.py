@@ -625,6 +625,31 @@ def start_publication(
 
 
 @router.post(
+    "/publications/{job_id}/release",
+    response_model=PublicationDetail,
+    summary="Release one due SCHEDULED job now (editor); the operator decision for overdue jobs",
+)
+def release_publication(
+    job_id: uuid.UUID,
+    body: VersionedRequest,
+    identity: RequireEditor,
+    session: DbSession,
+    request: Request,
+    settings: SettingsDep,
+) -> PublicationDetail:
+    job = service.release_one(
+        session,
+        identity.organization.id,
+        job_id,
+        version=body.version,
+        note=body.note,
+        identity=identity,
+    )
+    session.commit()
+    return _detail(session, identity, request, settings.api_v1_prefix, job)
+
+
+@router.post(
     "/publications/{job_id}/retry",
     response_model=PublicationDetail,
     summary="FAILED → READY_TO_PUBLISH, explicit operator retry (editor)",

@@ -320,6 +320,10 @@ export interface PublicationSummary {
   status_changed_at: string;
   created_at: string;
   updated_at: string;
+  // --- overdue schedule policy (M3B.2A) ---
+  overdue_minutes: number | null;
+  overdue_review_required: boolean;
+  overdue_review_at: string | null;
   // --- publishing engine (M3B.2A) ---
   publish_mode: "api" | "assisted";
   api_eligibility_reason: string | null;

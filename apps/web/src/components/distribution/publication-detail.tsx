@@ -412,6 +412,12 @@ function ActionBar({ job }: { job: PublicationDetail }) {
   if (allowed.has("return_to_draft"))
     buttons.push(<SimpleActionButton key="rtd" job={job} action="return_to_draft" />);
   if (allowed.has("schedule")) buttons.push(<ScheduleDialog key="schedule" job={job} />);
+  if (allowed.has("release") && job.overdue_minutes !== null)
+    buttons.push(
+      <SimpleActionButton key="release" job={job} action="release" variant="default">
+        {job.overdue_review_required ? "Release now (overdue review)" : "Release now"}
+      </SimpleActionButton>,
+    );
   if (allowed.has("unschedule"))
     buttons.push(<SimpleActionButton key="unschedule" job={job} action="unschedule" />);
   if (allowed.has("revoke_approval"))
@@ -503,6 +509,17 @@ export function PublicationDetailRoute() {
             The approved snapshot is untouched and still points at the file path it was approved
             with. Publishing steps are refused until an admin either revalidates the approval
             (“Revalidate approval”) or revokes it.
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      {job.overdue_review_required ? (
+        <Alert variant="destructive">
+          <TriangleAlert />
+          <AlertTitle>Missed schedule needs your decision</AlertTitle>
+          <AlertDescription>
+            This publication was due {job.overdue_minutes} minutes ago, beyond the grace window, so
+            the publisher did not release it automatically. Release it now, reschedule it, or cancel
+            it. The decision is recorded in the audit trail.
           </AlertDescription>
         </Alert>
       ) : null}

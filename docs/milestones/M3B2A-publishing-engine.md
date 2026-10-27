@@ -28,6 +28,14 @@ post id. Worker restart mid-upload resumes; an ambiguous finish parks the job un
 with provider" confirms it without re-sending. No Facebook post is created (mock only; live
 Pages are refused by eligibility).
 
+## Follow-up (2026-10-29): overdue schedule policy
+
+Migration 0010 adds `publication_jobs.overdue_review_at`; `PUBLISHER_OVERDUE_GRACE_MINUTES`
+and `PUBLISHER_OVERDUE_POLICY` (`review` | `publish`) decide what happens to schedules missed
+during downtime; `POST /publishing/publications/{id}/release` is the operator decision;
+`test_overdue_policy.py` covers grace, review, publish policy, RBAC and a NAS-downtime
+restart scenario. Deployment runbook: `docs/deployment/synology-runbook.md`.
+
 ## Known limitations
 
 - Mock fault scripting is process-local (API vs publisher containers).

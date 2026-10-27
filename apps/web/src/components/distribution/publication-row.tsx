@@ -47,6 +47,15 @@ export function PublicationRow({
               <TriangleAlert className="size-3" /> video category changed
             </span>
           ) : null}
+          {item.overdue_review_required ? (
+            <span className="inline-flex items-center gap-1 text-[11px] text-destructive">
+              <TriangleAlert className="size-3" /> overdue · operator review
+            </span>
+          ) : item.overdue_minutes ? (
+            <span className="inline-flex items-center gap-1 text-[11px] text-warning">
+              <Clock3 className="size-3" /> {item.overdue_minutes} min late
+            </span>
+          ) : null}
           {item.target_blocked_reason ? (
             <span className="inline-flex items-center gap-1 text-[11px] text-destructive">
               <TriangleAlert className="size-3" /> target blocked

@@ -182,6 +182,11 @@ class Settings(BaseSettings):
     publisher_status_poll_seconds: float = 15.0
     publisher_publish_timeout_minutes: int = 30
     publisher_rate_limit_hold_minutes: int = 60
+    # Scheduled jobs missed during downtime (restart policy): within the grace window they are
+    # released after the usual revalidation; beyond it `review` flags them for an operator
+    # (per-job "Release now"), `publish` releases them anyway. Every decision is audited.
+    publisher_overdue_grace_minutes: int = 120
+    publisher_overdue_policy: Literal["review", "publish"] = "review"
     publisher_heartbeat_path: Path = Path("/tmp/affilio-publisher-heartbeat")  # noqa: S108
     # Media acceptance for Reels (feasibility B3); the engine never transcodes.
     reels_min_duration_seconds: float = 3.0
