@@ -106,6 +106,27 @@ class ScanTrigger(StrEnum):
     SCHEDULED = "scheduled"
 
 
+class ExportJobStatus(StrEnum):
+    """Publish-ready export job (E1). `blocked` = needs a human policy decision (HDR source)."""
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    READY = "ready"
+    SKIPPED = "skipped"  # the source already satisfies the publishing profile
+    BLOCKED = (
+        "blocked"  # HDR / PQ / HLG source: tone-mapping policy not decided (no silent convert)
+    )
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class ExportTrigger(StrEnum):
+    MANUAL = "manual"
+    CLI = "cli"
+    APPROVAL = "approval"  # reserved for E3; nothing enqueues on approval in E1
+    PUBLISH = "publish"  # reserved for E2/E3
+
+
 class ProductStatus(StrEnum):
     """Product research lifecycle. WINNER is only ever set by an explicit human confirmation."""
 

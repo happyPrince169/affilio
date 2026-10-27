@@ -46,6 +46,29 @@ class ScanNotCancellableError(AppError):
     code = "scan_not_cancellable"
 
 
+class ExportNotEligibleError(AppError):
+    """Only active final videos with a present file can be exported (E1)."""
+
+    status_code = status.HTTP_409_CONFLICT
+    code = "export_not_eligible"
+
+
+class ExportAlreadyActiveError(AppError):
+    status_code = status.HTTP_409_CONFLICT
+    code = "export_already_active"
+
+
+class ExportNotCancellableError(AppError):
+    status_code = status.HTTP_409_CONFLICT
+    code = "export_not_cancellable"
+
+
+class ExportAbortedError(Exception):
+    """Raised inside the export worker when the job no longer belongs to this run (cancelled,
+    recovered by the watchdog or re-claimed). ffmpeg is killed, temp output removed, nothing
+    is written after it."""
+
+
 class InvalidFolderPathError(AppError):
     """Folder rule path is unsafe or malformed (M3A.1)."""
 

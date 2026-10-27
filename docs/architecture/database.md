@@ -328,6 +328,27 @@ publication_jobs += overdue_review_at (set when a SCHEDULED job was missed beyon
                     window and waits for an operator's release; cleared by release/reschedule)
 ```
 
+## Publish-ready exports (migration `0011_media_exports`)
+
+Export pipeline E1 (ADR 0010, `docs/architecture/media-exports.md`).
+
+- `media_file_variants` gains provenance for derived files: `derived_from_variant_id`
+  (self FK, SET NULL), `recipe_key`, `source_fingerprint`, `source_file_size`,
+  `source_modified_at`, and the partial unique index `uq_media_file_variants_asset_export_recipe`
+  on `(asset_id, recipe_key) WHERE kind = 'export'` (one export per asset and recipe).
+- `media_export_jobs` — the export worker's queue and audit trail: `organization_id`,
+  `media_asset_id`, `source_variant_id`, `output_variant_id` (SET NULL), `status`
+  (queued | running | ready | skipped | blocked | failed | cancelled, CHECK), `trigger`
+  (manual | cli | approval | publish, CHECK), `recipe_key`, `recipe` JSONB (ffmpeg version and
+  placeholder arguments), the source identity captured at run time, `attempt`, `max_attempts`,
+  `next_attempt_at`, `started_at`, `finished_at`, `heartbeat_at`, `worker_id`, `requested_by`,
+  `error_code`, redacted `error`, `stats` JSONB. Indexes on `(organization_id, created_at)`,
+  `(status, next_attempt_at)`, `media_asset_id`, plus the partial unique
+  `uq_media_export_jobs_active_asset_recipe` on `(media_asset_id, recipe_key)` for queued or
+  running jobs.
+- Downgrade drops the table, the export variant rows (they would dangle without provenance)
+  and the five columns.
+
 ## Growth plan (not implemented)
 
 | Milestone | Tables (indicative)                                                              |

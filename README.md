@@ -22,14 +22,14 @@ content-to-commission workflow before any other platform is added.
 
 Modular monolith, one repository, three runtimes:
 
-| Area      | Path                    | Stack                                                                      |
-| --------- | ----------------------- | -------------------------------------------------------------------------- |
-| Web       | `apps/web`              | Next.js 16 (App Router), React 19, TypeScript, Tailwind 4, shadcn/ui, TanStack Query |
-| API       | `apps/api`              | Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2, Alembic, structlog, pytest |
-| Worker    | `apps/api` (`affilio.worker`) | Same image as the API; scans media and renders thumbnails (ffmpeg)    |
-| Database  | `docker-compose.yml`    | PostgreSQL 17 (container)                                                  |
-| Shared    | `packages/shared-types` | TypeScript contracts mirroring API schemas                                 |
-| Tooling   | `packages/config`       | Shared Prettier and tsconfig bases                                         |
+| Area     | Path                              | Stack                                                                                |
+| -------- | --------------------------------- | ------------------------------------------------------------------------------------ |
+| Web      | `apps/web`                      | Next.js 16 (App Router), React 19, TypeScript, Tailwind 4, shadcn/ui, TanStack Query |
+| API      | `apps/api`                      | Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2, Alembic, structlog, pytest          |
+| Worker   | `apps/api` (`affilio.worker`) | Same image as the API; scans media and renders thumbnails (ffmpeg)                   |
+| Database | `docker-compose.yml`            | PostgreSQL 17 (container)                                                            |
+| Shared   | `packages/shared-types`         | TypeScript contracts mirroring API schemas                                           |
+| Tooling  | `packages/config`               | Shared Prettier and tsconfig bases                                                   |
 
 - `pnpm` workspaces + Turborepo orchestrate JavaScript packages and task running.
 - The Python API manages its own dependencies with **uv** (`apps/api/pyproject.toml`,
@@ -40,13 +40,13 @@ Modular monolith, one repository, three runtimes:
 
 ## Prerequisites
 
-| Tool            | Version              | Notes                                                        |
-| --------------- | -------------------- | ------------------------------------------------------------ |
-| Node.js         | ≥ 22                 | tested with 24                                               |
-| pnpm            | 10.x                 | `corepack enable` or `npm i -g pnpm@10`                      |
-| uv              | ≥ 0.8                | installs Python 3.12 automatically if missing                |
-| Docker + Compose v2 | any recent        | PostgreSQL locally; the whole stack on the NAS               |
-| ffmpeg          | ≥ 4.2                | `ffprobe`/`ffmpeg` on PATH for the media library and its tests (`apt install ffmpeg`) |
+| Tool                | Version    | Notes                                                                                       |
+| ------------------- | ---------- | ------------------------------------------------------------------------------------------- |
+| Node.js             | ≥ 22      | tested with 24                                                                              |
+| pnpm                | 10.x       | `corepack enable` or `npm i -g pnpm@10`                                                 |
+| uv                  | ≥ 0.8     | installs Python 3.12 automatically if missing                                               |
+| Docker + Compose v2 | any recent | PostgreSQL locally; the whole stack on the NAS                                              |
+| ffmpeg              | ≥ 4.2     | `ffprobe`/`ffmpeg` on PATH for the media library and its tests (`apt install ffmpeg`) |
 
 ## Quick start
 
@@ -128,25 +128,27 @@ also run hourly by the worker); key rotation: `uv run python -m affilio.scripts.
 
 ## Everyday commands
 
-| Command                   | What it does                                                   |
-| ------------------------- | -------------------------------------------------------------- |
-| `pnpm dev`                | Run web + API with hot reload                                  |
-| `pnpm lint`               | ESLint (web, shared-types) + Ruff (api)                        |
-| `pnpm typecheck`          | `tsc --noEmit` for TS packages, import smoke for api           |
-| `pnpm test`               | pytest (api). Set `TEST_DATABASE_URL` for DB-backed tests      |
-| `pnpm build`              | Next.js production build                                       |
-| `pnpm check`              | lint + typecheck + test + build, all packages                  |
-| `pnpm format`             | Prettier (JS/TS/JSON/CSS). Python: `pnpm --filter @affilio/api format` |
-| `pnpm db:up` / `db:down`  | Start / stop PostgreSQL                                        |
-| `pnpm db:reset`           | Destroy the volume and start fresh (re-runs init scripts)      |
-| `pnpm db:migrate`         | `alembic upgrade head`                                         |
-| `pnpm db:seed`            | Idempotent DEV-ONLY seed (refuses outside development/test)    |
-| `pnpm dev:worker`         | Background worker: scan jobs + thumbnails                      |
-| `pnpm media:scan`         | Synchronous CLI scan (`-- --full`, `-- --thumbnails`)          |
-| `pnpm nas:sync` / `nas:dry-run` | Copy the source tree to the NAS project folder (`/volume1/docker/affilio/`) over Tailscale SSH; never builds or restarts anything |
-| `pnpm nas:tunnel` | Operate the AFFILIO Cloudflare Tunnel connector on the NAS (`config` / `up` / `status` / `logs` / `restart` / `down`) |
+| Command                              | What it does                                                                                                                                            |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm dev`                         | Run web + API with hot reload                                                                                                                           |
+| `pnpm lint`                        | ESLint (web, shared-types) + Ruff (api)                                                                                                                 |
+| `pnpm typecheck`                   | `tsc --noEmit` for TS packages, import smoke for api                                                                                                  |
+| `pnpm test`                        | pytest (api). Set `TEST_DATABASE_URL` for DB-backed tests                                                                                             |
+| `pnpm build`                       | Next.js production build                                                                                                                                |
+| `pnpm check`                       | lint + typecheck + test + build, all packages                                                                                                           |
+| `pnpm format`                      | Prettier (JS/TS/JSON/CSS). Python: `pnpm --filter @affilio/api format`                                                                                |
+| `pnpm db:up` / `db:down`         | Start / stop PostgreSQL                                                                                                                                 |
+| `pnpm db:reset`                    | Destroy the volume and start fresh (re-runs init scripts)                                                                                               |
+| `pnpm db:migrate`                  | `alembic upgrade head`                                                                                                                                |
+| `pnpm db:seed`                     | Idempotent DEV-ONLY seed (refuses outside development/test)                                                                                             |
+| `pnpm dev:exporter`                | Publish-ready export worker (E1): one ffmpeg at a time, `--once` for a single job                                                                       |
+| `pnpm media:export -- queue --asset <id>` | Queue one export (`status`, `cancel`; `--run` renders now, refused in production without `--allow-production`)                                |
+| `pnpm dev:worker`                  | Background worker: scan jobs + thumbnails                                                                                                               |
+| `pnpm media:scan`                  | Synchronous CLI scan (`-- --full`, `-- --thumbnails`)                                                                                               |
+| `pnpm nas:sync` / `nas:dry-run`  | Copy the source tree to the NAS project folder (`/volume1/docker/affilio/`) over Tailscale SSH; never builds or restarts anything                     |
+| `pnpm nas:tunnel`                  | Operate the AFFILIO Cloudflare Tunnel connector on the NAS (`config` / `up` / `status` / `logs` / `restart` / `down`)                       |
 | `pnpm nas:deploy` / `nas:status` | Deploy the source already on the NAS (`check` / `deploy` / `rollback`), or read its status; independent of sync (`docs/deployment/nas-sync.md`) |
-| `pnpm db:backup`          | `pg_dump` from the postgres container to `./backups`           |
+| `pnpm db:backup`                   | `pg_dump` from the postgres container to `./backups`                                                                                                |
 
 ## Database migrations
 
@@ -187,41 +189,41 @@ migration upgrade/downgrade/upgrade cycle, the seed twice, pytest, and a live he
 
 ## API endpoints
 
-| Method | Path                                   | Purpose                                                   |
-| ------ | -------------------------------------- | --------------------------------------------------------- |
-| GET    | `/health`                              | Liveness (unversioned, hidden from OpenAPI)               |
-| GET    | `/api/v1/health`                       | Liveness, versioned                                       |
-| GET    | `/api/v1/system/info`                  | Version, environment, Python, DB readiness, modules       |
-| GET    | `/api/v1/media/roots`                  | Logical roots: configured / readable / writable           |
-| GET    | `/api/v1/media/stats`                  | Library counters                                          |
-| GET    | `/api/v1/media/assets`                 | List + search + filter + paginate                         |
-| GET    | `/api/v1/media/assets/{id}`            | Detail with every file variant                            |
-| GET    | `/api/v1/media/assets/{id}/thumbnail`  | JPEG thumbnail                                            |
-| GET    | `/api/v1/media/scans/status`           | Current + last scan, root availability                    |
-| GET    | `/api/v1/media/scans`, `/scans/{id}`   | Scan history and detail                                   |
-| POST   | `/api/v1/media/scans`                  | Queue a scan — **admin** role or service token            |
-| GET/POST | `/api/v1/products`                   | Product catalog list/search and creation (**editor** for writes) |
-| GET/PATCH | `/api/v1/products/{id}`             | Product detail and edit                                   |
-| POST   | `/api/v1/products/{id}/status`         | Audited lifecycle change; WINNER needs confirmation        |
-| GET/POST/PATCH/DELETE | `/api/v1/products/{id}/media[/{asset_id}]` | Product ↔ video links                  |
-| POST   | `/api/v1/products/imports/preview`, `/imports` | MeoScout CSV preview and import (**editor**)   |
-| GET/POST | `/api/v1/procurement/requests`, `/orders` | Purchase requests, orders, receiving (**editor** writes, **admin** decisions) |
-| GET/POST | `/api/v1/production/jobs`              | Production jobs with optional product/video links (**editor** writes) |
-| POST   | `/api/v1/media/assets/{id}/handoff`    | Approve / reject a final video (**admin**)                |
-| POST   | `/api/v1/auth/login`, `/logout`, GET `/auth/me` | Session cookie sign-in / sign-out / current identity |
-| GET/POST/PATCH | `/api/v1/auth/members[/{user_id}]`, PATCH `/auth/organization`, GET `/auth/audit` | Team, timezone, audit log (**admin**) |
-| GET/POST/PATCH | `/api/v1/accounts[/{id}]`, POST `…/{id}/status` | Social account registry (manual = unverified; **admin** writes) |
-| GET/POST/PATCH | `/api/v1/content/links[/{id}]`   | Affiliate link library (**editor** writes)                |
-| GET/POST/PATCH | `/api/v1/publishing/campaigns[/{id}]`, `…/media`, `…/targets` | Campaigns of approved finals × target accounts |
-| GET/POST/PATCH | `/api/v1/publishing/publications[/{id}]`, `/batch` | Publication jobs with per-target content and optimistic `version` |
-| POST   | `/api/v1/publishing/publications/{id}/{submit,approve,schedule,start,confirm,fail,reconcile,…}` | State machine; approve/reconcile need **admin** |
-| GET    | `/api/v1/publishing/queue`, `/calendar`, `/stats`, `…/{id}/prepare` | Queue, UTC calendar window, counters, assisted checklist |
-| GET/POST/PATCH/DELETE | `/api/v1/content-categories[/{id}]` | Category tree (**admin** writes)                          |
-| GET/POST/PATCH/DELETE | `/api/v1/media/folder-rules[/{id}]`, GET `…/preview`, `…/report` | Folder → category mapping for finals (**admin** writes) |
-| PUT    | `/api/v1/media/assets/{id}/categories` | Manual category override (**editor**)                     |
-| GET/PUT | `/api/v1/accounts/{id}/channel-profile` | Channel routing profile and ALLOW/PREFER/BLOCK rules (**admin** writes) |
-| GET    | `/api/v1/distribution/recommendations` | Rule-based Page recommendations for a final video         |
-| GET    | `/docs`                                | Swagger UI (`DOCS_ENABLED=false` to disable)              |
+| Method                | Path                                                                                               | Purpose                                                                                   |
+| --------------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| GET                   | `/health`                                                                                        | Liveness (unversioned, hidden from OpenAPI)                                               |
+| GET                   | `/api/v1/health`                                                                                 | Liveness, versioned                                                                       |
+| GET                   | `/api/v1/system/info`                                                                            | Version, environment, Python, DB readiness, modules                                       |
+| GET                   | `/api/v1/media/roots`                                                                            | Logical roots: configured / readable / writable                                           |
+| GET                   | `/api/v1/media/stats`                                                                            | Library counters                                                                          |
+| GET                   | `/api/v1/media/assets`                                                                           | List + search + filter + paginate                                                         |
+| GET                   | `/api/v1/media/assets/{id}`                                                                      | Detail with every file variant                                                            |
+| GET                   | `/api/v1/media/assets/{id}/thumbnail`                                                            | JPEG thumbnail                                                                            |
+| GET                   | `/api/v1/media/scans/status`                                                                     | Current + last scan, root availability                                                    |
+| GET                   | `/api/v1/media/scans`, `/scans/{id}`                                                           | Scan history and detail                                                                   |
+| POST                  | `/api/v1/media/scans`                                                                            | Queue a scan — **admin** role or service token                                     |
+| GET/POST              | `/api/v1/products`                                                                               | Product catalog list/search and creation (**editor** for writes)                    |
+| GET/PATCH             | `/api/v1/products/{id}`                                                                          | Product detail and edit                                                                   |
+| POST                  | `/api/v1/products/{id}/status`                                                                   | Audited lifecycle change; WINNER needs confirmation                                       |
+| GET/POST/PATCH/DELETE | `/api/v1/products/{id}/media[/{asset_id}]`                                                       | Product ↔ video links                                                                    |
+| POST                  | `/api/v1/products/imports/preview`, `/imports`                                                 | MeoScout CSV preview and import (**editor**)                                        |
+| GET/POST              | `/api/v1/procurement/requests`, `/orders`                                                      | Purchase requests, orders, receiving (**editor** writes, **admin** decisions) |
+| GET/POST              | `/api/v1/production/jobs`                                                                        | Production jobs with optional product/video links (**editor** writes)               |
+| POST                  | `/api/v1/media/assets/{id}/handoff`                                                              | Approve / reject a final video (**admin**)                                          |
+| POST                  | `/api/v1/auth/login`, `/logout`, GET `/auth/me`                                              | Session cookie sign-in / sign-out / current identity                                      |
+| GET/POST/PATCH        | `/api/v1/auth/members[/{user_id}]`, PATCH `/auth/organization`, GET `/auth/audit`            | Team, timezone, audit log (**admin**)                                               |
+| GET/POST/PATCH        | `/api/v1/accounts[/{id}]`, POST `…/{id}/status`                                               | Social account registry (manual = unverified; **admin** writes)                     |
+| GET/POST/PATCH        | `/api/v1/content/links[/{id}]`                                                                   | Affiliate link library (**editor** writes)                                          |
+| GET/POST/PATCH        | `/api/v1/publishing/campaigns[/{id}]`, `…/media`, `…/targets`                              | Campaigns of approved finals × target accounts                                           |
+| GET/POST/PATCH        | `/api/v1/publishing/publications[/{id}]`, `/batch`                                             | Publication jobs with per-target content and optimistic `version`                       |
+| POST                  | `/api/v1/publishing/publications/{id}/{submit,approve,schedule,start,confirm,fail,reconcile,…}` | State machine; approve/reconcile need **admin**                                     |
+| GET                   | `/api/v1/publishing/queue`, `/calendar`, `/stats`, `…/{id}/prepare`                       | Queue, UTC calendar window, counters, assisted checklist                                  |
+| GET/POST/PATCH/DELETE | `/api/v1/content-categories[/{id}]`                                                              | Category tree (**admin** writes)                                                    |
+| GET/POST/PATCH/DELETE | `/api/v1/media/folder-rules[/{id}]`, GET `…/preview`, `…/report`                           | Folder → category mapping for finals (**admin** writes)                            |
+| PUT                   | `/api/v1/media/assets/{id}/categories`                                                           | Manual category override (**editor**)                                               |
+| GET/PUT               | `/api/v1/accounts/{id}/channel-profile`                                                          | Channel routing profile and ALLOW/PREFER/BLOCK rules (**admin** writes)             |
+| GET                   | `/api/v1/distribution/recommendations`                                                           | Rule-based Page recommendations for a final video                                         |
+| GET                   | `/docs`                                                                                          | Swagger UI (`DOCS_ENABLED=false` to disable)                                            |
 
 **Authentication (M3A).** Every `/api/v1` endpoint except health, system info and login
 requires a session cookie obtained from `POST /api/v1/auth/login` (email + password, argon2id

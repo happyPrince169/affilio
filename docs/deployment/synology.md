@@ -174,6 +174,7 @@ Defaults (set in `.env`) suit a 4-core / 8 GB NAS:
 | api | 512M | one uvicorn worker |
 | worker | 768M | ffprobe/ffmpeg run single-threaded; `MEDIA_THUMBNAIL_CONCURRENCY` controls parallel renders (default 1) |
 | publisher | 256M | Reels publisher (M3B.2A): streams finals in 4 MiB chunks, no transcoding; `PUBLISHER_MAX_CONCURRENT_UPLOADS` (default 1) |
+| exporter | 1536M (`EXPORTER_MEMORY`) | Publish-ready export worker (E1), **opt-in**: starts only with `COMPOSE_PROFILES=exports` in `.env`. One software x264 encode at a time, `EXPORT_THREADS` (2) and `EXPORT_NICE` (10) keep the API and the ContentFactory proxy worker responsive; mounts finals read-only and exports read-write. Rollback: remove the profile and `up -d`, or `alembic downgrade 0010_overdue_review`; export files are regenerable |
 | web | 384M | |
 
 CPU limits are deliberately absent: DSM's kernel has no CFS bandwidth control, so a `cpus:`

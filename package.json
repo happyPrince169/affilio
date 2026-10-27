@@ -28,6 +28,8 @@
     "media:scan": "pnpm --filter @affilio/api scan",
     "db:backup": "./scripts/db-backup.sh",
     "dev:publisher": "pnpm --filter @affilio/api publisher",
+    "dev:exporter": "pnpm --filter @affilio/api exporter",
+    "media:export": "pnpm --filter @affilio/api export",
     "nas:dry-run": "./scripts/nas-sync.sh dry-run",
     "nas:sync": "./scripts/nas-sync.sh once",
     "nas:deploy": "./scripts/nas-deploy.sh",

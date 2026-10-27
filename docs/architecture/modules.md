@@ -53,6 +53,8 @@ modules/media/
 ├── probe.py        FFprobe wrapper + parser (rotation, bit depth, frame rate)
 ├── scanner.py      incremental scan: unchanged / touched / changed / moved / new / missing
 ├── thumbnails.py   ffmpeg thumbnail generation, proxy-first, atomic writes
+├── export_profile.py publishing profile from ffprobe output, HDR detection (E1)
+├── exports.py      publish-ready export recipe, job queue, ExportGenerator (E1)
 ├── service.py      organization-scoped queries + enqueue_scan
 ├── errors.py       AppError subclasses + ScanConfigurationError
 └── router.py       /api/v1/media/*

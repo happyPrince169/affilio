@@ -13,6 +13,8 @@
     "seed": "uv run python -m affilio.scripts.seed_dev",
     "worker": "uv run python -m affilio.worker",
     "scan": "uv run python -m affilio.scripts.media_scan",
-    "publisher": "uv run python -m affilio.worker.publisher"
+    "publisher": "uv run python -m affilio.worker.publisher",
+    "exporter": "uv run python -m affilio.worker.exporter",
+    "export": "uv run python -m affilio.scripts.media_export"
   }
 }

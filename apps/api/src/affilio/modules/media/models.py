@@ -33,6 +33,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from affilio.core.enums import (
     CategoryAssignmentSource,
+    ExportJobStatus,
+    ExportTrigger,
     HandoffStatus,
     MediaAssetKind,
     MediaAssetStatus,
@@ -202,6 +204,14 @@ class MediaFileVariant(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_media_file_variants_asset_id", "asset_id"),
         Index("ix_media_file_variants_root_fingerprint", "media_root_id", "fingerprint"),
         Index("ix_media_file_variants_content_hash", "content_hash"),
+        # One export per (asset, recipe): a re-export replaces the file and the row in place.
+        Index(
+            "uq_media_file_variants_asset_export_recipe",
+            "asset_id",
+            "recipe_key",
+            unique=True,
+            postgresql_where=text("kind = 'export'"),
+        ),
     )
 
     asset_id: Mapped[uuid.UUID] = mapped_column(
@@ -247,6 +257,21 @@ class MediaFileVariant(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     missing_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Provenance of derived files (E1 exports): which variant they were rendered from, with
+    # which fixed recipe, and the exact source identity at render time. A consumer must treat
+    # the export as stale when the source's size, mtime or fingerprint no longer match.
+    derived_from_variant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("media_file_variants.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    recipe_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source_modified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     asset: Mapped[MediaAsset] = relationship(back_populates="variants")
     root: Mapped[MediaRoot] = relationship(back_populates="variants")
@@ -307,6 +332,93 @@ class MediaScanJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     def __repr__(self) -> str:
         return f"<MediaScanJob status={self.status} attempt={self.attempt}>"
+
+
+class MediaExportJob(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One request to render a publish-ready export of a final (E1).
+
+    Doubles as the export worker's queue (status=queued). The output is a `media_file_variants`
+    row of kind `export` on the same asset; no new asset is ever created. `recipe` records the
+    fixed, versioned ffmpeg invocation (placeholders instead of paths) and the ffmpeg version.
+    """
+
+    __tablename__ = "media_export_jobs"
+    __table_args__ = (
+        Index("ix_media_export_jobs_organization_id_created_at", "organization_id", "created_at"),
+        Index("ix_media_export_jobs_status_next_attempt_at", "status", "next_attempt_at"),
+        Index("ix_media_export_jobs_media_asset_id", "media_asset_id"),
+        # At most one queued/running job per (asset, recipe).
+        Index(
+            "uq_media_export_jobs_active_asset_recipe",
+            "media_asset_id",
+            "recipe_key",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    media_asset_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("media_assets.id", ondelete="CASCADE"), nullable=False
+    )
+    source_variant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("media_file_variants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    output_variant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("media_file_variants.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[ExportJobStatus] = mapped_column(
+        str_enum(ExportJobStatus, "export_job_status"),
+        nullable=False,
+        default=ExportJobStatus.QUEUED,
+    )
+    trigger: Mapped[ExportTrigger] = mapped_column(
+        str_enum(ExportTrigger, "export_trigger"), nullable=False, default=ExportTrigger.MANUAL
+    )
+    recipe_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    recipe: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    # Source identity captured when the job starts; the output variant copies it.
+    source_file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source_modified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    source_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    attempt: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=3, server_default=text("3")
+    )
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    requested_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)  # always redacted
+    stats: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    asset: Mapped[MediaAsset] = relationship(foreign_keys=[media_asset_id])
+    source_variant: Mapped[MediaFileVariant] = relationship(foreign_keys=[source_variant_id])
+    output_variant: Mapped[MediaFileVariant | None] = relationship(foreign_keys=[output_variant_id])
+
+    @property
+    def is_active(self) -> bool:
+        return self.status in {ExportJobStatus.QUEUED, ExportJobStatus.RUNNING}
+
+    def __repr__(self) -> str:
+        return f"<MediaExportJob status={self.status} recipe={self.recipe_key}>"
 
 
 # ---------------------------------------------------------------- classification (M3A.1)

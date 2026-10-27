@@ -48,6 +48,14 @@ x-api-env: &api-env
   OAUTH_STATE_RETENTION_HOURS: ${OAUTH_STATE_RETENTION_HOURS:-24}
   PUBLISHER_OVERDUE_GRACE_MINUTES: ${PUBLISHER_OVERDUE_GRACE_MINUTES:-120}
   PUBLISHER_OVERDUE_POLICY: ${PUBLISHER_OVERDUE_POLICY:-review}
+  EXPORT_THREADS: ${EXPORT_THREADS:-2}
+  EXPORT_NICE: ${EXPORT_NICE:-10}
+  EXPORT_PRESET: ${EXPORT_PRESET:-medium}
+  EXPORT_CRF: ${EXPORT_CRF:-18}
+  EXPORT_TIMEOUT_FACTOR: ${EXPORT_TIMEOUT_FACTOR:-20}
+  EXPORT_HEARTBEAT_SECONDS: ${EXPORT_HEARTBEAT_SECONDS:-15}
+  EXPORT_STALE_AFTER_SECONDS: ${EXPORT_STALE_AFTER_SECONDS:-900}
+  EXPORT_MAX_ATTEMPTS: ${EXPORT_MAX_ATTEMPTS:-3}
   # Reels publishing engine (M3B.2A). Live publishing stays off until activation.
   META_LIVE_PUBLISHING_ENABLED: ${META_LIVE_PUBLISHING_ENABLED:-false}
   PUBLISHER_MAX_CONCURRENT_UPLOADS: ${PUBLISHER_MAX_CONCURRENT_UPLOADS:-1}
@@ -195,6 +203,42 @@ services:
       resources:
         limits:
           memory: ${PUBLISHER_MEMORY:-256M}
+    logging: *logging
+
+  exporter:
+    <<: *api-image
+    container_name: affilio-exporter
+    restart: unless-stopped
+    command: ["exporter"]
+    # Opt-in (E1): `COMPOSE_PROFILES=exports` in .env starts it; without the profile a deploy
+    # leaves it untouched. Software x264 only (the DS923+ has no GPU); CPU is bounded by
+    # EXPORT_THREADS + EXPORT_NICE, memory by the limit below (4K HEVC decode needs ~1 GB).
+    profiles: ["exports"]
+    environment:
+      <<: *api-env
+    volumes:
+      - type: bind
+        source: ${AFFILIO_FINALS_HOST_PATH:?set AFFILIO_FINALS_HOST_PATH}
+        target: /media/finals
+        read_only: true
+      - type: bind
+        source: ${AFFILIO_EXPORTS_HOST_PATH:?set AFFILIO_EXPORTS_HOST_PATH}
+        target: /data/exports
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy # api applies migrations first
+    healthcheck:
+      test: ["CMD", "python", "-m", "affilio.worker.exporter", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${EXPORTER_MEMORY:-1536M}
     logging: *logging
 
   web:

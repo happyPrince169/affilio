@@ -203,6 +203,24 @@ class Settings(BaseSettings):
     reels_min_frame_rate: float = 23.0
     reels_max_frame_rate: float = 61.0
 
+    # --- publish-ready exports (Export pipeline E1) ---
+    # The recipe is fixed and versioned in code (`media/exports.py`); these knobs only bound
+    # CPU/time. No user-supplied ffmpeg arguments exist anywhere.
+    export_threads: int = 2  # ffmpeg -threads (leave cores for the API and the NAS)
+    export_nice: int = 10  # scheduling priority of ffmpeg (0 = normal, 19 = lowest)
+    export_preset: Literal["ultrafast", "veryfast", "faster", "fast", "medium", "slow"] = "medium"
+    export_crf: int = 18  # x264 constant quality (lower = larger/better), bounded 14..28
+    export_max_bitrate_kbps: int = 12_000
+    export_audio_bitrate_kbps: int = 160
+    # Wall-clock budget per export: factor x media duration, never below the minimum.
+    export_timeout_factor: float = 20.0
+    export_timeout_min_seconds: int = 120
+    export_heartbeat_seconds: float = 15.0  # fenced heartbeat/cancel check while ffmpeg runs
+    export_stale_after_seconds: int = 900  # watchdog: re-queue running jobs silent this long
+    export_max_attempts: int = 3
+    export_poll_interval_seconds: float = 5.0
+    exporter_heartbeat_path: Path = Path("/tmp/affilio-exporter-heartbeat")  # noqa: S108
+
     # --- maintenance (M3B.1A) ---
     # Expired/revoked sessions and finished OAuth attempts are deleted after these windows.
     session_retention_days: int = 30
@@ -299,6 +317,36 @@ class Settings(BaseSettings):
         ):
             msg = "META_OAUTH_REDIRECT_URI must use https outside development/test"
             raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _export_bounds_guard(self) -> Settings:
+        """Keep the transcoder inside sane CPU/quality bounds whatever the environment says."""
+        problems = []
+        if not 1 <= self.export_threads <= 8:
+            problems.append("EXPORT_THREADS must be between 1 and 8")
+        if not 0 <= self.export_nice <= 19:
+            problems.append("EXPORT_NICE must be between 0 and 19")
+        if not 14 <= self.export_crf <= 28:
+            problems.append("EXPORT_CRF must be between 14 and 28")
+        if not 2_000 <= self.export_max_bitrate_kbps <= 40_000:
+            problems.append("EXPORT_MAX_BITRATE_KBPS must be between 2000 and 40000")
+        if not 64 <= self.export_audio_bitrate_kbps <= 320:
+            problems.append("EXPORT_AUDIO_BITRATE_KBPS must be between 64 and 320")
+        if self.export_timeout_factor < 0 or self.export_timeout_min_seconds < 1:
+            problems.append(
+                "EXPORT_TIMEOUT_FACTOR must be >= 0 and EXPORT_TIMEOUT_MIN_SECONDS >= 1"
+            )
+        if self.export_heartbeat_seconds < 0:
+            problems.append("EXPORT_HEARTBEAT_SECONDS must be >= 0")
+        minimum = max(3 * self.export_heartbeat_seconds, 1)
+        if self.export_stale_after_seconds < minimum:
+            problems.append(
+                "EXPORT_STALE_AFTER_SECONDS must be at least 3x EXPORT_HEARTBEAT_SECONDS "
+                f"(>= {minimum:.0f}s)"
+            )
+        if problems:
+            raise ValueError("; ".join(problems))
         return self
 
     @model_validator(mode="after")

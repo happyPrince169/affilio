@@ -3,6 +3,7 @@
 #   api     – (default) run migrations when RUN_MIGRATIONS_ON_START=true, then uvicorn
 #   worker  – background scan/thumbnail worker
 #   publisher – Reels publisher worker (M3B.2A); reads only the finals mount
+#   exporter  – publish-ready export worker (E1); reads finals, writes only the exports mount
 #   migrate – apply migrations and exit
 #   <cmd>   – anything else is exec'd verbatim (e.g. `python -m affilio.scripts.media_scan`)
 set -eu
@@ -23,6 +24,9 @@ case "${1:-api}" in
     ;;
   publisher)
     exec python -m affilio.worker.publisher
+    ;;
+  exporter)
+    exec python -m affilio.worker.exporter
     ;;
   migrate)
     exec alembic upgrade head
