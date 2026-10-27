@@ -15,6 +15,8 @@ from affilio.core.enums import (
     PublicationAttemptStatus,
     PublicationStatus,
     PublishMode,
+    PublishRequestStatus,
+    UploadPhase,
 )
 from affilio.modules.products.urls import validate_http_url
 
@@ -361,6 +363,73 @@ class PublicationAttemptResponse(PubModel):
     error: str | None
 
 
+class UploadSummary(PubModel):
+    """Durable state of one API publishing attempt (M3B.2A). Never contains a token."""
+
+    id: uuid.UUID
+    attempt_id: uuid.UUID
+    phase: UploadPhase
+    publish_request_status: PublishRequestStatus
+    is_mock: bool
+    progress_percent: int | None
+    bytes_sent: int
+    bytes_total: int | None
+    processing_status: str | None
+    provider_video_id: str | None
+    external_post_id: str | None
+    external_post_url: str | None
+    retry_count: int
+    max_retries: int
+    next_action_at: datetime
+    lease_owner: str | None
+    lease_expires_at: datetime | None
+    last_error: str | None
+    last_error_code: str | None
+    last_error_transient: bool | None
+    finish_requested_at: datetime | None
+    published_at: datetime | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    updated_at: datetime
+
+
+class WorkerStatus(PubModel):
+    worker_id: str
+    hostname: str
+    pid: int
+    version: str
+    max_concurrency: int
+    in_flight: int
+    started_at: datetime
+    last_seen_at: datetime
+    healthy: bool
+
+
+class PagePublishingStatus(PubModel):
+    social_account_id: uuid.UUID
+    display_name: str
+    is_mock: bool
+    connected: bool
+    api_eligible: bool
+    api_eligibility_reason: str | None
+    live_uploads: int
+    needs_reconciliation: int
+    published_last_24h: int
+    daily_quota: int
+    hold_until: datetime | None
+    hold_reason: str | None
+
+
+class EngineStatus(PubModel):
+    mode: Literal["live", "mock"]
+    live_publishing_enabled: bool
+    workers: list[WorkerStatus]
+    healthy_workers: int
+    phase_counts: dict[str, int]
+    pages: list[PagePublishingStatus]
+    generated_at: datetime
+
+
 class PublicationSummary(PubModel):
     id: uuid.UUID
     intent_id: uuid.UUID
@@ -397,9 +466,17 @@ class PublicationSummary(PubModel):
     status_changed_at: datetime
     created_at: datetime
     updated_at: datetime
+    # --- publishing engine (M3B.2A) ---
+    publish_mode: Literal["api", "assisted"] = "assisted"
+    api_eligibility_reason: str | None = None
+    target_is_mock: bool = False
+    target_hold_until: datetime | None = None
+    target_hold_reason: str | None = None
+    upload: UploadSummary | None = None
 
 
 class PublicationDetail(PublicationSummary):
+    uploads: list[UploadSummary] = Field(default_factory=list)
     caption: str | None
     cta: str | None
     hashtags: list[str]

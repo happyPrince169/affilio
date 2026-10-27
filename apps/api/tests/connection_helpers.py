@@ -78,5 +78,6 @@ def link(client: TestClient, connection_id: str, page_ids: list[str], expected: 
 
 def assert_no_secret(payload: object) -> None:
     text = str(payload)
-    assert "mock:" not in text, "a mock token leaked into a response"
+    for marker in ("mock:user:", "mock:page:", "access_token"):
+        assert marker not in text, f"a mock token leaked into a response ({marker})"
     assert "ciphertext" not in text and "nonce" not in text

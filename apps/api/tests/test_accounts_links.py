@@ -48,7 +48,8 @@ def test_manual_page_is_unverified_and_disconnected(api: TestClient) -> None:
     )
     assert page["connection_label"] == "Manual (unverified, not connected)"
     assert (
-        page["capabilities"]["api_publishing"] is False
+        page["capabilities"]["api_publishing"] is True  # platform fact; the Page itself
+        and page["can_publish"] is False  # is unverified, so it is not API-eligible
         and page["capabilities"]["assisted_publishing"] is True
     )
     assert "token" not in page and "access_token" not in str(page)

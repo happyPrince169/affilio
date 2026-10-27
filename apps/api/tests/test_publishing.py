@@ -85,9 +85,10 @@ def test_adapters_declare_capabilities_and_never_publish() -> None:
     adapter = get_adapter(Platform.FACEBOOK)
     assert isinstance(adapter, FacebookReelsAdapter)
     caps = adapter.capabilities().as_dict()
-    assert caps["api_publishing"] is False and caps["assisted_publishing"] is True
+    assert caps["api_publishing"] is True and caps["assisted_publishing"] is True
     assert caps["clickable_links_in_caption"] is False and caps["max_caption_length"] == 2200
-    assert adapter.check_capabilities({"api_publishing"}).ok is False
+    assert adapter.check_capabilities({"api_publishing"}).ok is True
+    assert adapter.check_capabilities({"scheduling_via_api"}).ok is False
     assert adapter.check_capabilities({"assisted_publishing"}).ok is True
     media_ok = adapter.validate_media(
         {
@@ -252,7 +253,8 @@ def test_full_assisted_workflow_with_snapshot_and_evidence(
     assert job["validation"]["ok"] is True and job["links"][0]["url"] == world["link"]["url"]
     assert job["hashtags"] == ["deal", "shopee"]
     assert job["allowed_actions"] == ["submit", "cancel"]
-    assert job["capabilities"]["api_publishing"] is False
+    assert job["capabilities"]["api_publishing"] is True
+    assert job["publish_mode"] == "assisted"  # manual Page: not API-eligible
     # Not approved yet: no checklist.
     assert api.get(f"/api/v1/publishing/publications/{job['id']}/prepare").status_code == 409
 

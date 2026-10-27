@@ -26,6 +26,7 @@ from affilio.modules.publishing.schemas import (
     CampaignMediaAdd,
     CampaignTargetsAdd,
     CampaignUpdate,
+    EngineStatus,
     EvidenceRequest,
     FailureRequest,
     PaginatedCampaigns,
@@ -64,6 +65,17 @@ def _detail(
 @router.get("/stats", response_model=PublishingStats, summary="Distribution overview")
 def stats(identity: CurrentIdentity, session: DbSession) -> PublishingStats:
     return service.stats(session, identity.organization.id)
+
+
+@router.get(
+    "/engine/status",
+    response_model=EngineStatus,
+    summary="Publisher worker health, upload phases and per-Page publishing status",
+)
+def engine_status(
+    identity: CurrentIdentity, session: DbSession, settings: SettingsDep
+) -> EngineStatus:
+    return service.engine_status(session, identity.organization.id, settings)
 
 
 @router.get("/queue", response_model=list[PublicationSummary], summary="Publishing queue")
@@ -769,6 +781,31 @@ def fail_publication(
     settings: SettingsDep,
 ) -> PublicationDetail:
     job = service.fail(session, identity.organization.id, job_id, body, identity=identity)
+    session.commit()
+    return _detail(session, identity, request, settings.api_v1_prefix, job)
+
+
+@router.post(
+    "/publications/{job_id}/reconcile-provider",
+    response_model=PublicationDetail,
+    summary="Ask the provider about a parked API attempt (admin); never re-sends the publish",
+)
+def reconcile_with_provider(
+    job_id: uuid.UUID,
+    body: VersionedRequest,
+    identity: RequireAdmin,
+    session: DbSession,
+    request: Request,
+    settings: SettingsDep,
+) -> PublicationDetail:
+    job = service.reconcile_with_provider(
+        session,
+        identity.organization.id,
+        job_id,
+        version=body.version,
+        identity=identity,
+        settings=settings,
+    )
     session.commit()
     return _detail(session, identity, request, settings.api_v1_prefix, job)
 

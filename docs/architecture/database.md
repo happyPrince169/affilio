@@ -300,6 +300,27 @@ social_accounts += connection_id FK SET NULL, connected_at, last_verified_at, di
 No table stores a plaintext token or a host-specific value. `is_mock` rows only exist in
 development/test databases (mock mode is refused elsewhere) and are never shown as real.
 
+## Publishing engine (migration `0009_publishing_engine`)
+
+```
+publication_uploads (one per API attempt; durable phase record)
+  id, organization_id FK, job_id FK CASCADE, attempt_id FK CASCADE UNIQUE, social_account_id FK,
+  media_asset_id FK, snapshot_id FK SET NULL, provider meta, is_mock,
+  phase pending|validating|session_starting|uploading|upload_complete|processing|finalizing|
+        verifying|retry_wait|published|failed|needs_reconciliation|abandoned,
+  publish_request_status not_sent|sent|acknowledged|confirmed|rejected|unknown,
+  provider_session_id, provider_video_id, external_post_id, external_post_url,
+  file_relative_path, file_size, file_mtime, bytes_total, bytes_sent, processing_status,
+  last_status jsonb, last_polled_at, poll_count, finish_requested_at, finish_response jsonb,
+  published_at, last_error, last_error_code, last_error_transient, retry_count, max_retries,
+  next_action_at, lease_owner, lease_expires_at, started_at, finished_at, created/updated
+  partial UNIQUE(job_id) WHERE phase NOT IN (published, failed, abandoned)
+  index(next_action_at) WHERE live; index(social_account_id); index(organization_id, phase)
+publisher_workers   id, worker_id UNIQUE, hostname, pid, version, max_concurrency, in_flight,
+                    started_at, last_seen_at, stopped_at
+social_accounts    += publish_hold_until, publish_hold_reason (rate limit / quota holds)
+```
+
 ## Growth plan (not implemented)
 
 | Milestone | Tables (indicative)                                                              |

@@ -648,6 +648,25 @@ def _mark_disconnected(
     account.disconnect_reason = reason[:64]
 
 
+def mark_token_invalid(session: Session, account: SocialAccount, *, identity=None) -> None:
+    """The provider rejected the Page token during publishing (M3B.2A)."""
+    if not account.is_connected:
+        return
+    _mark_disconnected(
+        session, account, reason="token_invalid", credential_status=CredentialStatus.INVALID
+    )
+    record_audit(
+        session,
+        organization_id=account.organization_id,
+        identity=identity,
+        action="account.token_invalid",
+        entity_type="social_account",
+        entity_id=account.id,
+        data={"source": "publisher"},
+    )
+    session.flush()
+
+
 def disconnect_account(
     session: Session, account: SocialAccount, *, reason: str | None, identity
 ) -> SocialAccount:
@@ -957,6 +976,23 @@ def mock_action(
         if credential is None:
             raise NotFoundError("No active Page credential for this account")
         MockMetaProvider.revoke_token(vault.open_token(cipher, credential))
+    elif data.action in {"script_fault", "clear_faults"}:
+        if data.account_id is None:
+            raise AppError("account_id is required", code="validation_error", status_code=422)
+        account = session.scalar(
+            select(SocialAccount).where(
+                SocialAccount.organization_id == organization_id,
+                SocialAccount.id == data.account_id,
+            )
+        )
+        if account is None or not account.external_account_id:
+            raise NotFoundError("Account not found")
+        if data.action == "clear_faults":
+            MockMetaProvider.clear_faults(account.external_account_id)
+        else:
+            if not data.fault:
+                raise AppError("fault is required", code="validation_error", status_code=422)
+            MockMetaProvider.script_fault(account.external_account_id, data.fault)
     elif data.action == "revoke_user_token":
         if data.connection_id is None:
             raise AppError("connection_id is required", code="validation_error", status_code=422)

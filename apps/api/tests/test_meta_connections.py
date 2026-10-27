@@ -172,7 +172,7 @@ def test_full_connection_lifecycle_in_mock_mode(api: TestClient, db_session: Ses
             "MANAGE",
         ]
         assert "Mock" in account["connection_label"] and account["connected_at"]
-        assert account["capabilities"]["api_publishing"] is False  # publishing is M3B.1B
+        assert account["capabilities"]["api_publishing"] is True and account["can_publish"]
 
     denied = api.post(
         f"/api/v1/accounts/connections/{connection_id}/pages", json={"page_ids": [BETA]}

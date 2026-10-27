@@ -41,6 +41,26 @@ x-api-env: &api-env
   CREDENTIAL_ENCRYPTION_ACTIVE_KEY_ID: ${CREDENTIAL_ENCRYPTION_ACTIVE_KEY_ID:-}
   SESSION_RETENTION_DAYS: ${SESSION_RETENTION_DAYS:-30}
   OAUTH_STATE_RETENTION_HOURS: ${OAUTH_STATE_RETENTION_HOURS:-24}
+  # Reels publishing engine (M3B.2A). Live publishing stays off until activation.
+  META_LIVE_PUBLISHING_ENABLED: ${META_LIVE_PUBLISHING_ENABLED:-false}
+  PUBLISHER_MAX_CONCURRENT_UPLOADS: ${PUBLISHER_MAX_CONCURRENT_UPLOADS:-1}
+  PUBLISHER_POLL_INTERVAL_SECONDS: ${PUBLISHER_POLL_INTERVAL_SECONDS:-5}
+  PUBLISHER_UPLOAD_CHUNK_BYTES: ${PUBLISHER_UPLOAD_CHUNK_BYTES:-4194304}
+  PUBLISHER_LEASE_SECONDS: ${PUBLISHER_LEASE_SECONDS:-120}
+  PUBLISHER_MAX_RETRIES: ${PUBLISHER_MAX_RETRIES:-5}
+  MEDIA_ORIGINALS_PATH: /media/originals
+  MEDIA_PROXIES_PATH: /media/proxies
+  MEDIA_FINALS_PATH: /media/finals
+  MEDIA_THUMBNAILS_PATH: /data/thumbnails
+  MEDIA_EXPORTS_PATH: /data/exports
+  MEDIA_PROXY_PATTERNS: ${MEDIA_PROXY_PATTERNS:-{stem}.mp4,{stem}_proxy.mp4,{name}.mp4,{stem}.mov}
+  MEDIA_VIDEO_EXTENSIONS: ${MEDIA_VIDEO_EXTENSIONS:-.mp4,.mov,.m4v,.mkv,.avi,.mts,.m2ts,.webm,.mxf,.3gp}
+  MEDIA_THUMBNAIL_CONCURRENCY: ${MEDIA_THUMBNAIL_CONCURRENCY:-1}
+  MEDIA_THUMBNAIL_WIDTH: ${MEDIA_THUMBNAIL_WIDTH:-640}
+  MEDIA_PROBE_TIMEOUT_SECONDS: ${MEDIA_PROBE_TIMEOUT_SECONDS:-60}
+  MEDIA_FINAL_SETTLE_SECONDS: ${MEDIA_FINAL_SETTLE_SECONDS:-120}
+  MEDIA_THUMBNAIL_TIMEOUT_SECONDS: ${MEDIA_THUMBNAIL_TIMEOUT_SECONDS:-120}
+  WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-5}
 
 x-media-mounts: &media-mounts
   - type: bind
@@ -138,6 +158,38 @@ services:
         limits:
           cpus: "${WORKER_CPUS:-2.0}"
           memory: ${WORKER_MEMORY:-768M}
+    logging: *logging
+
+  publisher:
+    <<: *api-image
+    container_name: affilio-publisher
+    restart: unless-stopped
+    command: ["publisher"]
+    environment:
+      <<: *api-env
+    # Only the finals mount, read-only: the publisher never touches originals, proxies,
+    # thumbnails or exports and never transcodes.
+    volumes:
+      - type: bind
+        source: ${AFFILIO_FINALS_HOST_PATH:?set AFFILIO_FINALS_HOST_PATH}
+        target: /media/finals
+        read_only: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy # api applies migrations first
+    healthcheck:
+      test: ["CMD", "python", "-m", "affilio.worker.publisher", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "${PUBLISHER_CPUS:-0.5}"
+          memory: ${PUBLISHER_MEMORY:-256M}
     logging: *logging
 
   web:

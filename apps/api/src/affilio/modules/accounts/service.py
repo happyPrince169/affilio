@@ -23,11 +23,13 @@ from affilio.modules.taxonomy import service as taxonomy_service
 from affilio.modules.taxonomy.service import CategoryTree
 
 # Platform capability facts as understood today. Copied onto each registered account so the
-# UI and adapters never claim more than this. api_publishing stays False until M3B.
+# UI and adapters never claim more than this. `api_publishing` says the platform *can* be
+# published through the API; whether a given Page is eligible is decided per job by
+# `publishing.eligibility` (connection, permissions, mock/live mode).
 PLATFORM_CAPABILITIES: dict[Platform, dict[str, object]] = {
     Platform.FACEBOOK: {
         "assisted_publishing": True,
-        "api_publishing": False,
+        "api_publishing": True,
         "scheduling_via_api": False,
         "clickable_links_in_caption": False,
         "reels": True,

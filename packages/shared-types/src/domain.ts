@@ -63,6 +63,35 @@ export const PERMISSION_STATUSES = [
 ] as const;
 export type PermissionStatus = (typeof PERMISSION_STATUSES)[number];
 
+// ---------------------------------------------------------------- M3B.2A publishing engine
+
+export const UPLOAD_PHASES = [
+  "pending",
+  "validating",
+  "session_starting",
+  "uploading",
+  "upload_complete",
+  "processing",
+  "finalizing",
+  "verifying",
+  "retry_wait",
+  "published",
+  "failed",
+  "needs_reconciliation",
+  "abandoned",
+] as const;
+export type UploadPhase = (typeof UPLOAD_PHASES)[number];
+
+export const PUBLISH_REQUEST_STATUSES = [
+  "not_sent",
+  "sent",
+  "acknowledged",
+  "confirmed",
+  "rejected",
+  "unknown",
+] as const;
+export type PublishRequestStatus = (typeof PUBLISH_REQUEST_STATUSES)[number];
+
 export const AFFILIATE_LINK_STATUSES = ["active", "archived"] as const;
 export type AffiliateLinkStatus = (typeof AFFILIATE_LINK_STATUSES)[number];
 

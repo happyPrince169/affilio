@@ -68,6 +68,23 @@ class TokenInvalidError(ProviderError):
     code = "provider_token_invalid"
 
 
+class RateLimitedError(ProviderUnavailableError):
+    """Provider throttling (codes 4/17/32/613): hold the Page, do not hammer."""
+
+    code = "provider_rate_limited"
+
+    def __init__(self, message: str, *, retry_after_seconds: int | None = None, **kw: Any) -> None:
+        super().__init__(message, is_transient=True, **kw)
+        self.retry_after_seconds = retry_after_seconds
+
+
+class LivePublishingDisabledError(AppError):
+    """Live Reels publishing is switched off (META_LIVE_PUBLISHING_ENABLED=false)."""
+
+    status_code = status.HTTP_409_CONFLICT
+    code = "live_publishing_disabled"
+
+
 class ProviderNotConfiguredError(AppError):
     """Live mode without the Meta app settings. Names the missing settings, never values."""
 
@@ -112,6 +129,58 @@ class PageInfo:
         return {"id": self.id, "name": self.name, "category": self.category, "tasks": self.tasks}
 
 
+# ---------------------------------------------------------------- Reels publishing (M3B.2A)
+
+
+@dataclass(frozen=True, slots=True)
+class ReelUploadSession:
+    video_id: str
+    upload_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReelUploadResult:
+    bytes_received: int  # bytes the provider acknowledges so far (resume offset)
+
+
+@dataclass(frozen=True, slots=True)
+class ReelStatus:
+    """Normalized `GET /{video_id}?fields=status` (feasibility B4)."""
+
+    video_status: (
+        str  # uploading | upload_complete | processing | ready | error | expired | upload_failed
+    )
+    bytes_transferred: int | None = None
+    processing_status: str | None = None  # not_started | in_progress | completed | error
+    publish_status: str | None = None  # draft | scheduled | published | error | None
+    error: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_published(self) -> bool:
+        return self.publish_status == "published"
+
+    @property
+    def is_error(self) -> bool:
+        return self.video_status in {"error", "expired", "upload_failed"} or (
+            self.publish_status == "error"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReelFinishResult:
+    success: bool
+    post_id: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ReelIdentity:
+    post_id: str | None
+    permalink_url: str | None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass(frozen=True, slots=True)
 class AuthorizationRequest:
     url: str
@@ -147,6 +216,39 @@ class MetaProvider(ABC):
     @abstractmethod
     def revoke(self, *, user_token: str) -> None:
         """Revoke the app authorization at the provider. Invalid tokens are not an error."""
+
+    # ---- Reels publishing (M3B.2A). Each call is one network round trip; the engine
+    # persists state between calls so a crash never repeats the finish request.
+    @abstractmethod
+    def start_reel_upload(self, *, page_token: str, page_id: str) -> ReelUploadSession: ...
+
+    @abstractmethod
+    def upload_reel_bytes(
+        self,
+        *,
+        page_token: str,
+        session: ReelUploadSession,
+        chunk: bytes,
+        offset: int,
+        total: int,
+    ) -> ReelUploadResult: ...
+
+    @abstractmethod
+    def reel_status(self, *, page_token: str, video_id: str) -> ReelStatus: ...
+
+    @abstractmethod
+    def finish_reel(
+        self,
+        *,
+        page_token: str,
+        page_id: str,
+        video_id: str,
+        description: str,
+        title: str | None,
+    ) -> ReelFinishResult: ...
+
+    @abstractmethod
+    def reel_identity(self, *, page_token: str, video_id: str) -> ReelIdentity: ...
 
 
 def is_mock_token(token: str) -> bool:

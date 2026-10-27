@@ -167,6 +167,31 @@ class Settings(BaseSettings):
     # Key used for new encryptions; defaults to the only key when exactly one is configured.
     credential_encryption_active_key_id: str | None = None
 
+    # --- Reels publishing engine (M3B.2A) ---
+    # Live Reels publishing stays off until the Meta app exists and the activation checklist
+    # has been run; the engine fails closed for non-mock Pages while this is False.
+    meta_live_publishing_enabled: bool = False
+    meta_reels_daily_quota: int = 30  # documented: 30 API-published Reels per 24 h per Page
+    publisher_poll_interval_seconds: float = 5.0
+    publisher_max_concurrent_uploads: int = 2  # global step concurrency (thread pool size)
+    publisher_lease_seconds: int = 120
+    publisher_upload_chunk_bytes: int = 4 * 1024 * 1024
+    publisher_max_retries: int = 5
+    publisher_backoff_base_seconds: float = 30.0
+    publisher_backoff_max_seconds: float = 900.0
+    publisher_status_poll_seconds: float = 15.0
+    publisher_publish_timeout_minutes: int = 30
+    publisher_rate_limit_hold_minutes: int = 60
+    publisher_heartbeat_path: Path = Path("/tmp/affilio-publisher-heartbeat")  # noqa: S108
+    # Media acceptance for Reels (feasibility B3); the engine never transcodes.
+    reels_min_duration_seconds: float = 3.0
+    reels_max_duration_seconds: float = 90.0
+    reels_min_width: int = 540
+    reels_min_height: int = 960
+    reels_max_file_bytes: int = 2 * 1024 * 1024 * 1024
+    reels_min_frame_rate: float = 23.0
+    reels_max_frame_rate: float = 61.0
+
     # --- maintenance (M3B.1A) ---
     # Expired/revoked sessions and finished OAuth attempts are deleted after these windows.
     session_retention_days: int = 30
@@ -317,6 +342,7 @@ class Settings(BaseSettings):
             "database_dialect": self.database_dialect,
             "meta_provider_mode": self.meta_provider_mode,
             "meta_configured": self.is_meta_configured,
+            "meta_live_publishing_enabled": self.meta_live_publishing_enabled,
         }
 
 

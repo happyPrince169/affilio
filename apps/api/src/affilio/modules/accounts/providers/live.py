@@ -30,6 +30,12 @@ from affilio.modules.accounts.providers.base import (
     ProviderError,
     ProviderNotConfiguredError,
     ProviderUnavailableError,
+    RateLimitedError,
+    ReelFinishResult,
+    ReelIdentity,
+    ReelStatus,
+    ReelUploadResult,
+    ReelUploadSession,
     TokenGrant,
     TokenInfo,
     TokenInvalidError,
@@ -40,6 +46,7 @@ log = structlog.get_logger("affilio.meta.live")
 
 GRAPH_HOST = "https://graph.facebook.com"
 DIALOG_HOST = "https://www.facebook.com"
+RUPLOAD_HOST = "https://rupload.facebook.com"
 # Error codes the Graph API documents for invalid/expired sessions (feasibility A7a).
 TOKEN_INVALID_CODES = frozenset({102, 190})
 PERMISSION_CODES = frozenset(range(200, 300)) | {10}
@@ -115,7 +122,11 @@ class LiveMetaProvider(MetaProvider):
             raise TokenInvalidError(
                 message, provider_code=code, provider_subcode=subcode, trace_id=trace_id
             )
-        if code in THROTTLE_CODES or transient:
+        if code in THROTTLE_CODES:
+            raise RateLimitedError(
+                message, provider_code=code, provider_subcode=subcode, trace_id=trace_id
+            )
+        if transient:
             raise ProviderUnavailableError(
                 message,
                 provider_code=code,
@@ -259,3 +270,135 @@ class LiveMetaProvider(MetaProvider):
             )
         except TokenInvalidError:
             return
+
+    # ------------------------------------------------------------------ Reels (M3B.2A)
+    # Documented three-phase flow (feasibility B1/B2/B4). NOT exercised against Meta yet;
+    # the engine refuses to call these unless META_LIVE_PUBLISHING_ENABLED=true.
+    def start_reel_upload(self, *, page_token: str, page_id: str) -> ReelUploadSession:
+        self._refuse_mock(page_token)
+        payload = self._request(
+            "POST",
+            f"/{page_id}/video_reels",
+            params={
+                "upload_phase": "start",
+                "access_token": page_token,
+                "appsecret_proof": self._proof(page_token),
+            },
+        )
+        video_id, upload_url = payload.get("video_id"), payload.get("upload_url")
+        if not video_id or not upload_url:
+            raise ProviderError("Meta did not return an upload session")
+        return ReelUploadSession(video_id=str(video_id), upload_url=str(upload_url))
+
+    def upload_reel_bytes(
+        self,
+        *,
+        page_token: str,
+        session: ReelUploadSession,
+        chunk: bytes,
+        offset: int,
+        total: int,
+    ) -> ReelUploadResult:
+        self._refuse_mock(page_token)
+        url = f"{RUPLOAD_HOST}/video-upload/{self._version}/{session.video_id}"
+        try:
+            response = self._client.post(
+                url,
+                headers={
+                    "Authorization": f"OAuth {page_token}",
+                    "offset": str(offset),
+                    "file_size": str(total),
+                    "Content-Type": "application/octet-stream",
+                },
+                content=chunk,
+                timeout=httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=10.0),
+            )
+        except httpx.HTTPError as exc:
+            log.warning("meta.upload_failed", video=session.video_id, error=type(exc).__name__)
+            raise ProviderUnavailableError("Upload interrupted", is_transient=True) from exc
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if response.status_code >= 500:
+            raise ProviderUnavailableError("Upload host error", is_transient=True)
+        if isinstance(payload, dict) and payload.get("error"):
+            self._raise_graph_error(payload["error"], None)
+        if response.status_code >= 400 or not (
+            isinstance(payload, dict) and payload.get("success")
+        ):
+            raise ProviderError(f"Upload answered HTTP {response.status_code}")
+        return ReelUploadResult(bytes_received=offset + len(chunk))
+
+    def reel_status(self, *, page_token: str, video_id: str) -> ReelStatus:
+        self._refuse_mock(page_token)
+        payload = self._request(
+            "GET",
+            f"/{video_id}",
+            params={
+                "fields": "status",
+                "access_token": page_token,
+                "appsecret_proof": self._proof(page_token),
+            },
+        )
+        status_obj = payload.get("status") or {}
+        uploading = status_obj.get("uploading_phase") or {}
+        processing = status_obj.get("processing_phase") or {}
+        publishing = status_obj.get("publishing_phase") or {}
+        error = (
+            (publishing.get("error") or {}).get("message")
+            or (processing.get("error") or {}).get("message")
+            or None
+        )
+        return ReelStatus(
+            video_status=str(status_obj.get("video_status") or "unknown"),
+            bytes_transferred=uploading.get("bytes_transfered"),
+            processing_status=processing.get("status"),
+            publish_status=publishing.get("publish_status"),
+            error=error,
+            raw=status_obj,
+        )
+
+    def finish_reel(
+        self,
+        *,
+        page_token: str,
+        page_id: str,
+        video_id: str,
+        description: str,
+        title: str | None,
+    ) -> ReelFinishResult:
+        self._refuse_mock(page_token)
+        params: dict[str, Any] = {
+            "upload_phase": "finish",
+            "video_id": video_id,
+            "video_state": "PUBLISHED",
+            "description": description,
+            "access_token": page_token,
+            "appsecret_proof": self._proof(page_token),
+        }
+        if title:
+            params["title"] = title
+        payload = self._request("POST", f"/{page_id}/video_reels", params=params)
+        return ReelFinishResult(
+            success=bool(payload.get("success")),
+            post_id=str(payload["post_id"]) if payload.get("post_id") else None,
+            raw=payload,
+        )
+
+    def reel_identity(self, *, page_token: str, video_id: str) -> ReelIdentity:
+        self._refuse_mock(page_token)
+        payload = self._request(
+            "GET",
+            f"/{video_id}",
+            params={
+                "fields": "id,permalink_url,post_id",
+                "access_token": page_token,
+                "appsecret_proof": self._proof(page_token),
+            },
+        )
+        return ReelIdentity(
+            post_id=str(payload["post_id"]) if payload.get("post_id") else None,
+            permalink_url=payload.get("permalink_url"),
+            raw=payload,
+        )

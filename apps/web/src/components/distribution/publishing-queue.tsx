@@ -9,6 +9,7 @@ import { useAuth } from "@/components/auth/auth-provider";
 import { PUBLICATION_LABEL } from "@/components/distribution/badges";
 import { DistributionTabs } from "@/components/distribution/distribution-tabs";
 import { PublicationRow } from "@/components/distribution/publication-row";
+import { EngineStatusCard } from "@/components/distribution/upload-progress";
 import { PageHeader } from "@/components/layout/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -16,11 +17,17 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { publishingQueries, releaseDue } from "@/lib/api/publishing";
 
 const GROUPS: { status: PublicationStatus; hint: string }[] = [
-  { status: "ready_to_publish", hint: "Due now. Open each one and follow the checklist." },
-  { status: "publishing", hint: "An operator is publishing. Record the result when done." },
+  {
+    status: "ready_to_publish",
+    hint: "Due now. Connected Pages are picked up by the publisher; assisted ones need the checklist.",
+  },
+  {
+    status: "publishing",
+    hint: "API attempts show their upload phase; assisted attempts wait for the operator's result.",
+  },
   {
     status: "needs_reconciliation",
-    hint: "Outcome uncertain. An admin must check the Page and reconcile; nothing retries automatically.",
+    hint: "Outcome uncertain. An admin checks with the provider (never re-sends) or reconciles manually.",
   },
   { status: "scheduled", hint: "Waiting for their time. Release moves due items up." },
   { status: "approved", hint: "Approved, not yet scheduled." },
@@ -46,7 +53,7 @@ export function PublishingQueue() {
     <div className="space-y-6">
       <PageHeader
         title="Publishing queue"
-        description="Everything approved or in flight, ordered by urgency. Assisted mode: you publish in the platform, then confirm here with the post URL."
+        description="Everything approved or in flight, ordered by urgency. Connected Pages publish through the engine; assisted targets are published by you and confirmed with the post URL."
         actions={
           can("edit") ? (
             <Button variant="outline" onClick={() => release.mutate()} disabled={release.isPending}>
@@ -57,6 +64,7 @@ export function PublishingQueue() {
         }
       />
       <DistributionTabs />
+      <EngineStatusCard />
       {queue.isPending ? (
         <Skeleton className="h-64 rounded-xl" />
       ) : queue.isError ? (

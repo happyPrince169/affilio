@@ -89,6 +89,21 @@ impossible: an asset from another organization is simply "not found".
 - **Finals are not footage.** The finals root produces `asset_kind = final` assets with their
   own duplicate scope, no proxy linking, and a human handoff gate (`handoff_status`).
 
+### publishing engine and publisher worker (M3B.2A)
+
+```
+publishing/  += engine.py (dispatch, claim/lease, phase steps, retries, reconciliation),
+             eligibility.py (API vs assisted), media_checks.py (pre-upload validation),
+             models.PublicationUpload / PublisherWorker, routes /publishing/engine/status and
+             /publishing/publications/{id}/reconcile-provider
+worker/      += publisher.py (`python -m affilio.worker.publisher`, separate container)
+accounts/    providers gain the Reels calls (mock: faults + registry; live: gated)
+```
+
+`publishing.engine` imports `accounts.vault`, `accounts.connections` and the provider factory
+(service functions only). The publisher reads the finals root through `RootBinding.resolve`
+and never writes anywhere. See `docs/architecture/publishing-engine.md`.
+
 ### accounts: connections, vault and providers (M3B.1A)
 
 ```

@@ -6,6 +6,7 @@ import Link from "next/link";
 
 import { useAuth } from "@/components/auth/auth-provider";
 import { EvidenceBadge, PublicationStatusBadge } from "@/components/distribution/badges";
+import { MockPublicationBadge, UploadInline } from "@/components/distribution/upload-progress";
 import { MediaThumbnail } from "@/components/media/media-thumbnail";
 import { formatInZone } from "@/lib/format";
 
@@ -35,6 +36,7 @@ export function PublicationRow({
         <div className="flex flex-wrap items-center gap-2">
           <PublicationStatusBadge status={item.status} />
           <EvidenceBadge kind={item.evidence_kind} />
+          {item.status === "published" && item.target_is_mock ? <MockPublicationBadge /> : null}
           {item.approval_stale ? (
             <span className="inline-flex items-center gap-1 text-[11px] text-warning">
               <TriangleAlert className="size-3" /> approval outdated
@@ -74,7 +76,10 @@ export function PublicationRow({
           {item.published_at ? (
             <span>published {formatInZone(item.published_at, timezone)}</span>
           ) : null}
-          {item.last_error ? <span className="text-destructive">{item.last_error}</span> : null}
+          {item.last_error && !item.upload ? (
+            <span className="text-destructive">{item.last_error}</span>
+          ) : null}
+          <UploadInline item={item} />
         </div>
       </div>
     </Link>

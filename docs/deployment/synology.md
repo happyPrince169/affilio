@@ -1,6 +1,7 @@
 # Deploying AFFILIO on a Synology NAS
 
-AFFILIO runs as four containers managed by Docker Compose on DSM. This guide is written for
+AFFILIO runs as five containers managed by Docker Compose on DSM (postgres, api, worker,
+publisher, web). This guide is written for
 DSM 7.2 with **Container Manager**. Nothing here modifies the existing video-processing
 workflow: originals and proxies are mounted **read-only**, and AFFILIO writes only to its own
 thumbnail, export, and database folders.
@@ -167,6 +168,7 @@ Defaults (set in `.env`) suit a 4-core / 8 GB NAS:
 | postgres | 1.0 | 512M | `shm_size` 128M |
 | api | 1.0 | 512M | one uvicorn worker |
 | worker | 2.0 | 768M | ffprobe/ffmpeg run single-threaded; `MEDIA_THUMBNAIL_CONCURRENCY` controls parallel renders (default 1) |
+| publisher | 0.5 | 256M | Reels publisher (M3B.2A): streams finals in 4 MiB chunks, no transcoding; `PUBLISHER_MAX_CONCURRENT_UPLOADS` (default 1) |
 | web | 1.0 | 384M | |
 
 Lower the worker's CPU share if the NAS also transcodes for the existing pipeline. Scans are
@@ -181,6 +183,7 @@ duplicates.
 | Web | `curl -fsS http://<ip>:3080/` |
 | API through the web proxy | `curl -fsS http://<ip>:3080/api/v1/health` and `/api/v1/system/info` (`database.status: ok`) |
 | Worker | `docker compose exec worker python -m affilio.worker --healthcheck; echo $?` → `0` (heartbeat < 2 min old) |
+| Publisher | `docker compose exec publisher python -m affilio.worker.publisher --healthcheck; echo $?` → `0`; the Distribution → Queue page shows the worker |
 | Scan state | `curl -fsS http://<ip>:3080/api/v1/media/scans/status` |
 | Logs | `docker compose logs --since 1h api worker` (JSON lines, `request_id` on every API line) |
 

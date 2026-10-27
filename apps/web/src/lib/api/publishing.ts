@@ -4,6 +4,7 @@ import type {
   CampaignDetail,
   CampaignFilters,
   CampaignUpdate,
+  EngineStatus,
   EvidenceRequest,
   FailureRequest,
   PaginatedCampaigns,
@@ -43,6 +44,9 @@ const pub = (id: string) => `${BASE}/publications/${encodeURIComponent(id)}`;
 
 export const fetchPublishingStats = () => apiFetch<PublishingStats>(`${BASE}/stats`);
 export const fetchQueue = () => apiFetch<PublicationSummary[]>(`${BASE}/queue`);
+export const fetchEngineStatus = () => apiFetch<EngineStatus>(`${BASE}/engine/status`);
+export const reconcileWithProvider = (id: string, body: VersionedRequest) =>
+  send<PublicationDetail>(`${pub(id)}/reconcile-provider`, body);
 export const releaseDue = () =>
   apiFetch<ReleaseDueResponse>(`${BASE}/queue/release-due`, { method: "POST" });
 export const fetchCalendar = (start: string, end: string) =>
@@ -122,7 +126,14 @@ export const publishingQueries = {
       queryKey: [...publishingQueries.all(), "queue"] as const,
       queryFn: fetchQueue,
       staleTime: 5_000,
-      refetchInterval: 30_000,
+      refetchInterval: 10_000,
+    }),
+  engine: () =>
+    queryOptions({
+      queryKey: [...publishingQueries.all(), "engine"] as const,
+      queryFn: fetchEngineStatus,
+      staleTime: 5_000,
+      refetchInterval: 10_000,
     }),
   calendar: (start: string, end: string) =>
     queryOptions({

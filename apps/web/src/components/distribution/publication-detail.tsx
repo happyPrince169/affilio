@@ -22,6 +22,12 @@ import {
   PublicationStatusBadge,
 } from "@/components/distribution/badges";
 import { DistributionTabs } from "@/components/distribution/distribution-tabs";
+import {
+  CheckWithProviderButton,
+  ELIGIBILITY_LABEL,
+  MockPublicationBadge,
+  UploadPanel,
+} from "@/components/distribution/upload-progress";
 import { LinkPicker } from "@/components/distribution/link-picker";
 import {
   ConfirmPublishedDialog,
@@ -329,6 +335,73 @@ function AssistedPanel({ job }: { job: PublicationDetail }) {
   );
 }
 
+function ApiPanel({ job }: { job: PublicationDetail }) {
+  const { can } = useAuth();
+  const upload = job.upload;
+  const parked = job.status === "needs_reconciliation" && upload?.phase === "needs_reconciliation";
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex flex-wrap items-center gap-2 text-base">
+          API publishing
+          {job.target_is_mock ? <MockPublicationBadge /> : null}
+        </CardTitle>
+        <CardDescription>
+          {job.target_is_mock
+            ? "The connected Page is a mock: the publisher worker simulates the upload, processing and publish steps. No Facebook post is created."
+            : "The publisher worker uploads the approved final to the connected Page and verifies the result."}
+          {job.target_hold_until
+            ? ` Page hold (${job.target_hold_reason}) until ${job.target_hold_until}.`
+            : ""}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {upload ? (
+          <UploadPanel upload={upload} />
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No API attempt yet.{" "}
+            {job.status === "scheduled"
+              ? "The publisher starts it when the scheduled time arrives."
+              : job.allowed_actions.includes("start")
+                ? "Start now or schedule it."
+                : ""}
+          </p>
+        )}
+        {job.uploads.length > 1 ? (
+          <details className="text-xs">
+            <summary className="cursor-pointer text-muted-foreground">
+              Earlier attempts ({job.uploads.length - 1})
+            </summary>
+            <ol className="mt-2 space-y-2">
+              {job.uploads
+                .filter((u) => u.id !== upload?.id)
+                .map((u) => (
+                  <li key={u.id} className="rounded-md border p-2">
+                    <UploadPanel upload={u} />
+                  </li>
+                ))}
+            </ol>
+          </details>
+        ) : null}
+        {job.api_eligibility_reason ? (
+          <p className="text-xs text-warning">
+            {ELIGIBILITY_LABEL[job.api_eligibility_reason] ?? job.api_eligibility_reason}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap gap-2 border-t pt-3">
+          {can("edit") && job.allowed_actions.includes("start") ? (
+            <SimpleActionButton job={job} action="start" variant="default">
+              Publish now via API
+            </SimpleActionButton>
+          ) : null}
+          {can("approve") && parked ? <CheckWithProviderButton job={job} /> : null}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function ActionBar({ job }: { job: PublicationDetail }) {
   const allowed = new Set(job.allowed_actions);
   const buttons: React.ReactNode[] = [];
@@ -434,14 +507,20 @@ export function PublicationDetailRoute() {
         </Alert>
       ) : null}
       {job.status === "published" ? (
-        <Alert>
+        <Alert className={job.target_is_mock ? "border-amber-500/50 bg-amber-500/10" : undefined}>
           <Check />
-          <AlertTitle>
-            Published ({job.evidence_kind === "api_verified" ? "API verified" : "operator-reported"}
-            )
+          <AlertTitle className="flex flex-wrap items-center gap-2">
+            {job.target_is_mock ? "Simulated publication" : "Published"} (
+            {job.evidence_kind === "api_verified" ? "API verified" : "operator-reported"})
+            {job.target_is_mock ? <MockPublicationBadge /> : null}
           </AlertTitle>
           <AlertDescription>
-            {job.external_post_url ? (
+            {job.target_is_mock ? (
+              <span className="block text-xs">
+                Produced by the mock provider: no Facebook post exists. Reference{" "}
+                <span className="font-mono">{job.external_post_url ?? job.external_post_id}</span>
+              </span>
+            ) : job.external_post_url ? (
               <a
                 href={job.external_post_url}
                 target="_blank"
@@ -461,7 +540,7 @@ export function PublicationDetailRoute() {
       ) : null}
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-2">
-          <AssistedPanel job={job} />
+          {job.publish_mode === "api" ? <ApiPanel job={job} /> : <AssistedPanel job={job} />}
           <ContentEditor job={job} />
         </div>
         <div className="space-y-4">

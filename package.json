@@ -26,7 +26,8 @@
     "db:seed": "pnpm --filter @affilio/api seed",
     "dev:worker": "pnpm --filter @affilio/api worker",
     "media:scan": "pnpm --filter @affilio/api scan",
-    "db:backup": "./scripts/db-backup.sh"
+    "db:backup": "./scripts/db-backup.sh",
+    "dev:publisher": "pnpm --filter @affilio/api publisher"
   },
   "devDependencies": {
     "@affilio/config": "workspace:*",

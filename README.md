@@ -113,6 +113,10 @@ refused in staging/production) lets you connect deterministic mock Pages without
 tokens are encrypted with the key ring in `CREDENTIAL_ENCRYPTION_KEYS` (generate with
 `openssl rand -base64 32`; the connection endpoints answer 503 without it). In the split dev
 setup set `WEB_BASE_URL=http://localhost:3000` so the OAuth callback returns to the web app.
+**Reels publishing engine (M3B.2A).** `pnpm dev:publisher` (or
+`uv run python -m affilio.worker.publisher`) runs the publisher worker that drives API
+attempts for connected Pages; in mock mode it simulates the whole lifecycle. Live publishing
+stays off (`META_LIVE_PUBLISHING_ENABLED=false`) until the activation checklist is done.
 Maintenance: `uv run python -m affilio.scripts.maintenance` (session and OAuth-attempt purge,
 also run hourly by the worker); key rotation: `uv run python -m affilio.scripts.rotate_credential_keys`.
 

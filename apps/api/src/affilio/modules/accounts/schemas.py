@@ -233,6 +233,8 @@ MockActionName = Literal[
     "outage_on",
     "outage_off",
     "reset",
+    "script_fault",
+    "clear_faults",
 ]
 
 
@@ -242,6 +244,8 @@ class MockActionRequest(BaseModel):
     action: MockActionName
     account_id: uuid.UUID | None = None
     connection_id: uuid.UUID | None = None
+    # Reels fault to script for the Page (`script_fault`); see providers/mock.py REEL_FAULTS.
+    fault: str | None = Field(default=None, max_length=64)
 
 
 class MockActionResponse(AccountModel):

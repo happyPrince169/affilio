@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, object_session, selectinload
 
 from affilio.core.audit import record_audit
+from affilio.core.config import Settings, get_settings
 from affilio.core.enums import (
     CampaignStatus,
     EvidenceKind,
@@ -30,8 +31,12 @@ from affilio.core.enums import (
     Platform,
     PublicationAttemptStatus,
     PublicationStatus,
+    PublishMode,
+    PublishRequestStatus,
+    SocialAccountSource,
     SocialAccountStatus,
     ThumbnailStatus,
+    UploadPhase,
 )
 from affilio.core.errors import NotFoundError
 from affilio.modules.accounts import routing_engine
@@ -46,6 +51,11 @@ from affilio.modules.products.urls import normalize_url
 from affilio.modules.publishing import lifecycle
 from affilio.modules.publishing.adapters import get_adapter
 from affilio.modules.publishing.adapters.base import ValidationResult
+from affilio.modules.publishing.eligibility import (
+    account_api_eligibility,
+    job_api_eligibility,
+    page_hold,
+)
 from affilio.modules.publishing.errors import (
     CampaignClosedError,
     ContentInvalidError,
@@ -62,6 +72,7 @@ from affilio.modules.publishing.errors import (
     VersionConflictError,
 )
 from affilio.modules.publishing.models import (
+    UPLOAD_ACTIVE_PHASES,
     Campaign,
     CampaignMedia,
     CampaignTarget,
@@ -69,6 +80,7 @@ from affilio.modules.publishing.models import (
     PublicationJob,
     PublicationLink,
     PublicationSnapshot,
+    PublicationUpload,
 )
 from affilio.modules.publishing.schemas import (
     CalendarResponse,
@@ -78,8 +90,10 @@ from affilio.modules.publishing.schemas import (
     CampaignSummary,
     CampaignTargetResponse,
     CampaignUpdate,
+    EngineStatus,
     EvidenceRequest,
     FailureRequest,
+    PagePublishingStatus,
     PaginatedCampaigns,
     PaginatedPublications,
     PreparedPublicationResponse,
@@ -94,7 +108,9 @@ from affilio.modules.publishing.schemas import (
     PublishingStats,
     ReconcileRequest,
     ScheduleRequest,
+    UploadSummary,
     ValidationResponse,
+    WorkerStatus,
 )
 from affilio.modules.taxonomy import service as taxonomy_service
 
@@ -275,6 +291,7 @@ def assert_publishable_target(session: Session, job: PublicationJob, *, step: st
 
 def _summary_fields(job: PublicationJob, *, thumbnail_url_prefix: str) -> dict[str, Any]:
     main = job.media_asset.main_variant()
+    eligibility = job_api_eligibility(job, get_settings())
     tree = _tree_for(job)
     blocked_reason = _blocked_reason(job, tree)
     stale = _classification_stale(job)
@@ -318,7 +335,56 @@ def _summary_fields(job: PublicationJob, *, thumbnail_url_prefix: str) -> dict[s
         "status_changed_at": job.status_changed_at,
         "created_at": job.created_at,
         "updated_at": job.updated_at,
+        # --- publishing engine (M3B.2A) ---
+        "publish_mode": "api" if eligibility.eligible else "assisted",
+        "api_eligibility_reason": eligibility.reason,
+        "target_is_mock": job.social_account.is_mock,
+        "target_hold_until": page_hold(job.social_account),
+        "target_hold_reason": job.social_account.publish_hold_reason
+        if page_hold(job.social_account)
+        else None,
+        "upload": upload_summary(_live_upload(job)),
     }
+
+
+def _live_upload(job: PublicationJob) -> PublicationUpload | None:
+    """The current (non-terminal) upload, else the most recent one."""
+    live = [u for u in job.uploads if u.is_live]
+    if live:
+        return live[-1]
+    return job.uploads[-1] if job.uploads else None
+
+
+def upload_summary(upload: PublicationUpload | None) -> UploadSummary | None:
+    if upload is None:
+        return None
+    return UploadSummary(
+        id=upload.id,
+        attempt_id=upload.attempt_id,
+        phase=upload.phase,
+        publish_request_status=upload.publish_request_status,
+        is_mock=upload.is_mock,
+        progress_percent=upload.progress_percent,
+        bytes_sent=upload.bytes_sent,
+        bytes_total=upload.bytes_total,
+        processing_status=upload.processing_status,
+        provider_video_id=upload.provider_video_id,
+        external_post_id=upload.external_post_id,
+        external_post_url=upload.external_post_url,
+        retry_count=upload.retry_count,
+        max_retries=upload.max_retries,
+        next_action_at=upload.next_action_at,
+        lease_owner=upload.lease_owner,
+        lease_expires_at=upload.lease_expires_at,
+        last_error=upload.last_error,
+        last_error_code=upload.last_error_code,
+        last_error_transient=upload.last_error_transient,
+        finish_requested_at=upload.finish_requested_at,
+        published_at=upload.published_at,
+        started_at=upload.started_at,
+        finished_at=upload.finished_at,
+        updated_at=upload.updated_at,
+    )
 
 
 def job_summary(job: PublicationJob, *, thumbnail_url_prefix: str) -> PublicationSummary:
@@ -328,6 +394,7 @@ def job_summary(job: PublicationJob, *, thumbnail_url_prefix: str) -> Publicatio
 def job_detail(job: PublicationJob, *, thumbnail_url_prefix: str, role) -> PublicationDetail:
     validation = validate_job(job)
     return PublicationDetail(
+        uploads=[u for u in (upload_summary(x) for x in job.uploads) if u is not None],
         **_summary_fields(job, thumbnail_url_prefix=thumbnail_url_prefix),
         caption=job.caption,
         cta=job.cta,
@@ -383,10 +450,12 @@ def _job_query() -> Select:
         .selectinload(MediaContentCategory.category),
         selectinload(PublicationJob.social_account).selectinload(SocialAccount.channel_profile),
         selectinload(PublicationJob.social_account).selectinload(SocialAccount.category_rules),
+        selectinload(PublicationJob.social_account).selectinload(SocialAccount.connection),
         selectinload(PublicationJob.links).selectinload(PublicationLink.affiliate_link),
         selectinload(PublicationJob.snapshots),
         selectinload(PublicationJob.approved_snapshot),
         selectinload(PublicationJob.attempts),
+        selectinload(PublicationJob.uploads),
     )
 
 
@@ -1391,7 +1460,8 @@ def start(
     note: str | None,
     identity: Identity,
 ) -> PublicationJob:
-    """Begin an assisted attempt. The adapter never publishes over the network in M3A."""
+    """Begin an attempt: API-eligible targets are queued for the publisher worker (M3B.2A);
+    everything else starts an assisted attempt (the adapter never publishes over the network)."""
     job = _lock_job(session, organization_id, job_id, expected_version=version)
     lifecycle.assert_transition("start", job.status)
     snapshot = job.approved_snapshot
@@ -1400,6 +1470,24 @@ def start(
     if job.social_account.status == SocialAccountStatus.DISABLED:
         raise TargetUnavailableError("The target account is disabled")
     assert_publishable_target(session, job, step="start publishing")
+    settings = get_settings()
+    if job_api_eligibility(job, settings).eligible:
+        hold = page_hold(job.social_account)
+        if hold is not None:
+            raise TargetUnavailableError(
+                "The target Page is on a publishing hold "
+                f"({job.social_account.publish_hold_reason or 'hold'}) until {hold.isoformat()}",
+                details={"hold_until": hold.isoformat()},
+            )
+        enqueue_api_attempt(
+            session,
+            job,
+            identity=identity,
+            note=note,
+            started_by_label=identity.label,
+            settings=settings,
+        )
+        return job
     adapter = get_adapter(job.platform)
     prepared = adapter.prepare_publication(
         content={
@@ -1892,3 +1980,192 @@ def cancel(
     lifecycle.assert_transition("cancel", job.status)
     job.scheduled_at = None
     return _transition(session, organization_id, job, action="cancel", identity=identity, note=note)
+
+
+# ====================================================================== publishing engine (M3B.2A)
+
+
+def enqueue_api_attempt(
+    session: Session,
+    job: PublicationJob,
+    *,
+    identity: Identity | None,
+    note: str | None,
+    started_by_label: str,
+    settings: Settings,
+) -> PublicationUpload:
+    """Create the attempt + durable upload row and move the job to PUBLISHING.
+
+    Callers hold the row lock and have verified: transition allowed, snapshot current, target
+    eligible. No network I/O happens here; the publisher worker drives the upload.
+    """
+    snapshot = job.approved_snapshot
+    assert snapshot is not None  # noqa: S101 - caller verified
+    live = [u for u in job.uploads if u.is_live]
+    if live:
+        raise InvalidPublicationTransitionError(
+            "An upload is already in progress for this publication",
+            details={"upload_id": str(live[0].id)},
+        )
+    attempt = PublicationAttempt(
+        id=uuid.uuid4(),
+        job_id=job.id,
+        attempt_no=len(job.attempts) + 1,
+        mode=PublishMode.API,
+        adapter="facebook_reels",
+        status=PublicationAttemptStatus.STARTED,
+        snapshot_id=snapshot.id,
+        started_by_label=started_by_label[:255],
+        started_at=_now(),
+        detail={"engine": "publisher", "mock": job.social_account.is_mock},
+    )
+    session.add(attempt)
+    job.attempts.append(attempt)
+    session.flush()
+    upload = PublicationUpload(
+        id=uuid.uuid4(),
+        organization_id=job.organization_id,
+        job_id=job.id,
+        attempt_id=attempt.id,
+        social_account_id=job.social_account_id,
+        media_asset_id=job.media_asset_id,
+        snapshot_id=snapshot.id,
+        provider="meta",
+        is_mock=job.social_account.is_mock,
+        phase=UploadPhase.PENDING,
+        publish_request_status=PublishRequestStatus.NOT_SENT,
+        max_retries=settings.publisher_max_retries,
+        next_action_at=_now(),
+    )
+    session.add(upload)
+    job.uploads.append(upload)
+    job.last_error = None
+    attempt.detail = {**attempt.detail, "upload_id": str(upload.id)}
+    _transition(
+        session,
+        job.organization_id,
+        job,
+        action="start",
+        identity=identity,
+        note=note,
+        extra={"attempt_no": attempt.attempt_no, "adapter": "facebook_reels", "mode": "api"},
+    )
+    return upload
+
+
+def reconcile_with_provider(
+    session: Session,
+    organization_id: uuid.UUID,
+    job_id: uuid.UUID,
+    *,
+    version: int,
+    identity: Identity,
+    settings: Settings,
+) -> PublicationJob:
+    """Admin: ask the provider what happened to a parked (NEEDS_RECONCILIATION) upload."""
+    from affilio.modules.publishing import engine
+
+    job = _lock_job(session, organization_id, job_id, expected_version=version)
+    lifecycle.assert_transition("reconcile", job.status)
+    upload = next((u for u in job.uploads if u.phase == UploadPhase.NEEDS_RECONCILIATION), None)
+    if upload is None:
+        raise InvalidPublicationTransitionError(
+            "No API attempt is waiting for provider reconciliation; use manual reconcile"
+        )
+    engine.reconcile_upload(session, settings, upload, identity=identity)
+    _bump(job)
+    session.flush()
+    return get_job(session, organization_id, job_id)
+
+
+def engine_status(session: Session, organization_id: uuid.UUID, settings: Settings) -> EngineStatus:
+    from affilio.modules.publishing.models import PublisherWorker
+
+    now = _now()
+    fresh_cutoff = now - timedelta(seconds=120)
+    workers = [
+        WorkerStatus(
+            worker_id=w.worker_id,
+            hostname=w.hostname,
+            pid=w.pid,
+            version=w.version,
+            max_concurrency=w.max_concurrency,
+            in_flight=w.in_flight,
+            started_at=w.started_at,
+            last_seen_at=w.last_seen_at,
+            healthy=w.stopped_at is None and w.last_seen_at >= fresh_cutoff,
+        )
+        for w in session.scalars(
+            select(PublisherWorker)
+            .where(PublisherWorker.stopped_at.is_(None))
+            .order_by(PublisherWorker.last_seen_at.desc())
+        )
+    ]
+    counts: dict[str, int] = {phase.value: 0 for phase in UploadPhase}
+    for phase, count in session.execute(
+        select(PublicationUpload.phase, func.count())
+        .where(PublicationUpload.organization_id == organization_id)
+        .group_by(PublicationUpload.phase)
+    ):
+        counts[phase.value if hasattr(phase, "value") else str(phase)] = int(count)
+    pages: list[PagePublishingStatus] = []
+    accounts = session.scalars(
+        select(SocialAccount).where(
+            SocialAccount.organization_id == organization_id,
+            SocialAccount.platform == Platform.FACEBOOK,
+        )
+    )
+    for account in accounts:
+        if not (account.source == SocialAccountSource.OAUTH or account.is_connected):
+            continue
+        live = session.scalar(
+            select(func.count())
+            .select_from(PublicationUpload)
+            .where(
+                PublicationUpload.social_account_id == account.id,
+                PublicationUpload.phase.in_(list(UPLOAD_ACTIVE_PHASES)),
+            )
+        )
+        parked = session.scalar(
+            select(func.count())
+            .select_from(PublicationUpload)
+            .where(
+                PublicationUpload.social_account_id == account.id,
+                PublicationUpload.phase == UploadPhase.NEEDS_RECONCILIATION,
+            )
+        )
+        published_24h = session.scalar(
+            select(func.count())
+            .select_from(PublicationUpload)
+            .where(
+                PublicationUpload.social_account_id == account.id,
+                PublicationUpload.phase == UploadPhase.PUBLISHED,
+                PublicationUpload.published_at >= now - timedelta(hours=24),
+            )
+        )
+        eligibility = account_api_eligibility(account, settings)
+        pages.append(
+            PagePublishingStatus(
+                social_account_id=account.id,
+                display_name=account.display_name,
+                is_mock=account.is_mock,
+                connected=account.is_connected,
+                api_eligible=eligibility.eligible,
+                api_eligibility_reason=eligibility.reason,
+                live_uploads=int(live or 0),
+                needs_reconciliation=int(parked or 0),
+                published_last_24h=int(published_24h or 0),
+                daily_quota=settings.meta_reels_daily_quota,
+                hold_until=page_hold(account, now),
+                hold_reason=account.publish_hold_reason if page_hold(account, now) else None,
+            )
+        )
+    return EngineStatus(
+        mode=settings.meta_provider_mode,
+        live_publishing_enabled=settings.meta_live_publishing_enabled,
+        workers=workers,
+        healthy_workers=sum(1 for w in workers if w.healthy),
+        phase_counts=counts,
+        pages=pages,
+        generated_at=now,
+    )

@@ -213,6 +213,36 @@ class OAuthAttemptStatus(StrEnum):
     EXPIRED = "expired"  # swept without ever being consumed
 
 
+class UploadPhase(StrEnum):
+    """Phase of one API publishing attempt (`publication_uploads`). See
+    docs/architecture/publishing-engine.md for the machine and the recovery rules."""
+
+    PENDING = "pending"  # created; nothing sent yet
+    VALIDATING = "validating"  # media checks running (local I/O only)
+    SESSION_STARTING = "session_starting"  # about to ask the provider for an upload session
+    UPLOADING = "uploading"  # bytes are being transferred (resumable by offset)
+    UPLOAD_COMPLETE = "upload_complete"  # provider acknowledged all bytes
+    PROCESSING = "processing"  # provider is transcoding/checking the video
+    FINALIZING = "finalizing"  # publish (finish) request persisted BEFORE it is sent
+    VERIFYING = "verifying"  # finish acknowledged; polling until the post is live
+    RETRY_WAIT = "retry_wait"  # transient failure; next_action_at holds the backoff
+    PUBLISHED = "published"  # terminal success
+    FAILED = "failed"  # terminal, permanent failure (explicit retry creates a new row)
+    NEEDS_RECONCILIATION = "needs_reconciliation"  # finish may have succeeded; human/provider check
+    ABANDONED = "abandoned"  # terminal; the job left PUBLISHING by another path
+
+
+class PublishRequestStatus(StrEnum):
+    """Whether the publish (finish) request was sent and what the provider said."""
+
+    NOT_SENT = "not_sent"
+    SENT = "sent"  # persisted before the call; response not yet recorded
+    ACKNOWLEDGED = "acknowledged"  # provider answered success; post may still be processing
+    CONFIRMED = "confirmed"  # provider reports the post as published
+    REJECTED = "rejected"  # provider answered with a permanent error
+    UNKNOWN = "unknown"  # sent, but the outcome could not be determined
+
+
 class AffiliateLinkStatus(StrEnum):
     ACTIVE = "active"
     ARCHIVED = "archived"

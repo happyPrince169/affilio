@@ -137,6 +137,20 @@ is deliberately not introduced.
   `account.verified`, `account.token_invalid`, `account.disconnected`,
   `connection.verified/token_invalid/revoked`, `mock.action` — never with a token.
 
+## Publishing engine (M3B.2A)
+
+- The publisher decrypts a Page token only inside one step and hands it to the provider call;
+  it is never written to `publication_uploads`, audit data, logs or responses. Upload rows
+  expose provider ids and error codes only.
+- Live publishing is refused for real Pages while `META_LIVE_PUBLISHING_ENABLED=false`
+  (`publishing/eligibility.py`), mock Pages are refused in live mode, and the mock and live
+  providers reject each other's tokens.
+- Blocked targets, reclassified videos, disconnected Pages, revoked approvals and held Pages
+  are re-checked at dispatch and at every step; a job that leaves `PUBLISHING` has its upload
+  abandoned before any publish request.
+- `reconcile-provider` is admin-only and never re-sends the publish request; the queue and
+  engine status are organization-scoped like every other read.
+
 ## Service token scope (M3B.1A)
 
 `X-Affilio-Admin-Token` may only call the allow-listed internal operations

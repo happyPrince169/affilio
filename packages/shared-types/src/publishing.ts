@@ -7,7 +7,75 @@ import type {
   PublicationAttemptStatus,
   PublicationStatus,
   PublishMode,
+  PublishRequestStatus,
+  UploadPhase,
 } from "./domain";
+
+/** Durable state of one API publishing attempt (M3B.2A). Mirrors `UploadSummary`. */
+export interface UploadSummary {
+  id: string;
+  attempt_id: string;
+  phase: UploadPhase;
+  publish_request_status: PublishRequestStatus;
+  is_mock: boolean;
+  progress_percent: number | null;
+  bytes_sent: number;
+  bytes_total: number | null;
+  processing_status: string | null;
+  provider_video_id: string | null;
+  external_post_id: string | null;
+  external_post_url: string | null;
+  retry_count: number;
+  max_retries: number;
+  next_action_at: string;
+  lease_owner: string | null;
+  lease_expires_at: string | null;
+  last_error: string | null;
+  last_error_code: string | null;
+  last_error_transient: boolean | null;
+  finish_requested_at: string | null;
+  published_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+}
+
+export interface WorkerStatus {
+  worker_id: string;
+  hostname: string;
+  pid: number;
+  version: string;
+  max_concurrency: number;
+  in_flight: number;
+  started_at: string;
+  last_seen_at: string;
+  healthy: boolean;
+}
+
+export interface PagePublishingStatus {
+  social_account_id: string;
+  display_name: string;
+  is_mock: boolean;
+  connected: boolean;
+  api_eligible: boolean;
+  api_eligibility_reason: string | null;
+  live_uploads: number;
+  needs_reconciliation: number;
+  published_last_24h: number;
+  daily_quota: number;
+  hold_until: string | null;
+  hold_reason: string | null;
+}
+
+export interface EngineStatus {
+  mode: "live" | "mock";
+  live_publishing_enabled: boolean;
+  workers: WorkerStatus[];
+  healthy_workers: number;
+  phase_counts: Record<string, number>;
+  pages: PagePublishingStatus[];
+  generated_at: string;
+}
 
 export type PublicationAction =
   | "submit"
@@ -252,9 +320,17 @@ export interface PublicationSummary {
   status_changed_at: string;
   created_at: string;
   updated_at: string;
+  // --- publishing engine (M3B.2A) ---
+  publish_mode: "api" | "assisted";
+  api_eligibility_reason: string | null;
+  target_is_mock: boolean;
+  target_hold_until: string | null;
+  target_hold_reason: string | null;
+  upload: UploadSummary | null;
 }
 
 export interface PublicationDetail extends PublicationSummary {
+  uploads: UploadSummary[];
   caption: string | null;
   cta: string | null;
   hashtags: string[];

@@ -167,7 +167,14 @@ function AccountCard({ account, mock }: { account: SocialAccount; mock: boolean 
             assisted publishing: {caps.assisted_publishing ? "yes" : "no"}
           </Badge>
           <Badge variant="outline">
-            API publishing: {caps.api_publishing ? "yes" : "no (M3B.1B)"}
+            API publishing:{" "}
+            {!caps.api_publishing
+              ? "no"
+              : account.can_publish
+                ? account.is_mock
+                  ? "simulated (mock)"
+                  : "ready"
+                : "when connected"}
           </Badge>
           {oauth ? (
             <Badge

@@ -51,6 +51,8 @@ EXPECTED_TABLES = {
     "platform_connections",
     "account_credentials",
     "oauth_states",
+    "publication_uploads",
+    "publisher_workers",
 }
 
 pytestmark = pytest.mark.database

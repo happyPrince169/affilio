@@ -12,6 +12,7 @@
     "migrate": "uv run alembic upgrade head",
     "seed": "uv run python -m affilio.scripts.seed_dev",
     "worker": "uv run python -m affilio.worker",
-    "scan": "uv run python -m affilio.scripts.media_scan"
+    "scan": "uv run python -m affilio.scripts.media_scan",
+    "publisher": "uv run python -m affilio.worker.publisher"
   }
 }

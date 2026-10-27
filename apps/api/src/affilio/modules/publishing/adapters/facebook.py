@@ -31,17 +31,19 @@ class FacebookReelsAdapter(AssistedPublishingAdapter):
         return PlatformCapabilities(
             platform=Platform.FACEBOOK,
             assisted_publishing=True,
-            api_publishing=False,  # requires Page OAuth + review (M3B)
-            scheduling_via_api=False,
-            status_lookup_via_api=False,
+            # Through the publishing engine for connected Pages (M3B.2A); mock Pages simulate
+            # it, real Pages need META_LIVE_PUBLISHING_ENABLED (eligibility.py decides per job).
+            api_publishing=True,
+            scheduling_via_api=False,  # AFFILIO schedules; Meta-side scheduling is M3B.2B
+            status_lookup_via_api=True,
             clickable_links_in_caption=False,
             max_caption_length=FACEBOOK_REELS_MAX_CAPTION,
             max_hashtags=FACEBOOK_REELS_MAX_HASHTAGS,
             vertical_video=True,
             notes=(
                 "Reels captions do not render links as clickable; put links in the first comment.",
-                "API publishing, scheduling and status lookup arrive with Page authorization "
-                "(M3B).",
+                "API publishing runs through the publisher worker for connected Pages; "
+                "Meta-side scheduling is not used.",
             ),
         )
 

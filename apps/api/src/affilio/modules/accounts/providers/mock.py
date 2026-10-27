@@ -21,8 +21,10 @@ Runtime switches (admin-only mock actions): revoke a stored token (validation th
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from itertools import count
+from typing import Any
 from urllib.parse import urlencode
 
 from affilio.core.config import Settings
@@ -35,6 +37,12 @@ from affilio.modules.accounts.providers.base import (
     PageInfo,
     ProviderError,
     ProviderUnavailableError,
+    RateLimitedError,
+    ReelFinishResult,
+    ReelIdentity,
+    ReelStatus,
+    ReelUploadResult,
+    ReelUploadSession,
     TokenGrant,
     TokenInfo,
     TokenInvalidError,
@@ -61,6 +69,24 @@ MOCK_PAGES: tuple[tuple[str, str, str, list[str]], ...] = (
 )
 FULL_SCOPES = ["public_profile", "pages_show_list", "pages_read_engagement", "pages_manage_posts"]
 
+# Scripted faults for Reels publishing, consumed per Page in order by the matching call
+# (see `script_fault`). Everything else behaves like a healthy provider.
+REEL_FAULTS: tuple[str, ...] = (
+    "start_timeout",  # start_reel_upload: network timeout (transient)
+    "start_rate_limit",  # start_reel_upload: code 32 throttle (hold the Page)
+    "start_permission_denied",  # start_reel_upload: code 200 (permanent)
+    "upload_timeout",  # upload_reel_bytes: half the chunk lands, then timeout (resume)
+    "upload_reject",  # upload_reel_bytes: code 6000 (permanent, "try another file")
+    "status_outage",  # reel_status: transient outage
+    "processing_delay",  # reel_status: two extra "processing" polls
+    "processing_error",  # reel_status: video_status=error (permanent)
+    "finish_timeout_ambiguous",  # finish_reel: applied by the provider, response lost
+    "finish_timeout_lost",  # finish_reel: NOT applied, response lost
+    "finish_reject",  # finish_reel: code 368 (permanent)
+    "identity_missing",  # reel_identity: no post id / permalink yet
+)
+MOCK_PERMALINK_SCHEME = "mock://facebook/reel/"
+
 
 class MockMetaProvider(MetaProvider):
     name = "meta_mock"
@@ -72,6 +98,10 @@ class MockMetaProvider(MetaProvider):
     _revoked: set[str] = set()
     _outage: bool = False
     _sequence = count(1)
+    # Reels registry and scripted faults (process-wide, deterministic).
+    _videos: dict[str, dict[str, Any]] = {}
+    _faults: dict[str, deque[str]] = {}
+    _video_sequence = count(1)
 
     def __init__(self, settings: Settings) -> None:
         if settings.meta_provider_mode != "mock" or not settings.is_development:
@@ -83,6 +113,46 @@ class MockMetaProvider(MetaProvider):
         cls._revoked = set()
         cls._outage = False
         cls._sequence = count(1)
+        cls._videos = {}
+        cls._faults = {}
+        cls._video_sequence = count(1)
+
+    # ---- Reels scripting / inspection (tests and mock actions)
+    @classmethod
+    def script_fault(cls, page_id: str, fault: str) -> None:
+        if fault not in REEL_FAULTS:
+            raise ProviderError(f"Unknown mock fault {fault!r}")
+        cls._faults.setdefault(page_id, deque()).append(fault)
+
+    @classmethod
+    def clear_faults(cls, page_id: str | None = None) -> None:
+        if page_id is None:
+            cls._faults = {}
+        else:
+            cls._faults.pop(page_id, None)
+
+    @classmethod
+    def pending_faults(cls, page_id: str) -> list[str]:
+        return list(cls._faults.get(page_id, ()))
+
+    @classmethod
+    def _take_fault(cls, page_id: str, *candidates: str) -> str | None:
+        queue = cls._faults.get(page_id)
+        if queue and queue[0] in candidates:
+            return queue.popleft()
+        return None
+
+    @classmethod
+    def video(cls, video_id: str) -> dict[str, Any] | None:
+        return cls._videos.get(video_id)
+
+    @classmethod
+    def finish_count(cls, video_id: str) -> int:
+        return int((cls._videos.get(video_id) or {}).get("finish_count", 0))
+
+    @classmethod
+    def published_videos(cls, page_id: str) -> list[str]:
+        return [vid for vid, v in cls._videos.items() if v["page_id"] == page_id and v["published"]]
 
     @classmethod
     def set_outage(cls, active: bool) -> None:
@@ -202,3 +272,186 @@ class MockMetaProvider(MetaProvider):
         if self._outage:
             raise ProviderUnavailableError("Mock outage", is_transient=True)
         self._revoked.add(fingerprint(user_token))
+
+    # ------------------------------------------------------------------ Reels publishing
+    @staticmethod
+    def _page_of_token(page_token: str) -> str:
+        parts = page_token.split(":")
+        return parts[2] if len(parts) > 3 and parts[1] == "page" else ""
+
+    def _reel_video(self, video_id: str, page_id: str) -> dict[str, Any]:
+        video = self._videos.get(video_id)
+        if video is None or video["page_id"] != page_id:
+            raise ProviderError("Mock: unknown video id", provider_code=100, provider_subcode=33)
+        return video
+
+    def start_reel_upload(self, *, page_token: str, page_id: str) -> ReelUploadSession:
+        self._check(page_token)
+        if self._page_of_token(page_token) != page_id:
+            raise TokenInvalidError("Mock: token does not belong to this Page", provider_code=190)
+        fault = self._take_fault(
+            page_id, "start_timeout", "start_rate_limit", "start_permission_denied"
+        )
+        if fault == "start_timeout":
+            raise ProviderUnavailableError("Mock: start timed out", is_transient=True)
+        if fault == "start_rate_limit":
+            raise RateLimitedError(
+                "Mock: Page API rate limit reached", provider_code=32, retry_after_seconds=120
+            )
+        if fault == "start_permission_denied":
+            raise ProviderError(
+                "Mock: (#200) Requires pages_manage_posts permission", provider_code=200
+            )
+        video_id = f"mockvid{next(self._video_sequence):06d}"
+        self._videos[video_id] = {
+            "page_id": page_id,
+            "total": None,
+            "received": 0,
+            "upload_complete": False,
+            "processing_polls": 1,
+            "status_polls": 0,
+            "finish_count": 0,
+            "published": False,
+            "post_id": None,
+            "error": None,
+            "description": None,
+        }
+        return ReelUploadSession(
+            video_id=video_id, upload_url=f"mock://rupload/video-upload/{video_id}"
+        )
+
+    def upload_reel_bytes(
+        self,
+        *,
+        page_token: str,
+        session: ReelUploadSession,
+        chunk: bytes,
+        offset: int,
+        total: int,
+    ) -> ReelUploadResult:
+        self._check(page_token)
+        page_id = self._page_of_token(page_token)
+        video = self._reel_video(session.video_id, page_id)
+        if video["total"] is None:
+            video["total"] = total
+        if offset != video["received"]:
+            raise ProviderError(
+                "Mock: OffsetInvalidError",
+                provider_code=1363037,
+                details={"expected": video["received"]},
+            )
+        fault = self._take_fault(page_id, "upload_timeout", "upload_reject")
+        if fault == "upload_reject":
+            raise ProviderError(
+                "Mock: There was a problem uploading your video file. Please try again with "
+                "another file.",
+                provider_code=6000,
+            )
+        if fault == "upload_timeout":
+            video["received"] += len(chunk) // 2
+            raise ProviderUnavailableError("Mock: upload connection reset", is_transient=True)
+        video["received"] += len(chunk)
+        if video["received"] >= total:
+            video["upload_complete"] = True
+        return ReelUploadResult(bytes_received=video["received"])
+
+    def reel_status(self, *, page_token: str, video_id: str) -> ReelStatus:
+        self._check(page_token)
+        page_id = self._page_of_token(page_token)
+        video = self._reel_video(video_id, page_id)
+        fault = self._take_fault(page_id, "status_outage", "processing_delay", "processing_error")
+        if fault == "status_outage":
+            raise ProviderUnavailableError("Mock: status endpoint unavailable", is_transient=True)
+        if fault == "processing_delay":
+            video["processing_polls"] += 2
+        if fault == "processing_error":
+            video["error"] = "Mock: video processing failed"
+        video["status_polls"] += 1
+        if video["error"]:
+            return ReelStatus(
+                video_status="error",
+                bytes_transferred=video["received"],
+                processing_status="error",
+                error=video["error"],
+                raw={"mock": True},
+            )
+        if video["published"]:
+            return ReelStatus(
+                video_status="ready",
+                bytes_transferred=video["received"],
+                processing_status="completed",
+                publish_status="published",
+                raw={"mock": True, "publish_time": video.get("publish_time")},
+            )
+        if not video["upload_complete"]:
+            return ReelStatus(
+                video_status="uploading",
+                bytes_transferred=video["received"],
+                processing_status="not_started",
+                raw={"mock": True},
+            )
+        if video["processing_polls"] > 0:
+            video["processing_polls"] -= 1
+            return ReelStatus(
+                video_status="processing",
+                bytes_transferred=video["received"],
+                processing_status="in_progress",
+                raw={"mock": True},
+            )
+        return ReelStatus(
+            video_status="ready",
+            bytes_transferred=video["received"],
+            processing_status="completed",
+            publish_status="draft" if video["finish_count"] else None,
+            raw={"mock": True},
+        )
+
+    def finish_reel(
+        self,
+        *,
+        page_token: str,
+        page_id: str,
+        video_id: str,
+        description: str,
+        title: str | None,
+    ) -> ReelFinishResult:
+        self._check(page_token)
+        if self._page_of_token(page_token) != page_id:
+            raise TokenInvalidError("Mock: token does not belong to this Page", provider_code=190)
+        video = self._reel_video(video_id, page_id)
+        fault = self._take_fault(
+            page_id, "finish_timeout_ambiguous", "finish_timeout_lost", "finish_reject"
+        )
+        if fault == "finish_timeout_lost":
+            raise ProviderUnavailableError(
+                "Mock: finish timed out (not applied)", is_transient=True
+            )
+        if fault == "finish_reject":
+            raise ProviderError(
+                "Mock: Temporarily blocked for policies violations", provider_code=368
+            )
+        if not video["upload_complete"]:
+            raise ProviderError("Mock: upload not complete", provider_code=100)
+        video["finish_count"] += 1
+        video["published"] = True
+        video["description"] = description
+        video["publish_time"] = int(datetime.now(UTC).timestamp())
+        video["post_id"] = f"{page_id}_{video_id}"
+        if fault == "finish_timeout_ambiguous":
+            raise ProviderUnavailableError(
+                "Mock: finish timed out (applied by the provider)", is_transient=True
+            )
+        return ReelFinishResult(success=True, post_id=None, raw={"success": True, "mock": True})
+
+    def reel_identity(self, *, page_token: str, video_id: str) -> ReelIdentity:
+        self._check(page_token)
+        page_id = self._page_of_token(page_token)
+        video = self._reel_video(video_id, page_id)
+        fault = self._take_fault(page_id, "identity_missing")
+        if fault == "identity_missing" or not video["published"]:
+            return ReelIdentity(post_id=None, permalink_url=None, raw={"mock": True})
+        return ReelIdentity(
+            post_id=video["post_id"],
+            permalink_url=f"{MOCK_PERMALINK_SCHEME}{video_id}",
+            raw={"mock": True},
+        )

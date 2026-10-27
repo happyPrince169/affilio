@@ -123,6 +123,12 @@ class SocialAccount(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_mock: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )
+    # Durable per-Page publishing hold (provider rate limit, quota): the publisher does not
+    # start or advance uploads for this Page until the hold expires (M3B.2A).
+    publish_hold_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    publish_hold_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     organization: Mapped[Organization] = relationship(back_populates="social_accounts")
     connection: Mapped[PlatformConnection | None] = relationship(back_populates="accounts")
