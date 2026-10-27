@@ -1,6 +1,8 @@
 # M3B — Meta API publishing: prerequisites and plan
 
-- **Status:** Planned (not started). Nothing here is implemented in M3A.
+- **Status:** Superseded on 2026-10-26 by `docs/milestones/M3B-plan.md` and the research in
+  `docs/integrations/` (feasibility, architecture, Meta app setup). Kept for history; where the
+  two differ, the plan wins. Nothing here is implemented.
 - **Depends on:** M3A accepted; Meta developer app approved for the required permissions.
 
 ## What M3A already provides
