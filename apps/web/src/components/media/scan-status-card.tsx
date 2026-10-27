@@ -18,7 +18,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ApiError } from "@/lib/api/client";
-import { createScan, mediaQueries } from "@/lib/api/media";
+import { cancelScan, createScan, mediaQueries } from "@/lib/api/media";
 import { formatElapsed, formatRelative } from "@/lib/format";
 
 const STAT_LABELS: Array<[string, string]> = [
@@ -111,6 +111,25 @@ export function ScanStatusCard() {
     },
   });
 
+  const cancel = useMutation({
+    mutationFn: cancelScan,
+    onSuccess: () => {
+      toast.success("Scan cancelled", {
+        description: "A running worker stops at its next checkpoint. Files indexed so far stay.",
+      });
+      void queryClient.invalidateQueries({ queryKey: mediaQueries.all() });
+    },
+    onError: (error) => {
+      const message =
+        error instanceof ApiError && error.code === "scan_not_cancellable"
+          ? "This scan has already finished."
+          : error instanceof ApiError && error.code === "forbidden"
+            ? "Cancelling a scan requires the admin role."
+            : error.message;
+      toast.error("Could not cancel scan", { description: message });
+    },
+  });
+
   const originals = status.data?.roots.find((root) => root.key === "originals");
   const canScan = Boolean(originals?.configured && originals.readable) && !status.data?.current;
   const current = status.data?.current ?? null;
@@ -151,6 +170,12 @@ export function ScanStatusCard() {
                   onClick={() => scan.mutate({ full_rescan: true })}
                 >
                   Full rescan (re-probe every file)
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={!current || cancel.isPending}
+                  onClick={() => current && cancel.mutate(current.id)}
+                >
+                  Cancel current scan
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => void status.refetch()}>
                   Refresh status

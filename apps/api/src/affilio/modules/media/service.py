@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import Select, and_, case, exists, func, or_, select
@@ -27,6 +27,7 @@ from affilio.modules.media.errors import (
     MediaRootNotConfiguredError,
     MediaRootUnavailableError,
     ScanAlreadyActiveError,
+    ScanNotCancellableError,
 )
 from affilio.modules.media.models import (
     MediaAsset,
@@ -177,6 +178,93 @@ def get_scan_job(session: Session, organization_id: uuid.UUID, job_id: uuid.UUID
     if job is None:
         raise NotFoundError("Scan job not found")
     return job
+
+
+def scan_retry_backoff(attempt: int) -> timedelta:
+    """30 s · 2^(attempt-1), capped at 15 minutes. Shared by the worker and the watchdog."""
+    return timedelta(seconds=min(30 * (2 ** max(attempt - 1, 0)), 900))
+
+
+def cancel_scan(
+    session: Session, organization_id: uuid.UUID, job_id: uuid.UUID, *, actor: str | None = None
+) -> MediaScanJob:
+    """Cancel a queued or running scan (M3C.1 step 1). Does not flush/commit.
+
+    The row is locked so a concurrent claim or watchdog pass sees the final state. A running
+    job is marked cancelled immediately; its worker notices at the next fenced checkpoint
+    (≤ MEDIA_SCAN_HEARTBEAT_SECONDS or one long file operation later), rolls back everything
+    it has not committed yet and stops. Already-committed incremental progress is kept: it is
+    idempotent and the next scan continues from it.
+    """
+    job = session.scalar(
+        select(MediaScanJob)
+        .where(MediaScanJob.organization_id == organization_id, MediaScanJob.id == job_id)
+        .with_for_update(of=MediaScanJob)
+    )
+    if job is None:
+        raise NotFoundError("Scan job not found")
+    if job.status not in {ScanJobStatus.QUEUED, ScanJobStatus.RUNNING}:
+        raise ScanNotCancellableError(
+            f"Scan job is already {job.status.value}", details={"status": job.status.value}
+        )
+    was_running = job.status == ScanJobStatus.RUNNING
+    now = datetime.now(UTC)
+    job.status = ScanJobStatus.CANCELLED
+    job.finished_at = now
+    job.next_attempt_at = None
+    note = f"Cancelled by {actor or 'operator'}"
+    if was_running:
+        note += "; the worker stops at its next checkpoint and discards uncommitted work"
+    job.error = note
+    session.flush()
+    session.refresh(job, attribute_names=["root"])
+    return job
+
+
+def recover_stale_scan_jobs(
+    session: Session, *, stale_after: timedelta, now: datetime | None = None
+) -> list[MediaScanJob]:
+    """Watchdog (M3C.1 step 1): re-queue running jobs whose worker stopped heartbeating.
+
+    A job counts as stale when its last heartbeat (falling back to `started_at`, then
+    `created_at`) is older than `stale_after`. Rows are taken with SKIP LOCKED and the status
+    predicate, so concurrent watchdogs never recover the same job twice and a second pass is a
+    no-op. Retries honour `max_attempts`: the job goes back to the queue with the usual backoff
+    while attempts remain and becomes `failed` otherwise. The zombie worker, if it still
+    exists, is fenced out by the status change (see `scanner.JobFence`). Does not commit.
+    """
+    now = now or datetime.now(UTC)
+    threshold = now - stale_after
+    last_sign_of_life = func.coalesce(
+        MediaScanJob.heartbeat_at, MediaScanJob.started_at, MediaScanJob.created_at
+    )
+    stmt = (
+        select(MediaScanJob)
+        .where(MediaScanJob.status == ScanJobStatus.RUNNING, last_sign_of_life < threshold)
+        .order_by(MediaScanJob.created_at)
+        .with_for_update(skip_locked=True, of=MediaScanJob)
+    )
+    recovered: list[MediaScanJob] = []
+    for job in session.scalars(stmt):
+        last = job.heartbeat_at or job.started_at or job.created_at
+        age = int((now - last).total_seconds())
+        note = (
+            f"Recovered by watchdog: no heartbeat for {age}s from worker "
+            f"{job.worker_id or 'unknown'} (attempt {job.attempt}/{job.max_attempts})"
+        )
+        if job.attempt >= job.max_attempts:
+            job.status = ScanJobStatus.FAILED
+            job.finished_at = now
+            job.next_attempt_at = None
+            note += "; no attempts left"
+        else:
+            job.status = ScanJobStatus.QUEUED
+            job.finished_at = None
+            job.next_attempt_at = now + scan_retry_backoff(job.attempt)
+        job.error = note
+        recovered.append(job)
+    session.flush()
+    return recovered
 
 
 def scan_status(

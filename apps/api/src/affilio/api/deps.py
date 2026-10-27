@@ -49,7 +49,7 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 SERVICE_TOKEN_ALLOWED: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
     (frozenset({"GET"}), re.compile(r"^/auth/me$")),
     (frozenset({"GET"}), re.compile(r"^/media/roots$")),
-    (frozenset({"GET", "POST"}), re.compile(r"^/media/scans(/[^/]+)?(/status)?$")),
+    (frozenset({"GET", "POST"}), re.compile(r"^/media/scans(/[^/]+)?(/status|/cancel)?$")),
     (frozenset({"POST"}), re.compile(r"^/publishing/queue/release-due$")),
 )
 

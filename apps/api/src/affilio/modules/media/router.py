@@ -222,6 +222,33 @@ def create_scan(
     return service.scan_job_response(job)
 
 
+@router.post(
+    "/scans/{job_id}/cancel",
+    response_model=ScanJobResponse,
+    summary="Cancel a queued or running scan (admin)",
+)
+def cancel_scan(
+    job_id: uuid.UUID,
+    session: DbSession,
+    organization: CurrentOrganization,
+    identity: RequireAdmin,
+) -> ScanJobResponse:
+    previous = service.get_scan_job(session, organization.id, job_id).status
+    job = service.cancel_scan(session, organization.id, job_id, actor=identity.label)
+    record_audit(
+        session,
+        organization_id=organization.id,
+        identity=identity,
+        action="scan.cancelled",
+        entity_type="media_scan_job",
+        entity_id=job.id,
+        data={"root_key": job.root.key, "status_before": previous.value},
+    )
+    session.commit()
+    session.refresh(job)
+    return service.scan_job_response(job)
+
+
 # ---------------------------------------------------------------- classification (M3A.1)
 
 

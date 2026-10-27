@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import stat as stat_module
+import time
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterator
@@ -26,7 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from affilio.core.config import Settings
@@ -37,10 +38,15 @@ from affilio.core.enums import (
     MediaRootKind,
     MediaVariantKind,
     MediaVariantStatus,
+    ScanJobStatus,
     ThumbnailStatus,
 )
 from affilio.modules.media import classification
-from affilio.modules.media.errors import InvalidMediaPathError, ScanConfigurationError
+from affilio.modules.media.errors import (
+    InvalidMediaPathError,
+    ScanAbortedError,
+    ScanConfigurationError,
+)
 from affilio.modules.media.fingerprint import full_hash, quick_fingerprint
 from affilio.modules.media.models import MediaAsset, MediaFileVariant, MediaRoot, MediaScanJob
 from affilio.modules.media.probe import FFprobe, ProbeError, Prober, ProbeResult
@@ -53,6 +59,46 @@ Clock = Callable[[], datetime]
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class JobFence:
+    """Ownership proof for one scan run (M3C.1 step 1).
+
+    Every write of progress or results is conditioned on the job row still carrying the
+    status, worker and attempt it had when this run started. Cancellation, watchdog recovery
+    and a re-claim by another worker all change one of them, so a stale or zombie run gets
+    `rowcount == 0`, rolls back and stops instead of overwriting the newer owner's state.
+    """
+
+    job_id: uuid.UUID
+    status: ScanJobStatus
+    worker_id: str | None
+    attempt: int
+
+    @classmethod
+    def capture(cls, job: MediaScanJob) -> JobFence:
+        return cls(job_id=job.id, status=job.status, worker_id=job.worker_id, attempt=job.attempt)
+
+    def clauses(self) -> list[ColumnElement[bool]]:
+        worker_clause = (
+            MediaScanJob.worker_id.is_(None)
+            if self.worker_id is None
+            else MediaScanJob.worker_id == self.worker_id
+        )
+        return [
+            MediaScanJob.id == self.job_id,
+            MediaScanJob.status == self.status,
+            worker_clause,
+            MediaScanJob.attempt == self.attempt,
+        ]
+
+    def describe(self) -> str:
+        return (
+            f"scan job {self.job_id} is no longer {self.status.value} for worker "
+            f"{self.worker_id or 'none'} attempt {self.attempt} (cancelled, recovered or "
+            "re-claimed); uncommitted work discarded"
+        )
 
 
 @dataclass(slots=True)
@@ -97,6 +143,9 @@ class _ScanContext:
     pending_commit: int = 0
     folder_rules: list | None = None  # loaded once per scan for FINAL roots (M3A.1)
     reclassified: int = 0
+    job: MediaScanJob | None = None
+    fence: JobFence | None = None
+    last_heartbeat_monotonic: float = 0.0
 
     @property
     def is_final_root(self) -> bool:
@@ -159,6 +208,9 @@ class MediaScanner:
         ctx = _ScanContext(
             binding=binding, root=root, organization_id=job.organization_id, now=self.clock()
         )
+        ctx.job = job
+        ctx.fence = JobFence.capture(job)
+        ctx.last_heartbeat_monotonic = time.monotonic()
         log.info("media.scan.start", root=root.key, job_id=str(job.id))
 
         if ctx.is_final_root:
@@ -194,7 +246,8 @@ class MediaScanner:
         root.last_scan_at = ctx.now
         job.stats = ctx.stats.as_dict()
         job.errors = ctx.errors[: self.settings.media_scan_max_errors]
-        self.session.flush()
+        # No flush here: the caller commits through the job fence (worker.runner), so nothing
+        # reaches the database if the job was cancelled or recovered during the final stretch.
         log.info("media.scan.done", root=root.key, **ctx.stats.as_dict())
         return ctx.stats
 
@@ -420,6 +473,9 @@ class MediaScanner:
                     except OSError as exc:
                         self._record_error(ctx, "hash_error", variant.relative_path, str(exc))
                         continue
+                    # Full hashes of large originals are the slowest step: keep the heartbeat
+                    # fresh so the watchdog never mistakes a busy worker for a dead one.
+                    self._maybe_commit(ctx, ctx.job)
                 by_hash[variant.content_hash].append(variant)
             for same in by_hash.values():
                 if len(same) < 2:
@@ -491,6 +547,7 @@ class MediaScanner:
                     existing.probe_error = f"{exc.kind}: {exc.message}"
                     existing.probed_at = ctx.now
             ctx.stats.proxies_linked += 1
+            self._maybe_commit(ctx, ctx.job)
 
     def _find_proxy(
         self, proxies: RootBinding, original_rel: str
@@ -610,13 +667,36 @@ class MediaScanner:
                 display = path.name
         ctx.errors.append({"kind": kind, "path": str(display), "message": message[:500]})
 
-    def _maybe_commit(self, ctx: _ScanContext, job: MediaScanJob) -> None:
+    def _maybe_commit(self, ctx: _ScanContext, job: MediaScanJob | None) -> None:
+        """Commit progress every `media_scan_commit_every` units of work or every
+        `media_scan_heartbeat_seconds`, whichever comes first."""
         ctx.pending_commit += 1
-        if ctx.pending_commit >= self.settings.media_scan_commit_every:
-            job.stats = ctx.stats.as_dict()
-            job.heartbeat_at = self.clock()
+        if ctx.pending_commit < self.settings.media_scan_commit_every and (
+            time.monotonic() - ctx.last_heartbeat_monotonic
+            < self.settings.media_scan_heartbeat_seconds
+        ):
+            return
+        self.checkpoint(ctx)
+
+    def checkpoint(self, ctx: _ScanContext) -> None:
+        """Fenced progress commit: refresh `heartbeat_at` + stats only if this run still owns
+        the job (see `JobFence`), otherwise roll back and abort (M3C.1 step 1)."""
+        if ctx.fence is None:
             self.session.commit()
             ctx.pending_commit = 0
+            ctx.last_heartbeat_monotonic = time.monotonic()
+            return
+        result = self.session.execute(
+            update(MediaScanJob)
+            .where(*ctx.fence.clauses())
+            .values(heartbeat_at=self.clock(), stats=ctx.stats.as_dict())
+        )
+        if result.rowcount != 1:
+            self.session.rollback()
+            raise ScanAbortedError(ctx.fence.describe())
+        self.session.commit()
+        ctx.pending_commit = 0
+        ctx.last_heartbeat_monotonic = time.monotonic()
 
 
 def _apply_probe(variant: MediaFileVariant, result: ProbeResult, now: datetime) -> None:

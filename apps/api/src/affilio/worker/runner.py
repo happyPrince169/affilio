@@ -8,18 +8,19 @@ import time
 from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from affilio.core.config import Settings, get_settings
 from affilio.core.enums import ScanJobStatus
 from affilio.core.logging import configure_logging
 from affilio.db.session import get_session_factory
-from affilio.modules.media.errors import ScanConfigurationError
+from affilio.modules.media.errors import ScanAbortedError
 from affilio.modules.media.models import MediaScanJob
 from affilio.modules.media.probe import Prober
 from affilio.modules.media.roots import ROOT_KEYS, MediaRootRegistry
-from affilio.modules.media.scanner import MediaScanner
+from affilio.modules.media.scanner import JobFence, MediaScanner
+from affilio.modules.media.service import recover_stale_scan_jobs, scan_retry_backoff
 from affilio.modules.media.thumbnails import ThumbnailGenerator
 from affilio.worker.maintenance import run_maintenance
 
@@ -27,9 +28,7 @@ log = structlog.get_logger("affilio.worker")
 
 WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 
-
-def _backoff(attempt: int) -> timedelta:
-    return timedelta(seconds=min(30 * (2 ** max(attempt - 1, 0)), 900))
+_backoff = scan_retry_backoff  # kept for callers/tests that import the old name
 
 
 def claim_next_scan_job(session: Session) -> MediaScanJob | None:
@@ -66,30 +65,67 @@ def execute_scan_job(
     registry: MediaRootRegistry,
     prober: Prober | None = None,
 ) -> MediaScanJob:
-    """Run one claimed job to completion, handling retries. Commits."""
+    """Run one claimed job to completion, handling retries. Commits.
+
+    Every outcome is written through the job fence captured at the start (status, worker,
+    attempt): if the job was cancelled, recovered by the watchdog or re-claimed meanwhile, the
+    write affects zero rows, the uncommitted scan work is rolled back and the newer state
+    stays untouched (M3C.1 step 1).
+    """
+    fence = JobFence.capture(job)
     scanner = MediaScanner(session, registry, settings, prober=prober)
     try:
         scanner.run(job)
-    except (ScanConfigurationError, OSError, Exception) as exc:
+    except ScanAbortedError as exc:
         session.rollback()
-        job = session.get(MediaScanJob, job.id, options=[selectinload(MediaScanJob.root)])
-        assert job is not None  # noqa: S101 - just re-fetched
+        log.warning("media.scan.aborted", job_id=str(fence.job_id), reason=str(exc))
+        return _reload(session, fence.job_id)
+    except Exception as exc:
+        session.rollback()
         message = f"{exc.__class__.__name__}: {exc}"[:1000]
-        log.warning("media.scan.failed", job_id=str(job.id), attempt=job.attempt, error=message)
-        job.error = message
-        job.finished_at = datetime.now(UTC)
-        if job.attempt >= job.max_attempts:
-            job.status = ScanJobStatus.FAILED
+        log.warning(
+            "media.scan.failed", job_id=str(fence.job_id), attempt=fence.attempt, error=message
+        )
+        current = _reload(session, fence.job_id)
+        now = datetime.now(UTC)
+        if current.attempt >= current.max_attempts:
+            values: dict = {"status": ScanJobStatus.FAILED, "next_attempt_at": None}
         else:
-            job.status = ScanJobStatus.QUEUED
-            job.next_attempt_at = datetime.now(UTC) + _backoff(job.attempt)
-        session.commit()
-        return job
-    job.status = ScanJobStatus.SUCCEEDED
-    job.finished_at = datetime.now(UTC)
-    job.error = None
-    session.commit()
+            values = {
+                "status": ScanJobStatus.QUEUED,
+                "next_attempt_at": now + scan_retry_backoff(current.attempt),
+            }
+        values.update(error=message, finished_at=now)
+        _finalize(session, fence, values)
+        return _reload(session, fence.job_id)
+
+    values = {
+        "status": ScanJobStatus.SUCCEEDED,
+        "finished_at": datetime.now(UTC),
+        "error": None,
+        "stats": job.stats,
+        "errors": job.errors,
+    }
+    _finalize(session, fence, values)
+    return _reload(session, fence.job_id)
+
+
+def _reload(session: Session, job_id) -> MediaScanJob:
+    job = session.get(MediaScanJob, job_id, options=[selectinload(MediaScanJob.root)])
+    assert job is not None  # noqa: S101 - rows are never deleted while a worker holds them
+    session.refresh(job)
     return job
+
+
+def _finalize(session: Session, fence: JobFence, values: dict) -> bool:
+    """Fenced final write. Returns False (after rolling back) when the run lost ownership."""
+    result = session.execute(update(MediaScanJob).where(*fence.clauses()).values(**values))
+    if result.rowcount != 1:
+        session.rollback()
+        log.warning("media.scan.aborted", job_id=str(fence.job_id), reason=fence.describe())
+        return False
+    session.commit()
+    return True
 
 
 def run_once(
@@ -104,6 +140,19 @@ def run_once(
     session_factory = get_session_factory()
 
     with session_factory() as session:
+        stale = recover_stale_scan_jobs(
+            session, stale_after=timedelta(seconds=settings.media_scan_stale_after_seconds)
+        )
+        if stale:
+            session.commit()
+            for recovered in stale:
+                log.warning(
+                    "media.scan.recovered",
+                    job_id=str(recovered.id),
+                    status=recovered.status.value,
+                    attempt=recovered.attempt,
+                    error=recovered.error,
+                )
         job = claim_next_scan_job(session)
         if job is not None:
             session.commit()

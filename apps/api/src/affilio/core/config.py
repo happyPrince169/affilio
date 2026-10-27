@@ -111,6 +111,12 @@ class Settings(BaseSettings):
     media_scan_max_attempts: int = 3
     media_scan_max_errors: int = 200
     media_scan_commit_every: int = 200
+    # Watchdog (M3C.1 step 1): a running scan refreshes `heartbeat_at` (and commits progress) at
+    # least every MEDIA_SCAN_HEARTBEAT_SECONDS; a running job whose heartbeat is older than
+    # MEDIA_SCAN_STALE_AFTER_SECONDS is treated as abandoned by a dead worker and re-queued
+    # (or failed once max_attempts is spent). Stale must be at least 3x the heartbeat.
+    media_scan_heartbeat_seconds: int = 30
+    media_scan_stale_after_seconds: int = 600
     # Final handoff: a file is indexed only once its mtime is older than this (upload settled).
     media_final_settle_seconds: int = 120
     media_temp_name_markers: Annotated[list[str], NoDecode] = Field(
@@ -292,6 +298,21 @@ class Settings(BaseSettings):
             and not self.meta_oauth_redirect_uri.lower().startswith("https://")
         ):
             msg = "META_OAUTH_REDIRECT_URI must use https outside development/test"
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _scan_watchdog_guard(self) -> Settings:
+        """A stale window shorter than a few heartbeats would recover healthy scans."""
+        if self.media_scan_heartbeat_seconds < 0:
+            msg = "MEDIA_SCAN_HEARTBEAT_SECONDS must be >= 0"
+            raise ValueError(msg)
+        minimum = max(3 * self.media_scan_heartbeat_seconds, 1)
+        if self.media_scan_stale_after_seconds < minimum:
+            msg = (
+                "MEDIA_SCAN_STALE_AFTER_SECONDS must be at least 3x MEDIA_SCAN_HEARTBEAT_SECONDS "
+                f"(>= {minimum}s), got {self.media_scan_stale_after_seconds}s"
+            )
             raise ValueError(msg)
         return self
 

@@ -33,6 +33,19 @@ class ScanConfigurationError(Exception):
     """Raised inside the worker when a scan cannot run (root missing/unreadable)."""
 
 
+class ScanAbortedError(Exception):
+    """Raised inside the worker when the job row no longer belongs to this run: it was
+    cancelled, recovered by the watchdog, or re-claimed by another worker. The scanner rolls
+    back its uncommitted work and nothing is written after it (M3C.1 step 1)."""
+
+
+class ScanNotCancellableError(AppError):
+    """Only queued or running scans can be cancelled."""
+
+    status_code = status.HTTP_409_CONFLICT
+    code = "scan_not_cancellable"
+
+
 class InvalidFolderPathError(AppError):
     """Folder rule path is unsafe or malformed (M3A.1)."""
 

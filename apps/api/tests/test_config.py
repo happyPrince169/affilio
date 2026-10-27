@@ -62,3 +62,14 @@ def test_empty_compose_values_mean_unset(monkeypatch: pytest.MonkeyPatch) -> Non
     ]
     assert settings.credential_encryption_keys is None
     assert settings.cors_origins == ["https://app.example.test"]
+
+
+def test_scan_watchdog_rejects_a_stale_window_shorter_than_three_heartbeats() -> None:
+    with pytest.raises(ValueError, match="MEDIA_SCAN_STALE_AFTER_SECONDS"):
+        Settings(media_scan_heartbeat_seconds=30, media_scan_stale_after_seconds=60)
+    with pytest.raises(ValueError, match="MEDIA_SCAN_HEARTBEAT_SECONDS"):
+        Settings(media_scan_heartbeat_seconds=-1)
+    ok = Settings(media_scan_heartbeat_seconds=30, media_scan_stale_after_seconds=90)
+    assert ok.media_scan_stale_after_seconds == 90
+    # Tests may disable the interval entirely; the stale window then only needs to be positive.
+    assert Settings(media_scan_heartbeat_seconds=0, media_scan_stale_after_seconds=1)

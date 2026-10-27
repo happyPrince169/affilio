@@ -70,6 +70,13 @@ export function createScan(body: CreateScanRequest = {}): Promise<ScanJob> {
   });
 }
 
+/** Admin only. A running scan stops at its next checkpoint; indexed files are kept. */
+export function cancelScan(jobId: string): Promise<ScanJob> {
+  return apiFetch<ScanJob>(`${MEDIA}/scans/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+  });
+}
+
 export function reviewHandoff(assetId: string, body: HandoffDecision): Promise<MediaAssetDetail> {
   return apiFetch<MediaAssetDetail>(`${MEDIA}/assets/${encodeURIComponent(assetId)}/handoff`, {
     method: "POST",
