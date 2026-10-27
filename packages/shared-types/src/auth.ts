@@ -23,6 +23,7 @@ export interface Permissions {
   manage_accounts: boolean;
   manage_members: boolean;
   trigger_scans: boolean;
+  manage_exports: boolean;
 }
 
 export interface CurrentUser {

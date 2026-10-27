@@ -1,5 +1,6 @@
 import type {
   CreateScanRequest,
+  ExportJob,
   HandoffDecision,
   MediaAssetDetail,
   MediaAssetFilters,
@@ -73,6 +74,20 @@ export function createScan(body: CreateScanRequest = {}): Promise<ScanJob> {
 /** Admin only. A running scan stops at its next checkpoint; indexed files are kept. */
 export function cancelScan(jobId: string): Promise<ScanJob> {
   return apiFetch<ScanJob>(`${MEDIA}/scans/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+  });
+}
+
+/** Admin only (E2): queue one publish-ready export of a final. */
+export function createExport(assetId: string): Promise<ExportJob> {
+  return apiFetch<ExportJob>(`${MEDIA}/assets/${encodeURIComponent(assetId)}/export`, {
+    method: "POST",
+  });
+}
+
+/** Admin only (E2): cancel a queued or running export. */
+export function cancelExport(jobId: string): Promise<ExportJob> {
+  return apiFetch<ExportJob>(`${MEDIA}/exports/${encodeURIComponent(jobId)}/cancel`, {
     method: "POST",
   });
 }

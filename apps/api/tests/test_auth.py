@@ -85,6 +85,7 @@ def test_login_sets_httponly_cookie_and_me_reports_identity(
         "manage_accounts": True,
         "manage_members": True,
         "trigger_scans": True,
+        "manage_exports": True,
     }
     assert "password" not in response.text and "token" not in response.text
 

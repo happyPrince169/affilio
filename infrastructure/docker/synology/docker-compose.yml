@@ -181,12 +181,17 @@ services:
     command: ["publisher"]
     environment:
       <<: *api-env
-    # Only the finals mount, read-only: the publisher never touches originals, proxies,
-    # thumbnails or exports and never transcodes.
+    # Finals and exports, both read-only (E2): the publisher streams either the final or its
+    # publish-ready export; it never touches originals, proxies or thumbnails and never
+    # transcodes.
     volumes:
       - type: bind
         source: ${AFFILIO_FINALS_HOST_PATH:?set AFFILIO_FINALS_HOST_PATH}
         target: /media/finals
+        read_only: true
+      - type: bind
+        source: ${AFFILIO_EXPORTS_HOST_PATH:?set AFFILIO_EXPORTS_HOST_PATH}
+        target: /data/exports
         read_only: true
     depends_on:
       postgres:

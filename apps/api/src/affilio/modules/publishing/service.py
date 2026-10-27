@@ -46,6 +46,7 @@ from affilio.modules.content import service as links_service
 from affilio.modules.content.models import AffiliateLink
 from affilio.modules.media import classification
 from affilio.modules.media import service as media_service
+from affilio.modules.media.exports import readiness_from_db
 from affilio.modules.media.models import MediaAsset, MediaContentCategory
 from affilio.modules.products.urls import normalize_url
 from affilio.modules.publishing import lifecycle
@@ -159,6 +160,8 @@ def _media_dict(asset: MediaAsset) -> dict[str, Any]:
         "relative_path": main.relative_path if main else None,
         "extension": main.extension if main else None,
         "content_hash": main.content_hash if main else None,
+        "fingerprint": main.fingerprint if main else None,
+        "modified_at": main.modified_at.isoformat() if main and main.modified_at else None,
         "file_size": main.file_size if main else None,
         "duration_seconds": asset.duration_seconds,
         "width": asset.width,
@@ -292,6 +295,7 @@ def assert_publishable_target(session: Session, job: PublicationJob, *, step: st
 def _summary_fields(job: PublicationJob, *, thumbnail_url_prefix: str) -> dict[str, Any]:
     main = job.media_asset.main_variant()
     eligibility = job_api_eligibility(job, get_settings())
+    readiness = readiness_from_db(job.media_asset, get_settings())
     tree = _tree_for(job)
     blocked_reason = _blocked_reason(job, tree)
     stale = _classification_stale(job)
@@ -353,6 +357,8 @@ def _summary_fields(job: PublicationJob, *, thumbnail_url_prefix: str) -> dict[s
         if page_hold(job.social_account)
         else None,
         "upload": upload_summary(_live_upload(job)),
+        "media_readiness": readiness[0],
+        "media_readiness_detail": readiness[1],
     }
 
 
@@ -388,6 +394,8 @@ def upload_summary(upload: PublicationUpload | None) -> UploadSummary | None:
         last_error=upload.last_error,
         last_error_code=upload.last_error_code,
         last_error_transient=upload.last_error_transient,
+        file_root_key=upload.file_root_key,
+        file_relative_path=upload.file_relative_path,
         finish_requested_at=upload.finish_requested_at,
         published_at=upload.published_at,
         started_at=upload.started_at,

@@ -155,6 +155,19 @@ export function UploadPanel({ upload }: { upload: UploadSummary }) {
       <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
         <dt className="text-muted-foreground">Publish request</dt>
         <dd className="capitalize">{upload.publish_request_status.replaceAll("_", " ")}</dd>
+        {upload.file_root_key ? (
+          <>
+            <dt className="text-muted-foreground">Streams</dt>
+            <dd>
+              {upload.file_root_key === "exports" ? "publish-ready export" : "the final itself"}
+              {upload.file_relative_path ? (
+                <span className="ml-1 font-mono text-[10px] text-muted-foreground">
+                  {upload.file_root_key}/{upload.file_relative_path}
+                </span>
+              ) : null}
+            </dd>
+          </>
+        ) : null}
         <dt className="text-muted-foreground">Retries</dt>
         <dd>
           {upload.retry_count}/{upload.max_retries}

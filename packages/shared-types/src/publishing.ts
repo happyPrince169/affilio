@@ -33,6 +33,9 @@ export interface UploadSummary {
   last_error: string | null;
   last_error_code: string | null;
   last_error_transient: boolean | null;
+  /** E2: which file the publisher validated and streams. */
+  file_root_key: string | null;
+  file_relative_path: string | null;
   finish_requested_at: string | null;
   published_at: string | null;
   started_at: string | null;
@@ -331,7 +334,13 @@ export interface PublicationSummary {
   target_hold_until: string | null;
   target_hold_reason: string | null;
   upload: UploadSummary | null;
+  // --- publish-ready exports (E2): from indexed facts; the engine re-checks the file ---
+  media_readiness: MediaReadiness;
+  media_readiness_detail: string | null;
 }
+
+export type MediaReadiness =
+  "export_ready" | "final_ready" | "export_stale" | "needs_export" | "not_final";
 
 export interface PublicationDetail extends PublicationSummary {
   uploads: UploadSummary[];

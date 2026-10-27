@@ -26,8 +26,11 @@ from affilio.core.config import Settings, get_settings
 from affilio.core.logging import configure_logging
 from affilio.db.session import get_session_factory
 from affilio.modules.media.exports import (
+    REQUIRED_ENCODERS,
     ExportGenerator,
+    check_encoders,
     claim_next_export_job,
+    cleanup_orphan_temp_files,
     recover_stale_export_jobs,
 )
 from affilio.modules.media.roots import MediaRootRegistry
@@ -62,6 +65,10 @@ class Exporter:
 
     def run_once(self) -> bool:
         """Recover stale jobs, then claim and run at most one job. Returns True if one ran."""
+        cleanup_orphan_temp_files(
+            self.registry.exports,
+            older_than=timedelta(seconds=self.settings.export_stale_after_seconds),
+        )
         with self.session_factory() as session:
             stale = recover_stale_export_jobs(
                 session, stale_after=timedelta(seconds=self.settings.export_stale_after_seconds)
@@ -96,6 +103,9 @@ class Exporter:
 
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, _stop)
+        encoders = check_encoders(self.settings.media_ffmpeg_path)
+        if not all(encoders.values()):
+            log.error("exporter.encoders_missing", **encoders)
         log.info(
             "exporter.started",
             worker_id=self.worker_id,
@@ -130,6 +140,11 @@ def main(argv: list[str] | None = None) -> int:
     settings = get_settings()
     if "--healthcheck" in argv:
         return 0 if heartbeat_is_fresh(settings) else 1
+    if "--check" in argv:  # encoder availability of this ffmpeg build; touches no media
+        found = check_encoders(settings.media_ffmpeg_path)
+        for name in REQUIRED_ENCODERS:
+            sys.stdout.write(f"{name}: {'ok' if found.get(name) else 'MISSING'}\n")
+        return 0 if all(found.values()) else 1
     configure_logging(level=settings.log_level, fmt=settings.log_format)
     exporter = Exporter(settings)
     if "--once" in argv:

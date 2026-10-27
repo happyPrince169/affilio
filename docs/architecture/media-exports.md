@@ -53,6 +53,41 @@ Fixed in `media/exports.py`; settings only bound CPU and time.
 Sources are never opened for writing (and the finals mount is read-only). No video is loaded
 into application memory: ffmpeg and ffprobe stream from disk.
 
+## Consumers: which file the publisher streams (E2)
+
+`publishing/media_checks.check_reel_media` prefers the export when **all** of these hold:
+same asset, `derived_from_variant_id` is the present final, `export_is_current` (recorded
+size, mtime and fingerprint equal the final as indexed), recipe in `SUPPORTED_RECIPES`, file
+present on the exports root with the recorded size and mtime, and the export's own stream
+facts satisfy the profile. Otherwise the final is used only if it passes on its own; otherwise
+validation fails with both reasons and names the fix. The upload row pins `file_root_key`,
+`file_relative_path`, `file_size`, `file_mtime`, `file_fingerprint` and `file_variant_id`;
+before the first byte the publisher re-resolves the path through the root's traversal guard
+(only `finals` and `exports` are accepted), re-checks size and mtime, and recomputes the
+sampled fingerprint. Any difference is `media_changed`; a new attempt revalidates and may
+select a different file.
+
+Queue rows show `media_readiness` (`export_ready`, `final_ready`, `export_stale`,
+`needs_export`) from indexed facts only; the final's page shows the export state (Not needed,
+Not generated, Queued, Processing, Ready, Failed, Blocked, Stale) with admin actions.
+
+## Crash consistency (E1 review)
+
+The filesystem rename and the database commit are two steps. Every window is covered:
+
+| Crash point | Outcome | Recovery |
+| --- | --- | --- |
+| while ffmpeg writes the temp file | no row, temp file left | the exporter removes temp files older than the stale window on each loop; the job is re-queued by the watchdog |
+| after validation, before the fenced `ready` update | no row, temp file left | same |
+| after the fenced update, before `os.replace` (same transaction, not committed) | nothing committed, temp file left | rollback on reconnect, watchdog re-queues, temp cleaned |
+| after `os.replace`, before commit | target file exists, no row | the next run finds no current export, re-encodes and replaces the target atomically; nothing ever reads the orphan because consumers go through rows |
+| after commit | consistent | — |
+
+A target path is only ever produced by `os.replace`, so a reader never sees a partial file,
+and a row is written only after the file was validated and renamed, so a `ready` export is
+never partial. Retries are idempotent: a current export is reused, a stale one is replaced in
+place, and identity (not time) decides.
+
 ## Running it
 
 - Worker: `python -m affilio.worker.exporter` (`--once`, `--healthcheck`); compose service

@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { AssetStatusBadge, ThumbnailStatusBadge } from "@/components/media/media-badges";
 import { HandoffBadge } from "@/components/media/handoff-badge";
 import { AssetCategoriesCard } from "@/components/media/asset-categories-card";
+import { ExportStatusCard } from "@/components/media/export-status-card";
 import { HandoffReviewCard } from "@/components/media/handoff-review";
 import { MediaThumbnail } from "@/components/media/media-thumbnail";
 import { LinkedProductsCard } from "@/components/products/linked-products-card";
@@ -209,6 +210,9 @@ function Detail({ asset }: { asset: MediaAssetDetail }) {
       </div>
 
       {asset.asset_kind === "final" ? <HandoffReviewCard asset={asset} /> : null}
+      {asset.asset_kind === "final" && asset.export ? (
+        <ExportStatusCard assetId={asset.id} status={asset.export} />
+      ) : null}
       <AssetCategoriesCard key={asset.updated_at} asset={asset} />
 
       <LinkedProductsCard assetId={asset.id} />

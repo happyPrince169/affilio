@@ -142,7 +142,7 @@ also run hourly by the worker); key rotation: `uv run python -m affilio.scripts.
 | `pnpm db:migrate`                  | `alembic upgrade head`                                                                                                                                |
 | `pnpm db:seed`                     | Idempotent DEV-ONLY seed (refuses outside development/test)                                                                                             |
 | `pnpm dev:exporter`                | Publish-ready export worker (E1): one ffmpeg at a time, `--once` for a single job                                                                       |
-| `pnpm media:export -- queue --asset <id>` | Queue one export (`status`, `cancel`; `--run` renders now, refused in production without `--allow-production`)                                |
+| `pnpm media:export -- queue --asset <id>` | Queue one export (also from the final's page in the UI, admin) (`status`, `cancel`; `--run` renders now, refused in production without `--allow-production`)                                |
 | `pnpm dev:worker`                  | Background worker: scan jobs + thumbnails                                                                                                               |
 | `pnpm media:scan`                  | Synchronous CLI scan (`-- --full`, `-- --thumbnails`)                                                                                               |
 | `pnpm nas:sync` / `nas:dry-run`  | Copy the source tree to the NAS project folder (`/volume1/docker/affilio/`) over Tailscale SSH; never builds or restarts anything                     |

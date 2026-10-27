@@ -72,6 +72,50 @@ export interface MediaVariant {
   probe_error: string | null;
   last_seen_at: string;
   missing_since: string | null;
+  /** Provenance of derived files (exports); null for scanned files. */
+  derived_from_variant_id: string | null;
+  recipe_key: string | null;
+}
+
+export type ExportJobStatus =
+  "queued" | "running" | "ready" | "skipped" | "blocked" | "failed" | "cancelled";
+export type ExportTrigger = "manual" | "cli" | "approval" | "publish";
+
+export interface ExportJob {
+  id: string;
+  media_asset_id: string;
+  status: ExportJobStatus;
+  trigger: ExportTrigger;
+  recipe_key: string;
+  attempt: number;
+  max_attempts: number;
+  requested_by: string | null;
+  error_code: string | null;
+  error: string | null;
+  stats: Record<string, unknown>;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  heartbeat_at: string | null;
+}
+
+export type AssetExportState =
+  | "not_needed"
+  | "not_generated"
+  | "queued"
+  | "processing"
+  | "ready"
+  | "failed"
+  | "blocked"
+  | "stale";
+
+/** Publish-ready export state of a final (E2). */
+export interface AssetExportStatus {
+  state: AssetExportState;
+  detail: string | null;
+  job: ExportJob | null;
+  export: MediaVariant | null;
+  can_export: boolean;
 }
 
 export interface AssetCategory {
@@ -128,6 +172,8 @@ export interface MediaAssetDetail extends MediaAssetSummary {
   rotation: number | null;
   variants: MediaVariant[];
   duplicates: string[];
+  /** Finals only (E2). */
+  export: AssetExportStatus | null;
 }
 
 export interface PaginatedAssets {

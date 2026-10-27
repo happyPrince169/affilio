@@ -386,6 +386,9 @@ class UploadSummary(PubModel):
     last_error: str | None
     last_error_code: str | None
     last_error_transient: bool | None
+    # E2: which file the publisher validated and streams (finals or exports root).
+    file_root_key: str | None = None
+    file_relative_path: str | None = None
     finish_requested_at: datetime | None
     published_at: datetime | None
     started_at: datetime | None
@@ -478,6 +481,11 @@ class PublicationSummary(PubModel):
     target_hold_until: datetime | None = None
     target_hold_reason: str | None = None
     upload: UploadSummary | None = None
+    # --- publish-ready exports (E2): from indexed facts; the engine re-checks the file ---
+    media_readiness: Literal[
+        "export_ready", "final_ready", "export_stale", "needs_export", "not_final"
+    ] = "not_final"
+    media_readiness_detail: str | None = None
 
 
 class PublicationDetail(PublicationSummary):

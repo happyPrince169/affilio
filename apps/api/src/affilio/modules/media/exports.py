@@ -56,6 +56,7 @@ from affilio.modules.media.errors import (
     ExportAlreadyActiveError,
     ExportNotCancellableError,
     ExportNotEligibleError,
+    InvalidMediaPathError,
 )
 from affilio.modules.media.fingerprint import quick_fingerprint
 from affilio.modules.media.models import MediaAsset, MediaExportJob, MediaFileVariant, MediaRoot
@@ -72,6 +73,9 @@ from affilio.modules.media.service import scan_retry_backoff
 log = structlog.get_logger(__name__)
 
 RECIPE_KEY = "reels-h264-v1"
+# Recipes the publisher may stream (E2). A future recipe is added here only once validated.
+SUPPORTED_RECIPES = frozenset({RECIPE_KEY})
+TEMP_PATTERN = ".*.tmp.mp4"
 EXPORT_EXTENSION = ".mp4"
 MTIME_TOLERANCE_SECONDS = 2.0
 TARGET_WIDTH = 1080
@@ -937,3 +941,167 @@ def export_is_current(export: MediaFileVariant, source: MediaFileVariant) -> boo
         and abs((export.source_modified_at - source.modified_at).total_seconds())
         <= MTIME_TOLERANCE_SECONDS
     )
+
+
+# ------------------------------------------------------------------------------ readiness (E2)
+
+ExportState = (
+    str  # not_needed | not_generated | queued | processing | ready | failed | blocked | stale
+)
+
+
+def _variant_profile_problems(variant: MediaFileVariant, settings: Settings) -> list[str]:
+    """Profile problems from the stored probe columns (no filesystem access)."""
+    try:
+        probe = parse_ffprobe_output(variant.probe) if variant.probe else None
+    except ProbeError:
+        probe = None
+    if probe is None:
+        probe = ProbeResult(
+            duration_seconds=variant.duration_seconds,
+            width=variant.width,
+            height=variant.height,
+            rotation=variant.rotation,
+            frame_rate=variant.frame_rate,
+            video_codec=variant.video_codec,
+            audio_codec=variant.audio_codec,
+            pixel_format=variant.pixel_format,
+            bit_depth=variant.bit_depth,
+            bit_rate=variant.bit_rate,
+            container_format=variant.container_format,
+            raw={
+                "streams": [{"codec_type": "video"}]
+                + ([{"codec_type": "audio"}] if variant.audio_codec else [])
+            },
+        )
+    return export_profile.profile_problems(probe, file_size=variant.file_size, settings=settings)
+
+
+def readiness_from_db(asset: MediaAsset, settings: Settings) -> tuple[str, str | None]:
+    """Publish-readiness of a final from indexed facts only (queue lists; no stat calls).
+
+    Returns one of `export_ready`, `final_ready`, `export_stale`, `needs_export`,
+    `not_final` with a short detail. The authoritative check with filesystem access is
+    `publishing.media_checks.check_reel_media` at publish time.
+    """
+    if asset.asset_kind != MediaAssetKind.FINAL:
+        return "not_final", None
+    final = asset.variant(MediaVariantKind.FINAL)
+    if final is None or final.status != MediaVariantStatus.PRESENT:
+        return "needs_export", "final file missing"
+    export = _export_variant(asset, RECIPE_KEY)
+    if export is not None and export.status == MediaVariantStatus.PRESENT:
+        if export_is_current(export, final) and not _variant_profile_problems(export, settings):
+            return "export_ready", None
+        return "export_stale", "the final changed after the export was rendered"
+    problems = _variant_profile_problems(final, settings)
+    if not problems:
+        return "final_ready", None
+    return "needs_export", "; ".join(problems)
+
+
+def latest_export_job(session: Session, asset_id: uuid.UUID) -> MediaExportJob | None:
+    return session.scalar(
+        select(MediaExportJob)
+        .where(MediaExportJob.media_asset_id == asset_id)
+        .order_by(MediaExportJob.created_at.desc())
+        .limit(1)
+    )
+
+
+@dataclass(slots=True)
+class AssetExportState:
+    state: ExportState
+    detail: str | None
+    job: MediaExportJob | None
+    export: MediaFileVariant | None
+    can_export: bool
+
+
+def asset_export_state(
+    session: Session, asset: MediaAsset, registry: MediaRootRegistry, settings: Settings
+) -> AssetExportState | None:
+    """State shown on a final's page (E2). One stat call for the export file at most."""
+    if asset.asset_kind != MediaAssetKind.FINAL:
+        return None
+    final = asset.variant(MediaVariantKind.FINAL)
+    job = latest_export_job(session, asset.id)
+    export = _export_variant(asset, RECIPE_KEY)
+    eligible = (
+        asset.status == MediaAssetStatus.ACTIVE
+        and final is not None
+        and final.status == MediaVariantStatus.PRESENT
+    )
+    active = job is not None and job.is_active
+    if active:
+        state = "processing" if job.status == ExportJobStatus.RUNNING else "queued"
+        return AssetExportState(state, job.error, job, export, can_export=False)
+    if export is not None and export.status == MediaVariantStatus.PRESENT and final is not None:
+        current = export_is_current(export, final)
+        exists = False
+        if current and registry.exports is not None:
+            try:
+                info = registry.exports.resolve(export.relative_path).stat()
+                exists = info.st_size == export.file_size and info.st_size > 0
+            except (OSError, ValueError, InvalidMediaPathError):
+                exists = False
+        if current and exists:
+            return AssetExportState("ready", None, job, export, can_export=eligible)
+        detail = (
+            "the final changed after the export was rendered"
+            if not current
+            else "the export file is missing from the exports root"
+        )
+        return AssetExportState("stale", detail, job, export, can_export=eligible)
+    if job is not None and job.status == ExportJobStatus.BLOCKED:
+        return AssetExportState("blocked", job.error, job, None, can_export=False)
+    if job is not None and job.status == ExportJobStatus.FAILED:
+        return AssetExportState("failed", job.error, job, None, can_export=eligible)
+    if final is not None and not _variant_profile_problems(final, settings):
+        return AssetExportState("not_needed", None, job, None, can_export=False)
+    detail = (
+        "; ".join(_variant_profile_problems(final, settings)) if final else "final file missing"
+    )
+    return AssetExportState("not_generated", detail, job, None, can_export=eligible)
+
+
+# ------------------------------------------------------------------------------ worker helpers (E2)
+
+REQUIRED_ENCODERS = ("libx264", "aac")
+
+
+def check_encoders(ffmpeg: str) -> dict[str, bool]:
+    """Which required encoders this ffmpeg build offers (`ffmpeg -encoders`, no media touched)."""
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [ffmpeg, "-hide_banner", "-encoders"],
+            capture_output=True,
+            timeout=20,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+        listing = completed.stdout.decode("utf-8", "replace")
+    except (OSError, subprocess.TimeoutExpired):
+        listing = ""
+    return {name: f" {name} " in listing for name in REQUIRED_ENCODERS}
+
+
+def cleanup_orphan_temp_files(exports: RootBinding | None, *, older_than: timedelta) -> int:
+    """Remove `.<name>.<pid>.tmp.mp4` leftovers of crashed runs that are older than the stale
+    window. Live runs rewrite their temp file continuously, so an old one is never in use.
+    Completed targets are never touched here: a target without a row is replaced by the next
+    successful run (atomic rename), and a row without a target is reported stale."""
+    if exports is None or not exports.availability().writable:
+        return 0
+    cutoff = time.time() - older_than.total_seconds()
+    removed = 0
+    for candidate in exports.path.glob(f"*/{TEMP_PATTERN}"):
+        try:
+            if candidate.is_file() and candidate.stat().st_mtime < cutoff:
+                candidate.unlink()
+                removed += 1
+        except OSError:
+            continue
+    if removed:
+        log.warning("media.export.orphans_removed", count=removed)
+    return removed

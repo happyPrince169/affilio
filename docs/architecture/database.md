@@ -349,6 +349,13 @@ Export pipeline E1 (ADR 0010, `docs/architecture/media-exports.md`).
 - Downgrade drops the table, the export variant rows (they would dangle without provenance)
   and the five columns.
 
+## Upload file identity (migration `0012_upload_file_identity`)
+
+Export pipeline E2. `publication_uploads` gains `file_root_key` (`finals` or `exports`),
+`file_fingerprint` (sampled fingerprint of the validated file) and `file_variant_id` (FK to
+`media_file_variants`, SET NULL). Existing rows with a relative path are backfilled to
+`finals`. The downgrade drops the three columns.
+
 ## Growth plan (not implemented)
 
 | Milestone | Tables (indicative)                                                              |

@@ -16,11 +16,13 @@ Design (docs/architecture/publishing-engine.md):
 
 from __future__ import annotations
 
+import os
 import random
 import socket
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -55,6 +57,8 @@ from affilio.modules.accounts.providers.base import (
     ReelUploadSession,
     TokenInvalidError,
 )
+from affilio.modules.media.errors import InvalidMediaPathError
+from affilio.modules.media.fingerprint import quick_fingerprint
 from affilio.modules.media.models import MediaAsset
 from affilio.modules.media.roots import MediaRootRegistry
 from affilio.modules.publishing import service as publishing_service
@@ -466,11 +470,19 @@ def _step_validate(
     check = check_reel_media(asset, registry, settings) if asset else None
     if check is None or not check.ok:
         raise _PermanentError("media_incompatible", check.summary() if check else "media missing")
+    upload.file_root_key = check.root_key
     upload.file_relative_path = check.relative_path
     upload.file_size = check.file_size
     upload.file_mtime = check.file_mtime
+    upload.file_fingerprint = check.fingerprint
+    upload.file_variant_id = check.variant_id
     upload.bytes_total = check.file_size
-    upload.last_status = {**upload.last_status, "media_warnings": check.warnings}
+    upload.last_status = {
+        **upload.last_status,
+        "media_warnings": check.warnings,
+        "media_source": check.source,
+        "export_state": check.export_state,
+    }
     _set_phase(session, upload, UploadPhase.SESSION_STARTING)
 
 
@@ -523,16 +535,7 @@ def _step_upload(
     worker_id: str,
 ) -> None:
     assert upload.provider_video_id and upload.provider_session_id  # noqa: S101
-    root = registry.finals
-    if root is None or not upload.file_relative_path:
-        raise _PermanentError("media_incompatible", "Finals root unavailable on this worker")
-    path = root.resolve(upload.file_relative_path)
-    try:
-        stat = path.stat()
-    except OSError as exc:
-        raise _PermanentError("media_changed", "The final file disappeared before upload") from exc
-    if stat.st_size != upload.file_size:
-        raise _PermanentError("media_changed", "The final file changed size during publishing")
+    path, stat = _resolve_pinned_file(registry, upload)
     reel_session = ReelUploadSession(
         video_id=upload.provider_video_id, upload_url=upload.provider_session_id
     )
@@ -570,6 +573,57 @@ def _step_upload(
         _set_phase(session, upload, UploadPhase.UPLOAD_COMPLETE)
     else:
         upload.next_action_at = _now()  # continue on the next claim (budget exhausted)
+
+
+UPLOAD_ROOT_KEYS = frozenset({"finals", "exports"})
+
+
+def _resolve_pinned_file(
+    registry: MediaRootRegistry, upload: PublicationUpload
+) -> tuple[Path, os.stat_result]:
+    """Resolve the file pinned at validation and prove it is still the same bytes (E2).
+
+    Only the two read-only publishing roots are accepted; the relative path goes through the
+    root's traversal guard; size and mtime must match the pinned values, and before the first
+    chunk the sampled fingerprint is recomputed and compared. Any mismatch is a permanent
+    `media_changed` (a new attempt revalidates and re-selects) — never a silent upload.
+    """
+    root_key = upload.file_root_key or "finals"
+    if root_key not in UPLOAD_ROOT_KEYS or not upload.file_relative_path:
+        raise _PermanentError("media_incompatible", f"Unknown media root {root_key!r} for upload")
+    root = registry.get(root_key)
+    if root is None or not root.availability().readable:
+        raise _PermanentError("media_incompatible", f"{root_key} root unavailable on this worker")
+    try:
+        path = root.resolve(upload.file_relative_path)
+    except InvalidMediaPathError as exc:
+        raise _PermanentError("media_incompatible", f"Invalid media path: {exc}") from exc
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise _PermanentError(
+            "media_changed", f"The {root_key} file disappeared before upload"
+        ) from exc
+    if not path.is_file():
+        raise _PermanentError("media_changed", f"The {root_key} path is no longer a regular file")
+    if stat.st_size != upload.file_size:
+        raise _PermanentError(
+            "media_changed", f"The {root_key} file changed size during publishing"
+        )
+    mtime = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
+    if upload.file_mtime is not None and abs((mtime - upload.file_mtime).total_seconds()) > 2.0:
+        raise _PermanentError(
+            "media_changed", f"The {root_key} file was modified during publishing"
+        )
+    if (
+        upload.bytes_sent == 0
+        and upload.file_fingerprint
+        and quick_fingerprint(path, stat.st_size) != upload.file_fingerprint
+    ):
+        raise _PermanentError(
+            "media_changed", f"The {root_key} file content differs from the validated file"
+        )
+    return path, stat
 
 
 def _apply_status(upload: PublicationUpload, status: ReelStatus) -> None:

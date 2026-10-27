@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from affilio.core.enums import (
     CategoryAssignmentSource,
+    ExportJobStatus,
+    ExportTrigger,
     HandoffStatus,
     MediaAssetKind,
     MediaAssetStatus,
@@ -67,6 +69,9 @@ class MediaVariantResponse(MediaModel):
     container_format: str | None = None
     rotation: int | None = None
     probed_at: datetime | None = None
+    # Provenance of derived files (exports, E1): absent for scanned files.
+    derived_from_variant_id: uuid.UUID | None = None
+    recipe_key: str | None = None
     probe_error: str | None = None
     last_seen_at: datetime
     missing_since: datetime | None = None
@@ -115,6 +120,36 @@ class MediaAssetSummary(MediaModel):
     updated_at: datetime
 
 
+class ExportJobResponse(MediaModel):
+    id: uuid.UUID
+    media_asset_id: uuid.UUID
+    status: ExportJobStatus
+    trigger: ExportTrigger
+    recipe_key: str
+    attempt: int
+    max_attempts: int
+    requested_by: str | None = None
+    error_code: str | None = None
+    error: str | None = None
+    stats: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+
+
+class AssetExportStatus(MediaModel):
+    """Publish-ready export state of a final (E2)."""
+
+    state: Literal[
+        "not_needed", "not_generated", "queued", "processing", "ready", "failed", "blocked", "stale"
+    ]
+    detail: str | None = None
+    job: ExportJobResponse | None = None
+    export: MediaVariantResponse | None = None
+    can_export: bool = False
+
+
 class MediaAssetDetail(MediaAssetSummary):
     handoff_note: str | None = None
     handoff_reviewed_at: datetime | None = None
@@ -125,6 +160,7 @@ class MediaAssetDetail(MediaAssetSummary):
     rotation: int | None = None
     variants: list[MediaVariantResponse] = Field(default_factory=list)
     duplicates: list[uuid.UUID] = Field(default_factory=list)
+    export: AssetExportStatus | None = None  # finals only (E2)
 
 
 class PaginatedAssets(MediaModel):

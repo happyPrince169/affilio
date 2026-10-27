@@ -6,6 +6,7 @@ import Link from "next/link";
 
 import { useAuth } from "@/components/auth/auth-provider";
 import { EvidenceBadge, PublicationStatusBadge } from "@/components/distribution/badges";
+import { ReadinessChip } from "@/components/distribution/readiness-chip";
 import { MockPublicationBadge, UploadInline } from "@/components/distribution/upload-progress";
 import { MediaThumbnail } from "@/components/media/media-thumbnail";
 import { formatInZone } from "@/lib/format";
@@ -61,6 +62,7 @@ export function PublicationRow({
               <TriangleAlert className="size-3" /> target blocked
             </span>
           ) : null}
+          <ReadinessChip readiness={item.media_readiness} detail={item.media_readiness_detail} />
         </div>
         <p className="truncate font-medium">
           {item.title || item.caption_preview || item.media_title}

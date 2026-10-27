@@ -39,6 +39,8 @@ from affilio.modules.media.models import (
 from affilio.modules.media.roots import ROOT_KEYS, SCANNABLE_KINDS, MediaRootRegistry
 from affilio.modules.media.schemas import (
     AssetCategoryResponse,
+    AssetExportStatus,
+    ExportJobResponse,
     HandoffDecision,
     MediaAssetDetail,
     MediaAssetSummary,
@@ -561,8 +563,82 @@ def asset_summary(asset: MediaAsset, *, thumbnail_url_prefix: str) -> MediaAsset
     return MediaAssetSummary(**_summary_fields(asset, thumbnail_url_prefix=thumbnail_url_prefix))
 
 
+def variant_response(v: MediaFileVariant) -> MediaVariantResponse:
+    return MediaVariantResponse(
+        id=v.id,
+        kind=v.kind,
+        status=v.status,
+        root_key=v.root.key if v.root else "",
+        relative_path=v.relative_path,
+        file_name=v.file_name,
+        extension=v.extension,
+        file_size=v.file_size,
+        modified_at=v.modified_at,
+        content_hash=v.content_hash,
+        duration_seconds=v.duration_seconds,
+        width=v.width,
+        height=v.height,
+        frame_rate=v.frame_rate,
+        video_codec=v.video_codec,
+        audio_codec=v.audio_codec,
+        pixel_format=v.pixel_format,
+        bit_depth=v.bit_depth,
+        bit_rate=v.bit_rate,
+        container_format=v.container_format,
+        rotation=v.rotation,
+        probed_at=v.probed_at,
+        probe_error=v.probe_error,
+        last_seen_at=v.last_seen_at,
+        missing_since=v.missing_since,
+        derived_from_variant_id=v.derived_from_variant_id,
+        recipe_key=v.recipe_key,
+    )
+
+
+def export_job_response(job) -> ExportJobResponse:
+    return ExportJobResponse(
+        id=job.id,
+        media_asset_id=job.media_asset_id,
+        status=job.status,
+        trigger=job.trigger,
+        recipe_key=job.recipe_key,
+        attempt=job.attempt,
+        max_attempts=job.max_attempts,
+        requested_by=job.requested_by,
+        error_code=job.error_code,
+        error=job.error,
+        stats=job.stats or {},
+        created_at=job.created_at,
+        started_at=job.started_at,
+        finished_at=job.finished_at,
+        heartbeat_at=job.heartbeat_at,
+    )
+
+
+def asset_export_status(
+    session: Session, asset: MediaAsset, registry: MediaRootRegistry, settings
+) -> AssetExportStatus | None:
+    from affilio.modules.media import exports as exports_module
+
+    state = exports_module.asset_export_state(session, asset, registry, settings)
+    if state is None:
+        return None
+    return AssetExportStatus(
+        state=state.state,
+        detail=state.detail,
+        job=export_job_response(state.job) if state.job else None,
+        export=variant_response(state.export) if state.export else None,
+        can_export=state.can_export,
+    )
+
+
 def asset_detail(
-    session: Session, asset: MediaAsset, *, thumbnail_url_prefix: str
+    session: Session,
+    asset: MediaAsset,
+    *,
+    thumbnail_url_prefix: str,
+    registry: MediaRootRegistry | None = None,
+    settings=None,
 ) -> MediaAssetDetail:
     duplicates = list(
         session.scalars(
@@ -571,36 +647,7 @@ def asset_detail(
             .order_by(MediaAsset.created_at)
         )
     )
-    variants = [
-        MediaVariantResponse(
-            id=v.id,
-            kind=v.kind,
-            status=v.status,
-            root_key=v.root.key if v.root else "",
-            relative_path=v.relative_path,
-            file_name=v.file_name,
-            extension=v.extension,
-            file_size=v.file_size,
-            modified_at=v.modified_at,
-            content_hash=v.content_hash,
-            duration_seconds=v.duration_seconds,
-            width=v.width,
-            height=v.height,
-            frame_rate=v.frame_rate,
-            video_codec=v.video_codec,
-            audio_codec=v.audio_codec,
-            pixel_format=v.pixel_format,
-            bit_depth=v.bit_depth,
-            bit_rate=v.bit_rate,
-            container_format=v.container_format,
-            rotation=v.rotation,
-            probed_at=v.probed_at,
-            probe_error=v.probe_error,
-            last_seen_at=v.last_seen_at,
-            missing_since=v.missing_since,
-        )
-        for v in asset.variants
-    ]
+    variants = [variant_response(v) for v in asset.variants]
     return MediaAssetDetail(
         **_summary_fields(asset, thumbnail_url_prefix=thumbnail_url_prefix),
         handoff_note=asset.handoff_note,
@@ -612,6 +659,11 @@ def asset_detail(
         rotation=asset.rotation,
         variants=variants,
         duplicates=duplicates,
+        export=(
+            asset_export_status(session, asset, registry, settings)
+            if registry is not None and settings is not None
+            else None
+        ),
     )
 
 

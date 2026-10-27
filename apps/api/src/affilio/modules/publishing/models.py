@@ -414,10 +414,19 @@ class PublicationUpload(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     provider_video_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     external_post_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     external_post_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
-    # --- media pinned at claim time; the upload refuses to continue if the file changed ---
+    # --- media pinned at validation; the upload refuses to continue if the file changed ---
+    # E2: the selected file may be the final (`finals`) or a publish-ready export (`exports`);
+    # root key, relative path, size, mtime, quick fingerprint and variant id are all recorded.
+    file_root_key: Mapped[str | None] = mapped_column(String(32), nullable=True)
     file_relative_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     file_mtime: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    file_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    file_variant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("media_file_variants.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     bytes_total: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     bytes_sent: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0, server_default=text("0")

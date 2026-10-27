@@ -23,13 +23,22 @@ from affilio.api.deps import (
     SettingsDep,
 )
 from affilio.core.audit import record_audit
-from affilio.core.enums import HandoffStatus, MediaAssetKind, MediaAssetStatus, ScanTrigger
+from affilio.core.enums import (
+    ExportTrigger,
+    HandoffStatus,
+    MediaAssetKind,
+    MediaAssetStatus,
+    ScanTrigger,
+)
 from affilio.modules.media import classification, service
+from affilio.modules.media import exports as exports_module
 from affilio.modules.media.models import FolderCategoryRule
 from affilio.modules.media.schemas import (
     AssetCategoriesUpdate,
+    AssetExportStatus,
     CategoryCountEntry,
     CreateScanRequest,
+    ExportJobResponse,
     FolderPreviewResponse,
     FolderReportEntry,
     FolderRuleCreate,
@@ -118,11 +127,97 @@ def read_asset(
     session: DbSession,
     organization: CurrentOrganization,
     settings: SettingsDep,
+    registry: MediaRegistry,
 ) -> MediaAssetDetail:
     asset = service.get_asset(session, organization.id, asset_id)
     return service.asset_detail(
-        session, asset, thumbnail_url_prefix=_thumbnail_prefix(request, settings.api_v1_prefix)
+        session,
+        asset,
+        thumbnail_url_prefix=_thumbnail_prefix(request, settings.api_v1_prefix),
+        registry=registry,
+        settings=settings,
     )
+
+
+# ---------------------------------------------------------------- publish-ready exports (E2)
+
+
+@router.get(
+    "/assets/{asset_id}/export",
+    response_model=AssetExportStatus | None,
+    summary="Publish-ready export state of a final",
+)
+def read_asset_export(
+    asset_id: uuid.UUID,
+    session: DbSession,
+    organization: CurrentOrganization,
+    registry: MediaRegistry,
+    settings: SettingsDep,
+) -> AssetExportStatus | None:
+    asset = service.get_asset(session, organization.id, asset_id)
+    return service.asset_export_status(session, asset, registry, settings)
+
+
+@router.post(
+    "/assets/{asset_id}/export",
+    response_model=ExportJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Queue a publish-ready export of one final (admin)",
+)
+def create_asset_export(
+    asset_id: uuid.UUID,
+    session: DbSession,
+    organization: CurrentOrganization,
+    settings: SettingsDep,
+    identity: RequireAdmin,
+) -> ExportJobResponse:
+    job = exports_module.enqueue_export(
+        session,
+        organization.id,
+        asset_id,
+        trigger=ExportTrigger.MANUAL,
+        requested_by=identity.label,
+        max_attempts=settings.export_max_attempts,
+    )
+    record_audit(
+        session,
+        organization_id=organization.id,
+        identity=identity,
+        action="export.queued",
+        entity_type="media_export_job",
+        entity_id=job.id,
+        data={"media_asset_id": str(asset_id), "recipe_key": job.recipe_key},
+    )
+    session.commit()
+    session.refresh(job)
+    return service.export_job_response(job)
+
+
+@router.post(
+    "/exports/{job_id}/cancel",
+    response_model=ExportJobResponse,
+    summary="Cancel a queued or running export (admin)",
+)
+def cancel_asset_export(
+    job_id: uuid.UUID,
+    session: DbSession,
+    organization: CurrentOrganization,
+    identity: RequireAdmin,
+) -> ExportJobResponse:
+    previous = exports_module.get_export_job(session, organization.id, job_id).status
+    job = exports_module.cancel_export(session, organization.id, job_id, actor=identity.label)
+    record_audit(
+        session,
+        organization_id=organization.id,
+        identity=identity,
+        action="export.cancelled",
+        entity_type="media_export_job",
+        entity_id=job.id,
+        data={"media_asset_id": str(job.media_asset_id), "status_before": previous.value},
+    )
+    session.commit()
+    session.refresh(job)
+    return service.export_job_response(job)
 
 
 @router.post(
