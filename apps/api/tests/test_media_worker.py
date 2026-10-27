@@ -133,3 +133,37 @@ def test_thumbnail_failure_counts_attempts(db_session: Session, organization, me
     assert generator.generate(db_session, asset) is False
     assert asset.thumbnail_status == ThumbnailStatus.FAILED and asset.thumbnail_attempts == 2
     assert "not found" in (asset.thumbnail_error or "")
+    assert "/no/such" not in (asset.thumbnail_error or "")  # redacted: [redacted]/ffmpeg
+
+
+def test_job_error_is_redacted_before_it_is_stored(
+    db_session: Session, organization, media_dirs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M3C.1 step 3: unexpected exception text (OS paths, driver URLs) never reaches the row."""
+    from affilio.modules.media import scanner as scanner_module
+
+    settings = build_settings(media_dirs)
+    leaked_path = str(media_dirs.originals / "290826" / "C1643.MP4")
+
+    def explode(self, job):
+        raise OSError(
+            5,
+            "Input/output error while reading postgresql://affilio:s3cret@postgres:5432/affilio",
+            leaked_path,
+        )
+
+    monkeypatch.setattr(scanner_module.MediaScanner, "run", explode)
+    enqueue_scan(db_session, organization.id, media_dirs.registry, trigger=ScanTrigger.MANUAL)
+    db_session.commit()
+    job = claim_next_scan_job(db_session)
+    assert job is not None
+    db_session.commit()
+
+    job = execute_scan_job(db_session, job, settings=settings, registry=media_dirs.registry)
+
+    assert job.status == ScanJobStatus.QUEUED  # ordinary retry path, unchanged
+    assert job.error is not None
+    assert job.error.startswith("OSError: [Errno 5] Input/output error")
+    assert "'originals/290826/C1643.MP4'" in job.error
+    assert str(media_dirs.originals) not in job.error
+    assert "s3cret" not in job.error and "***:***@postgres" in job.error

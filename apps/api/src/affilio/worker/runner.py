@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, selectinload
 from affilio.core.config import Settings, get_settings
 from affilio.core.enums import ScanJobStatus
 from affilio.core.logging import configure_logging
+from affilio.core.redaction import Redactor
 from affilio.db.session import get_session_factory
 from affilio.modules.media.errors import ScanAbortedError
 from affilio.modules.media.models import MediaScanJob
@@ -82,7 +83,10 @@ def execute_scan_job(
         return _reload(session, fence.job_id)
     except Exception as exc:
         session.rollback()
-        message = f"{exc.__class__.__name__}: {exc}"[:1000]
+        # Driver/OS messages can carry connection URLs or absolute paths: redact before storing.
+        message = Redactor.from_settings(settings).message(
+            f"{exc.__class__.__name__}: {exc}", limit=1000
+        )
         log.warning(
             "media.scan.failed", job_id=str(fence.job_id), attempt=fence.attempt, error=message
         )

@@ -39,6 +39,7 @@ from affilio.core.enums import (
     UploadPhase,
 )
 from affilio.core.errors import AppError
+from affilio.core.redaction import redact_message
 from affilio.modules.accounts import connections as connections_service
 from affilio.modules.accounts import vault
 from affilio.modules.accounts.crypto import CredentialUndecryptableError, CredentialVaultError
@@ -797,11 +798,14 @@ def _complete(
 
 def _record_error(
     upload: PublicationUpload, job: PublicationJob, *, code: str, message: str, transient: bool
-) -> None:
-    upload.last_error = message[:2000]
+) -> str:
+    """Store the error on the upload and the job; returns the redacted message (M3C.1 step 3)."""
+    message = redact_message(message, limit=2000)
+    upload.last_error = message
     upload.last_error_code = code[:64]
     upload.last_error_transient = transient
     job.last_error = f"{code}: {message}"[:2000]
+    return message
 
 
 def _schedule_retry(
@@ -856,7 +860,7 @@ def _fail(
     message: str,
     identity: Any = None,
 ) -> None:
-    _record_error(upload, job, code=code, message=message, transient=False)
+    message = _record_error(upload, job, code=code, message=message, transient=False)
     attempt = upload.attempt
     attempt.status = PublicationAttemptStatus.FAILED
     attempt.finished_at = _now()
@@ -884,7 +888,7 @@ def _fail(
 def _park(
     session: Session, upload: PublicationUpload, job: PublicationJob, *, code: str, message: str
 ) -> None:
-    _record_error(upload, job, code=code, message=message, transient=False)
+    message = _record_error(upload, job, code=code, message=message, transient=False)
     attempt = upload.attempt
     attempt.status = PublicationAttemptStatus.AMBIGUOUS
     attempt.error = f"{code}: {message}"[:2000]
@@ -946,7 +950,8 @@ def reconcile_upload(
     try:
         token = _page_token(session, settings, upload)
     except _PermanentError as exc:
-        upload.last_error, upload.last_error_code = exc.message, exc.code
+        upload.last_error = redact_message(exc.message, limit=2000)
+        upload.last_error_code = exc.code
         session.flush()
         return upload
     try:

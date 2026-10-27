@@ -1,6 +1,6 @@
 # M3C.1 — Media foundation (make the NAS library visible and keep it that way)
 
-- **Status:** In progress. Steps 1 and 2 implemented 2026-10-27 (verified locally; not deployed).
+- **Status:** In progress. Steps 1–3 implemented 2026-10-27 (verified locally; not deployed).
   Steps 2–5 approved in principle, each started only on explicit approval.
 - **Depends on:** M1 (scanner, roots, worker), M2B (finals root), M3A (auth/RBAC).
 - **Not in scope:** `media_asset_relations` (deferred until `media_file_variants` +
@@ -19,7 +19,7 @@ runs on the NAS the scanner must be able to survive a worker crash and be stoppa
 | --- | --- | --- |
 | 1 | Scan watchdog + safe cancellation (this document) | implemented, tested locally |
 | 2 | Finals scanning from the UI and the CLI (`--root`) | implemented, tested locally |
-| 3 | Path-safe error strings (no container paths in stored errors) | approved, not started |
+| 3 | Path-safe error strings (no container paths in stored errors) | implemented, tested locally |
 | 4 | Identity across scans: missing file reappearing elsewhere keeps its asset | approved, not started |
 | 5 | Scheduled incremental rescan (`MEDIA_SCAN_INTERVAL_MINUTES`, default off) | approved, not started |
 
@@ -108,7 +108,27 @@ hand with `root_key: "finals"`.
   actions and posted body, unavailable root, duplicate-request blocking and cancellation,
   per-root results and errors, hidden controls without the permission.
 
-## Acceptance criteria (steps 1–2)
+## Step 3 — Path-safe error handling
+
+**Problem.** OS errors (`[Errno 13] Permission denied: '/media/originals/…'`), ffprobe and
+ffmpeg stderr (which name the input file), and unexpected exceptions (a database driver error
+carries the connection URL with its password) were stored verbatim in scan error entries,
+probe/thumbnail errors and job errors, and returned to authenticated members.
+
+**Design (no migration).** `affilio/core/redaction.py` (`Redactor`, `redact_message`) is
+applied at every persistence site: `scanner._record_error`, both probe-error sites (originals
+and proxies), `ThumbnailGenerator.generate`, `worker.runner.execute_scan_job` (job error,
+limit 1000) and the publishing engine's `_record_error` / `_fail` / `_park` / page-token
+failure (limit 2000). Rules and examples: `docs/architecture/security.md`, "Error redaction".
+Existing rows are not rewritten (production has none); the next scan or attempt overwrites.
+
+**Tests.** `tests/test_redaction.py` (container and NAS paths, quoted and Unicode names,
+root directories, paths outside the roots, multi-line ANSI ffmpeg output, connection URLs,
+`key=value`/JSON/bearer secrets, prose false positives, URL paths, truncation, realpath of a
+symlinked root), scanner integration (probe error + permission-denied directory stored
+redacted), worker integration (job error with path and credentials), thumbnail failure.
+
+## Acceptance criteria (steps 1–3)
 
 - [x] A running job whose heartbeat is older than the stale window is re-queued (attempt kept,
       backoff applied) or failed when attempts are spent; fresh jobs are never touched.
@@ -123,3 +143,6 @@ hand with `root_key: "finals"`.
       without blocking the other root, and shows status, counters, errors and cancellation
       per root.
 - [x] Existing clients of `POST /media/scans` and the legacy status fields are unchanged.
+- [x] No stored or returned error message contains a container or host absolute path, a
+      connection URL with credentials, or a token; the relative path, category and file
+      name remain.

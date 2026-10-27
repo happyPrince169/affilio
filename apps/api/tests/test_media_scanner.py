@@ -22,6 +22,7 @@ from affilio.core.enums import (
 )
 from affilio.modules.media.errors import ScanConfigurationError
 from affilio.modules.media.models import MediaAsset, MediaFileVariant, MediaScanJob
+from affilio.modules.media.probe import ProbeError
 from affilio.modules.media.scanner import MediaScanner, ScanStats
 from affilio.modules.media.service import enqueue_scan
 from tests.media_helpers import (
@@ -284,3 +285,46 @@ def test_proxies_arriving_after_the_original_are_linked_on_an_incremental_scan(
     # A third pass with nothing new links nothing and probes nothing.
     third = _scan(db_session, organization.id, media_dirs, prober)
     assert third.proxies_linked == 0 and len(prober.calls) == probes_before + 1
+
+
+class _LeakyProber(FakeProber):
+    """ffprobe-like failure whose text names the absolute input path (as real ffprobe does)."""
+
+    def probe(self, path: Path):
+        if "leaky" in path.name:
+            self.calls.append(path)
+            raise ProbeError("unsupported", f"{path}: Invalid data found when processing input")
+        return super().probe(path)
+
+
+def test_persisted_errors_never_contain_absolute_paths(
+    db_session, organization, media_dirs
+) -> None:
+    """M3C.1 step 3: scan error entries and probe errors are redacted before they are stored."""
+    write_bytes(media_dirs.originals / "shoot" / "leaky.mp4", 3_000, seed=7)
+    locked = media_dirs.originals / "locked"
+    locked.mkdir()
+    write_bytes(locked / "hidden.mp4", 3_000, seed=8)
+    locked.chmod(0)
+    try:
+        job = _job(db_session, organization.id, media_dirs)
+        settings = build_settings(media_dirs)
+        MediaScanner(db_session, media_dirs.registry, settings, prober=_LeakyProber()).run(job)
+        db_session.commit()
+    finally:
+        locked.chmod(0o755)
+
+    asset = next(a for a in _assets(db_session, organization.id) if a.title == "leaky")
+    assert asset.probe_error == (
+        "unsupported: originals/shoot/leaky.mp4: Invalid data found when processing input"
+    )
+    assert asset.variant(MediaVariantKind.ORIGINAL).probe_error == asset.probe_error
+    by_kind = {entry["kind"]: entry for entry in job.errors}
+    assert by_kind["probe_unsupported"]["path"] == "shoot/leaky.mp4"
+    assert by_kind["probe_unsupported"]["message"].startswith("originals/shoot/leaky.mp4:")
+    assert by_kind["permission_denied"]["path"] == "locked"
+    assert "Permission denied" in by_kind["permission_denied"]["message"]
+    assert "'originals/locked'" in by_kind["permission_denied"]["message"]
+    for entry in job.errors:
+        assert str(media_dirs.originals) not in entry["message"]
+        assert str(media_dirs.originals) not in entry["path"]

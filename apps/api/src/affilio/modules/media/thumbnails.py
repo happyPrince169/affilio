@@ -26,6 +26,7 @@ from affilio.core.enums import (
     MediaVariantStatus,
     ThumbnailStatus,
 )
+from affilio.core.redaction import Redactor
 from affilio.modules.media.models import MediaAsset, MediaFileVariant, MediaRoot
 from affilio.modules.media.roots import MediaRootRegistry
 
@@ -100,6 +101,7 @@ class ThumbnailGenerator:
     def __init__(self, settings: Settings, registry: MediaRootRegistry) -> None:
         self.settings = settings
         self.registry = registry
+        self.redactor = Redactor.from_settings(settings)
 
     def pick_source(self, asset: MediaAsset) -> tuple[str, MediaFileVariant] | None:
         proxy = asset.variant(MediaVariantKind.PROXY)
@@ -154,12 +156,14 @@ class ThumbnailGenerator:
             os.replace(tmp, target)
         except (ThumbnailError, OSError) as exc:
             tmp.unlink(missing_ok=True)
-            asset.thumbnail_error = str(exc)[:500]
+            asset.thumbnail_error = self.redactor.message(exc)  # ffmpeg stderr names paths
             if asset.thumbnail_attempts >= self.settings.media_thumbnail_max_attempts:
                 asset.thumbnail_status = ThumbnailStatus.FAILED
             else:
                 asset.thumbnail_status = ThumbnailStatus.PENDING
-            log.warning("media.thumbnail.failed", asset_id=str(asset.id), error=str(exc)[:200])
+            log.warning(
+                "media.thumbnail.failed", asset_id=str(asset.id), error=asset.thumbnail_error[:200]
+            )
             return False
 
         info = target.stat()

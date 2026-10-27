@@ -179,6 +179,27 @@ status (`/media/scans…`), and `POST /publishing/queue/release-due`. Any other 
 | Service token | owner role **only on the allow-listed routes** (scans, release-due, `/auth/me`) | narrowed in M3B.1A |
 | Seed credentials | `seed_dev` refuses outside development/test; production users via `create_user` with password from env or prompt | `SEED_ADMIN_PASSWORD` default is documented as a local placeholder and never used in production |
 
+## Error redaction (M3C.1 step 3)
+
+Error text that ends up in the database and in API responses (`media_scan_jobs.error` and
+`errors[]`, `media_assets.probe_error` / `thumbnail_error`, `media_file_variants.probe_error`,
+`publication_uploads.last_error`, `publication_jobs.last_error`, `publication_attempts.error`)
+goes through `affilio.core.redaction.Redactor` **before it is stored**, so neither the row nor
+the response ever holds the raw text:
+
+- paths under a configured media root become `<root key>/<relative path>` (container paths
+  such as `/media/originals/…` and host paths such as `/volume1/…/originals/…` alike, symlink
+  real paths included); any other absolute path keeps only its last component
+  (`[redacted]/ffmpeg`);
+- connection URLs lose their credentials (`scheme://***:***@host/db`), `key=value` and JSON
+  secrets (`password`, `token`, `secret`, `api_key`, `cookie`, `authorization`, …) and bearer
+  tokens are masked; prose that merely mentions a token stays readable;
+- ANSI escapes and control characters are removed, whitespace collapsed, length bounded.
+
+The error category (`kind` / `code`), the affected asset or scan id and the file name stay, so
+the message remains actionable. Logs carry the same redacted text. `GET /media/roots` never
+returned paths, and the generic 500 handler never echoes exception text.
+
 ## Known limitations
 
 - No password reset flow; an admin resets with `create_user --reset-password`.

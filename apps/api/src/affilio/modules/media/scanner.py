@@ -41,6 +41,7 @@ from affilio.core.enums import (
     ScanJobStatus,
     ThumbnailStatus,
 )
+from affilio.core.redaction import Redactor
 from affilio.modules.media import classification
 from affilio.modules.media.errors import (
     InvalidMediaPathError,
@@ -185,6 +186,7 @@ class MediaScanner:
             settings.media_ffprobe_path, settings.media_probe_timeout_seconds
         )
         self.clock = clock
+        self.redactor = Redactor.from_settings(settings)
         self._extensions = set(settings.media_video_extensions)
         self._ignored = set(settings.media_ignore_names)
         self._temp_markers = tuple(m.lower() for m in settings.media_temp_name_markers)
@@ -553,7 +555,7 @@ class MediaScanner:
                     result = self.prober.probe(proxies.resolve(rel))
                     _apply_probe(existing, result, ctx.now)
                 except ProbeError as exc:
-                    existing.probe_error = f"{exc.kind}: {exc.message}"
+                    existing.probe_error = self.redactor.message(f"{exc.kind}: {exc.message}")
                     existing.probed_at = ctx.now
             ctx.stats.proxies_linked += 1
             self._maybe_commit(ctx, ctx.job)
@@ -633,7 +635,7 @@ class MediaScanner:
         try:
             result = self.prober.probe(path)
         except ProbeError as exc:
-            variant.probe_error = f"{exc.kind}: {exc.message}"
+            variant.probe_error = self.redactor.message(f"{exc.kind}: {exc.message}")
             variant.probed_at = ctx.now
             asset.probe_error = variant.probe_error
             asset.status = MediaAssetStatus.UNSUPPORTED
@@ -705,7 +707,10 @@ class MediaScanner:
                 display = path.relative_to(ctx.binding.path).as_posix() or "."
             except ValueError:
                 display = path.name
-        ctx.errors.append({"kind": kind, "path": str(display), "message": message[:500]})
+        # Sanitized before persistence: OS/ffprobe text embeds absolute paths (M3C.1 step 3).
+        ctx.errors.append(
+            {"kind": kind, "path": str(display), "message": self.redactor.message(message)}
+        )
 
     def _maybe_commit(self, ctx: _ScanContext, job: MediaScanJob | None) -> None:
         """Commit progress every `media_scan_commit_every` units of work or every
