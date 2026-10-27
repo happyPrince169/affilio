@@ -13,8 +13,8 @@ name: affilio-tunnel
 
 services:
   cloudflared:
-    # Pinned like the other tunnels on this NAS; bump deliberately.
-    image: cloudflare/cloudflared:2025.2.0
+    # Pinned; bump deliberately (Cloudflare supports releases within one year of the latest).
+    image: cloudflare/cloudflared:2026.10.4
     container_name: affilio-cloudflared
     restart: unless-stopped
     command: ["tunnel", "--no-autoupdate", "run"]
