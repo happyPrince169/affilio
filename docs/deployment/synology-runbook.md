@@ -76,12 +76,22 @@ there (the sync never touches that file) and set, at minimum:
 
 ## 4. First start
 
+From the laptop, with the source already synced (`pnpm nas:sync`):
+
+```bash
+pnpm nas:deploy check     # preflight: .env, folders, compose config, live publishing off
+pnpm nas:deploy deploy    # confirmation → backup (if any) → build → migrate → up → health
+pnpm nas:status           # read-only verification
+```
+
+`nas-sync.md` describes every step and the rollback path. The equivalent manual commands on
+the NAS are:
+
 ```bash
 cd /volume1/docker/affilio/infrastructure/docker/synology
-docker compose --env-file .env up -d
-docker compose --env-file .env ps                 # five services healthy
-docker compose --env-file .env logs -f api        # "applying database migrations" → 0010 → uvicorn
-docker compose --env-file .env exec api python -m affilio.scripts.create_user --email <owner> --org demo-org --role admin
+sudo docker compose --env-file .env up -d
+sudo docker compose --env-file .env ps                 # five services healthy
+sudo docker compose --env-file .env exec api python -m affilio.scripts.create_user --email <owner> --org demo-org --role admin
 ```
 
 The first organization must exist before `create_user`; on a fresh database run the seed
@@ -110,11 +120,13 @@ Checks:
 
 ## 6. Upgrade and rollback
 
-1. `db-backup.sh`.
-2. Set the new image tags in `.env`; `docker compose pull` (or build).
-3. `docker compose up -d` — api applies migrations (`RUN_MIGRATIONS_ON_START=true`), the
-   worker, publisher and web restart on the new version.
-4. Verify §4 checks.
+1. `pnpm nas:sync` (the NAS copy now has the new source; nothing runs yet).
+2. `pnpm nas:deploy deploy` — pre-deploy dump, previous images kept as `:previous`, build,
+   migrations, restart of the five AFFILIO services, health checks.
+3. `pnpm nas:status`.
+
+Rollback: `pnpm nas:deploy rollback` (previous images, restart, health), plus the pre-deploy
+dump restore or `alembic downgrade <revision>` when the new migration is incompatible.
 
 Rollback: `docker compose down`, previous tags in `.env`, and either restore the pre-upgrade
 dump or `docker compose run --rm api alembic downgrade <revision>` (every migration

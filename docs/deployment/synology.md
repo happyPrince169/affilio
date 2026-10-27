@@ -28,7 +28,7 @@ Create the AFFILIO-owned folders. Example for volume 1:
 
 ```
 /volume1/docker/affilio/           the project directory: the source tree synced from the laptop
-├── apps/, packages/, infrastructure/, docs/, scripts/, …   (pnpm nas:watch, docs/deployment/nas-sync.md)
+├── apps/, packages/, infrastructure/, docs/, scripts/, …   (pnpm nas:sync, docs/deployment/nas-sync.md)
 ├── infrastructure/docker/synology/   docker-compose.yml + .env (the compose directory)
 ├── data/postgres/     PostgreSQL data directory          (runtime, never synced or deleted)
 ├── thumbnails/        generated thumbnails (read-write)  (runtime)

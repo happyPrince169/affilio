@@ -1,102 +1,137 @@
-# Syncing AFFILIO source to the NAS (Tailscale + SSH + rsync)
+# NAS workflow: sync and deploy are separate commands
 
-A one-command workflow that mirrors the local AFFILIO checkout to the project folder on the
-Synology NAS (`/volume1/docker/affilio/`, the same folder the deployment runs from) while you
-keep coding. It copies **source only**: it never builds images, never
-starts or restarts containers, never touches the ContentFactory media library or any other
-service on the NAS. Deploying is a separate, deliberate step (`synology-runbook.md`).
+Two explicit, independent operations, both run from the laptop against the Synology NAS
+over Tailscale SSH (`leosunnas`), both scoped to the AFFILIO project directory
+`/volume1/docker/affilio/`:
+
+| Command | What it does | What it never does |
+| --- | --- | --- |
+| `pnpm nas:sync` | rsync the local source tree to `/volume1/docker/affilio/` and record the synced git revision | build images, restart containers, run migrations, deploy |
+| `pnpm nas:deploy` | build and (re)start **only** the `affilio` compose project from the source already on the NAS, with backup, migrations and health checks | rsync, copy files from the laptop, `git pull`, touch other NAS projects |
+| `pnpm nas:status` | read-only view: synced revision, last deployment, `.env` presence, containers, images, disk, health URLs | change anything |
+| `pnpm nas:dry-run` | show what `nas:sync` would change | transfer anything |
+
+Daily workflow: code locally → `pnpm nas:sync` when the NAS copy should be updated →
+`pnpm nas:deploy` when that copy should run. A deploy can be repeated any number of times
+without another sync, and a sync never causes a deploy. There is no watch mode and no
+fswatch dependency any more.
 
 ```
-laptop (fswatch) ──rsync over ssh (Tailscale)──► leosunnas:/volume1/docker/affilio/
+laptop ──(1) pnpm nas:sync: rsync over ssh──► /volume1/docker/affilio/  (source + .deploy/source-revision)
+                                                      │
+                 (2) pnpm nas:deploy: ssh -t, runs scripts/nas-deploy-remote.sh ON the NAS
+                                                      ▼
+                       docker compose -p affilio build → migrate → up -d → health checks
 ```
 
-## Daily use
+## Sync (`scripts/nas-sync.sh`)
 
-| Command | What it does |
+- rsync over SSH with `~/.ssh/id_ed25519`, `BatchMode`, keep-alives; one sync at a time
+  (lock); exit codes 0 ok · 1 config · 2 unreachable · 3 destination missing · 4 busy ·
+  5 rsync failed.
+- Destination guard: absolute, under `/volume1/docker/`, never the prefix itself, never
+  another service (`content-factory`, `meobot`, `canonora`, `reconnect_tailscale`), no shell
+  metacharacters. The script never creates the directory.
+- **Deleted source files are deleted on the NAS too** (`RSYNC_DELETE=1` default), so a file
+  removed locally cannot linger and end up in a build. Everything that is NAS-only is
+  protected on the receiver and never deleted or overwritten, with or without delete:
+  `data/`, `backups/`, `thumbnails/`, `exports/`, `uploads/`, `logs/`, `media/`, `.deploy/`,
+  every `.env` / `.env.*` (except the committed `.env.example` files, which are source).
+  `RSYNC_DELETE=0` keeps remote files.
+- `.rsyncignore` keeps generated output, caches, virtualenvs, secrets, logs, databases,
+  Docker volumes, backups, uploads and media off the wire; `apps/web/public/**` is always
+  shipped. Dockerfiles, compose, migrations, lockfiles, scripts and docs always travel.
+- After a successful sync the file `.deploy/source-revision` on the NAS records the local
+  commit (`revision=…`, `working_tree=clean|dirty`, time, hostname); `nas:status` and the
+  deploy preflight show it, so you always know which code a deployment used.
+
+## Deploy (`scripts/nas-deploy.sh` → `scripts/nas-deploy-remote.sh` on the NAS)
+
+`pnpm nas:deploy` opens an interactive SSH session (the NAS Docker socket is root-only, so
+`sudo docker` asks for your NAS password once) and runs the copy of
+`scripts/nas-deploy-remote.sh` that the last sync placed on the NAS. Sub-commands:
+
+| | |
 | --- | --- |
-| `pnpm nas:watch` | sync now, then on every local change until Ctrl-C |
-| `pnpm nas:sync` | one incremental sync |
-| `pnpm nas:dry-run` | list what would be transferred; nothing is written |
+| `pnpm nas:deploy check` | preflight only, changes nothing |
+| `pnpm nas:deploy deploy` | full deployment (default when you type `pnpm nas:deploy deploy`) |
+| `pnpm nas:deploy rollback` | switch back to the previous images |
 
-Stop watch mode with **Ctrl-C** (the current rsync finishes, then the loop exits). Only one
-sync runs at a time on a machine; a second `watch`/`sync` exits with code 4.
+Deployment steps, each logged, each aborting the run on failure:
 
-## Initial setup
+1. **Preflight**: compose file and `.env` present (`.env` lives at
+   `/volume1/docker/affilio/infrastructure/docker/synology/.env`, created by you on the NAS,
+   never synced), required variables set and not the example values, host folders exist,
+   `docker compose config` valid, `META_LIVE_PUBLISHING_ENABLED` not true,
+   `META_PROVIDER_MODE` live. The synced revision and the last deployment are printed.
+2. **Confirmation**: the first deployment on a NAS requires typing the project directory;
+   later ones ask `y/N` (`AFFILIO_DEPLOY_YES=1` skips that for repeat deployments only).
+3. **Backup**: if `affilio-postgres` is running, `pg_dump` to
+   `/volume1/docker/affilio/backups/pre-deploy-<timestamp>.dump`.
+4. **Rollback target**: current `affilio-api:latest` / `affilio-web:latest` are re-tagged
+   `:previous`.
+5. **Build**: `docker compose -p affilio build --pull api web` (only AFFILIO images).
+6. **Migrate**: `postgres` is started and waited for, then
+   `compose run --rm --no-deps api migrate` (`alembic upgrade head`).
+7. **Start**: `compose up -d --remove-orphans` (only the `affilio` project), then every
+   service must report healthy within `HEALTH_TIMEOUT` (240 s).
+8. **HTTP checks**: `/api/v1/health` and `/api/v1/system/info` through the web port
+   (`database.status = ok`, `meta.mode = live`).
+9. **Record**: `.deploy/last-deploy` with time, revision and image ids.
 
-1. **Tailscale** up on both machines and the SSH alias `leosunnas` working without a prompt:
-   ```bash
-   ssh -o BatchMode=yes leosunnas 'echo ok'
-   ```
-   The alias lives in `~/.ssh/config` (user, hostname, `IdentityFile ~/.ssh/id_ed25519`).
-   The script only passes `-i $SSH_KEY`, `BatchMode=yes` and keep-alives; it changes no SSH
-   or Tailscale configuration.
-2. **fswatch** on the laptop (watch mode only): `sudo apt install fswatch`. rsync and ssh
-   are standard.
-3. **Project folder on the NAS** (one time, create it yourself after review):
-   ```bash
-   ssh leosunnas 'mkdir -p /volume1/docker/affilio'
-   ```
-   The script never creates NAS directories; `once`/`watch` stop with exit code 3 and print
-   this command when the folder is missing. `dry-run` still works.
+Other NAS projects (`content-factory`, `meobot`, `canonora`) are never referenced; the
+script uses `--project-name affilio` and the AFFILIO compose file only, and never runs
+`down -v` or any `prune`.
 
-## Configuration
+### Failure handling and rollback
 
-Environment variables, all optional:
-
-| Variable | Default | Meaning |
+| Failed step | Effect | What to do |
 | --- | --- | --- |
-| `NAS_HOST` | `leosunnas` | SSH host alias |
-| `NAS_DEST` | `/volume1/docker/affilio/` | destination; must be an absolute subdirectory under `NAS_DEST_PREFIX`, may not name another service (`content-factory`, `meobot`, `canonora`, …). The NAS runtime folders inside it (`data/`, `backups/`, `thumbnails/`, `exports/`) and its `.env` files are protected on the receiver even with `RSYNC_DELETE=1` |
-| `NAS_DEST_PREFIX` | `/volume1/docker/` | allowed destination root |
-| `SSH_KEY` | `~/.ssh/id_ed25519` | private key |
-| `RSYNC_DELETE` | `0` | `1` also removes remote files deleted locally (opt-in; never the default) |
-| `DRY_RUN` | `0` | `1` makes `once`/`watch` run rsync with `--dry-run` |
-| `DEBOUNCE_SECONDS` | `1.5` | fswatch batching window |
-| `NAS_SYNC_LOG` | unset | append log lines to a file as well |
+| preflight / compose-config | nothing changed | fix `.env` or the compose file, run `pnpm nas:deploy check` |
+| build | nothing changed (old containers keep running) | read the build log, fix the source, `pnpm nas:sync`, deploy again |
+| migrate | schema may be partially upgraded; app containers not yet restarted | inspect `docker compose logs api`; fix and re-run, or restore `backups/pre-deploy-*.dump` with `scripts/db-restore.sh` |
+| up / health | new containers may be unhealthy | `pnpm nas:status`; `pnpm nas:deploy rollback` restores the previous images; if the new migration is incompatible with the old code, also restore the pre-deploy dump or `alembic downgrade <revision>` |
 
-## What is and is not transferred
+`pnpm nas:deploy rollback` re-tags `:previous` → `:latest`, restarts the AFFILIO services
+without building, waits for health, and prints the database instructions. Every migration
+in this repository has a tested `downgrade()`.
 
-`.rsyncignore` keeps generated output, caches, virtual environments, `.env` files (only the
-`.env.example` files travel), keys and certificates, logs, temporary files, databases and
-dumps, Docker volumes, backups, uploads/thumbnails/exports and media files off the wire.
-Everything needed to build and run on the NAS goes across: `apps/*` source, Dockerfiles,
-`infrastructure/docker/synology/docker-compose.yml`, Alembic migrations, `pnpm-lock.yaml`,
-`apps/api/uv.lock`, `scripts/`, `docs/`.
+## Status (`scripts/nas-status.sh`)
 
-Verify at any time:
+Prints the synced revision, last deployment, `.env` and runtime folder presence, disk, the
+`affilio` containers with health, image tags and the health endpoints. Read-only. The
+container section needs the sudo password; without it the rest is still shown.
 
-```bash
-pnpm nas:dry-run 2>&1 | grep -E '\.env$|\.venv/|node_modules/|\.next/' || echo "no secrets or build output listed"
-```
+## Persistent data vs replaceable source
 
-## Source sync vs deployment
+| Lives in `/volume1/docker/affilio/` | Owner | Touched by sync | Touched by deploy |
+| --- | --- | --- | --- |
+| `apps/`, `packages/`, `infrastructure/`, `scripts/`, `docs/`, lockfiles | laptop (git) | replaced, stale files removed | read |
+| `infrastructure/docker/synology/.env` | NAS operator | never | read |
+| `data/postgres/`, `backups/`, `thumbnails/`, `exports/` | NAS runtime | never | written by containers / backup step |
+| `.deploy/` | sync + deploy records | `source-revision` written | `last-deploy` written |
+| media shares (originals, proxies, finals) | ContentFactory | never (outside the project dir, read-only mounts) | read-only mounts |
 
-| | Source sync (`pnpm nas:watch`) | Deployment (`synology-runbook.md`) |
-| --- | --- | --- |
-| What moves | files in the repo | nothing; builds images from the synced tree |
-| When | continuously while coding | when you decide |
-| Effect on containers | none | `docker compose build` / `up -d` restarts services |
-| Safety | project folder only, no `--delete`, runtime folders protected | explicit approval, backups first |
+## Setup once
 
-After syncing, a deployment is still a manual sequence on the NAS, for example:
-
-```bash
-cd /volume1/docker/affilio/infrastructure/docker/synology
-docker compose --env-file .env build && docker compose --env-file .env up -d
-```
-
-Nothing in the sync script runs these.
+1. `ssh -o BatchMode=yes leosunnas 'echo ok'` works (Tailscale up, key in `~/.ssh/config`).
+2. Project directory exists: `ssh leosunnas 'mkdir -p /volume1/docker/affilio'` (yours to run).
+3. First sync: `pnpm nas:sync`.
+4. On the NAS: create `/volume1/docker/affilio/infrastructure/docker/synology/.env` from the
+   `.env.example` next to it (`chmod 600`), the runtime folders
+   (`sudo mkdir -p /volume1/docker/affilio/{data/postgres,thumbnails,exports,backups} && sudo chown -R 1026:100 /volume1/docker/affilio`),
+   and the DSM firewall rule for the web port (`synology-runbook.md` §1–§3).
+5. `pnpm nas:deploy check` until it reports "preflight OK", then `pnpm nas:deploy deploy`.
 
 ## Troubleshooting
 
-| Symptom | Cause / fix |
+| Symptom | Fix |
 | --- | --- |
-| exit 2 "unreachable over SSH" | Tailscale down or NAS asleep: `tailscale status`, `ssh leosunnas` |
-| exit 3 "missing or not writable" | create the project folder (command above) or fix its ownership (`chown 1026:100`) |
-| exit 4 "another nas-sync is running" | a watch is already open in another terminal |
-| exit 5 "rsync FAILED" (once) | read the rsync error; in watch mode the loop retries with backoff (5 s → 120 s) |
-| exit 6 "fswatch is not installed" | `sudo apt install fswatch` |
-| exit 1 "NAS_DEST …" | the destination failed validation: absolute, under the prefix, not another service |
-| Permission denied on the NAS | files are written as the SSH user (uid 1026); keep that user as the owner of the staging folder |
-| Static assets missing on the NAS | `apps/web/public/**` is force-included; check nothing else matches a pattern in `.rsyncignore` |
-| Sync keeps firing | something writes inside the repo (build output, logs); add the path to `.rsyncignore` and the fswatch excludes in `scripts/nas-sync.sh` |
+| sync exit 2 | Tailscale down or NAS asleep: `tailscale status`, `ssh leosunnas` |
+| sync exit 3 | create the project directory (command above) or fix ownership (`chown 1026:100`) |
+| sync exit 4 | another sync is running |
+| deploy: "missing .env" | create it on the NAS; it is never synced |
+| deploy: "META_LIVE_PUBLISHING_ENABLED is enabled" | set it to `false`; live publishing needs the activation checklist first |
+| deploy: "cannot talk to Docker" | wrong sudo password, or run `pnpm nas:deploy` from a real terminal (needs a tty) |
+| deploy: "nas-deploy-remote.sh is missing on the NAS" | run `pnpm nas:sync` once with the current repository |
+| status shows an older revision than expected | you have not synced since that commit; sync and deploy are independent by design |

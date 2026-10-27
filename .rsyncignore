@@ -8,6 +8,7 @@
 
 # --- version control and editor/agent state ---
 .git/
+.deploy/
 .gitattributes.local
 .claude/
 .vscode/

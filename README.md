@@ -113,6 +113,9 @@ refused in staging/production) lets you connect deterministic mock Pages without
 tokens are encrypted with the key ring in `CREDENTIAL_ENCRYPTION_KEYS` (generate with
 `openssl rand -base64 32`; the connection endpoints answer 503 without it). In the split dev
 setup set `WEB_BASE_URL=http://localhost:3000` so the OAuth callback returns to the web app.
+**NAS workflow.** `pnpm nas:sync` copies source to the NAS; `pnpm nas:deploy` builds and
+starts AFFILIO from what is on the NAS; they are independent (`docs/deployment/nas-sync.md`).
+
 **Reels publishing engine (M3B.2A).** `pnpm dev:publisher` (or
 `uv run python -m affilio.worker.publisher`) runs the publisher worker that drives API
 attempts for connected Pages; in mock mode it simulates the whole lifecycle. Live publishing
@@ -139,7 +142,8 @@ also run hourly by the worker); key rotation: `uv run python -m affilio.scripts.
 | `pnpm db:seed`            | Idempotent DEV-ONLY seed (refuses outside development/test)    |
 | `pnpm dev:worker`         | Background worker: scan jobs + thumbnails                      |
 | `pnpm media:scan`         | Synchronous CLI scan (`-- --full`, `-- --thumbnails`)          |
-| `pnpm nas:watch` / `nas:sync` / `nas:dry-run` | Mirror the source tree to the NAS project folder (`/volume1/docker/affilio/`) over Tailscale SSH (`docs/deployment/nas-sync.md`); never deploys |
+| `pnpm nas:sync` / `nas:dry-run` | Copy the source tree to the NAS project folder (`/volume1/docker/affilio/`) over Tailscale SSH; never builds or restarts anything |
+| `pnpm nas:deploy` / `nas:status` | Deploy the source already on the NAS (`check` / `deploy` / `rollback`), or read its status; independent of sync (`docs/deployment/nas-sync.md`) |
 | `pnpm db:backup`          | `pg_dump` from the postgres container to `./backups`           |
 
 ## Database migrations

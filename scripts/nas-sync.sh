@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
-# scripts/nas-sync.sh — synchronize the AFFILIO source tree to the NAS project folder
-# (/volume1/docker/affilio/) over Tailscale SSH with rsync. Source only: it never builds,
-# restarts or deploys anything. Runtime folders living next to the source on the NAS
-# (data/, backups/, thumbnails/, exports/, the NAS .env files) are protected on the receiver
-# even when RSYNC_DELETE=1.
+# scripts/nas-sync.sh — copy the AFFILIO source tree to the NAS project folder
+# (/volume1/docker/affilio/) over Tailscale SSH with rsync. Explicit, one-shot, source only:
+# it never builds images, never starts or restarts containers, never runs migrations and
+# never triggers a deployment (that is scripts/nas-deploy.sh, run separately).
 #
 #   scripts/nas-sync.sh dry-run   show what would change, transfer nothing
-#   scripts/nas-sync.sh once      one incremental sync
-#   scripts/nas-sync.sh watch     initial sync, then sync on every local change (fswatch)
+#   scripts/nas-sync.sh once      synchronize (default for `pnpm nas:sync`)
 #
-# Configuration (environment variables; defaults suit the laptop → DS923+ setup):
+# Source files deleted locally are removed on the NAS too (so a stale file can never end up in
+# a build), but the NAS-only runtime folders and secrets inside the project directory
+# (data/, backups/, thumbnails/, exports/, uploads/, logs/, media/, .deploy/, .env files) are
+# protected on the receiver and never deleted or overwritten. RSYNC_DELETE=0 disables deletion.
+#
+# Configuration (environment variables):
 #   NAS_HOST            SSH host alias                     (default: leosunnas)
 #   NAS_DEST            destination directory on the NAS   (default: /volume1/docker/affilio/)
 #   SSH_KEY             private key                        (default: ~/.ssh/id_ed25519)
 #   NAS_DEST_PREFIX     only destinations under this path are accepted (default: /volume1/docker/)
-#   RSYNC_DELETE=1      also delete remote files that no longer exist locally (opt-in, never default)
-#   DRY_RUN=1           make `once` and `watch` run rsync with --dry-run (validation of the loop)
-#   DEBOUNCE_SECONDS    fswatch batching latency (default: 1.5)
+#   RSYNC_DELETE        1 (default) remove source files deleted locally; 0 keep them
 #   NAS_SYNC_LOG        append log lines to this file as well as stderr (optional)
 #
 # Exit codes: 0 ok · 1 usage/config · 2 NAS unreachable · 3 destination missing/unwritable
@@ -24,24 +25,21 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODE="${1:-}"
+MODE="${1:-once}"
 NAS_HOST="${NAS_HOST:-leosunnas}"
 NAS_DEST="${NAS_DEST:-/volume1/docker/affilio/}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 NAS_DEST_PREFIX="${NAS_DEST_PREFIX:-/volume1/docker/}"
-RSYNC_DELETE="${RSYNC_DELETE:-0}"
-DRY_RUN="${DRY_RUN:-0}"
-DEBOUNCE_SECONDS="${DEBOUNCE_SECONDS:-1.5}"
+RSYNC_DELETE="${RSYNC_DELETE:-1}"
 NAS_SYNC_LOG="${NAS_SYNC_LOG:-}"
 EXCLUDES="$ROOT/.rsyncignore"
 LOCK_FILE="${TMPDIR:-/tmp}/affilio-nas-sync.lock"
-RETRY_MIN=5
-RETRY_MAX=120
 
 # Destinations that must never be a sync target (other services on the NAS).
 PROTECTED_NAMES=(content-factory contentfactory ContentFactory meobot canonora reconnect_tailscale @eaDir)
+# Receiver-side paths inside NAS_DEST that rsync may never delete or overwrite.
+PROTECTED_PATHS=(/data/ /backups/ /thumbnails/ /exports/ /uploads/ /logs/ /media/ /.deploy/ .env '.env.*' 'infrastructure/docker/synology/.env')
 
-# ------------------------------------------------------------------------------ logging
 log() {
   local line
   line="[$(date '+%F %T')] $*"
@@ -52,23 +50,20 @@ die() { log "ERROR: $2"; exit "$1"; }
 
 usage() {
   cat >&2 <<USAGE
-Usage: $0 {dry-run|once|watch}
+Usage: $0 [dry-run|once]
   dry-run  list changes without transferring anything
-  once     sync the AFFILIO source tree to $NAS_HOST:$NAS_DEST
-  watch    sync now, then on every local change (Ctrl-C to stop)
-Environment: NAS_HOST NAS_DEST SSH_KEY NAS_DEST_PREFIX RSYNC_DELETE DRY_RUN DEBOUNCE_SECONDS NAS_SYNC_LOG
+  once     synchronize the source tree to $NAS_HOST:$NAS_DEST (default)
+Environment: NAS_HOST NAS_DEST SSH_KEY NAS_DEST_PREFIX RSYNC_DELETE NAS_SYNC_LOG
+This never builds, restarts or deploys anything; use scripts/nas-deploy.sh for that.
 USAGE
 }
 
-# ------------------------------------------------------------------------------ validation
 validate_config() {
   [[ -r "$SSH_KEY" ]] || die 1 "SSH key not readable: $SSH_KEY"
   [[ -r "$EXCLUDES" ]] || die 1 "exclusion file missing: $EXCLUDES"
   [[ -d "$ROOT/apps" && -f "$ROOT/package.json" ]] || die 1 "not the AFFILIO repository: $ROOT"
   command -v rsync >/dev/null || die 6 "rsync is not installed"
   command -v ssh >/dev/null || die 6 "ssh is not installed"
-
-  # Normalize: exactly one trailing slash, no doubled slashes.
   NAS_DEST="${NAS_DEST%/}/"
   case "$NAS_DEST" in
     /*) ;;
@@ -80,7 +75,7 @@ validate_config() {
   NAS_DEST_PREFIX="${NAS_DEST_PREFIX%/}/"
   [[ "$NAS_DEST" == "$NAS_DEST_PREFIX"* ]] || die 1 "NAS_DEST must be under $NAS_DEST_PREFIX (got $NAS_DEST)"
   [[ "$NAS_DEST" != "$NAS_DEST_PREFIX" ]] || die 1 "NAS_DEST must be a subdirectory of $NAS_DEST_PREFIX, not the prefix itself"
-  local rel name
+  local rel name protected
   rel="${NAS_DEST#"$NAS_DEST_PREFIX"}"
   name="${rel%%/*}"
   for protected in "${PROTECTED_NAMES[@]}"; do
@@ -94,22 +89,15 @@ validate_config() {
 ssh_opts=()
 build_ssh() {
   ssh_opts=(
-    -i "$SSH_KEY"
-    -o IdentitiesOnly=yes
-    -o BatchMode=yes
-    -o ConnectTimeout=15
-    -o ServerAliveInterval=30
-    -o ServerAliveCountMax=3
-    -o ControlMaster=no
-    -o ControlPath=none
+    -i "$SSH_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=15
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ControlMaster=no -o ControlPath=none
   )
 }
 
 # Returns 0 ok, 2 unreachable, 3 destination missing/unwritable.
 check_connection() {
   local rc=0
-  # NAS_DEST is validated above (absolute, no quotes/metacharacters), so expanding it on the
-  # client side into a single-quoted remote command is safe.
+  # NAS_DEST is validated above (absolute, no quotes or metacharacters): safe to expand here.
   # shellcheck disable=SC2029
   ssh "${ssh_opts[@]}" "$NAS_HOST" "test -d '$NAS_DEST' && test -w '$NAS_DEST'" || rc=$?
   case "$rc" in
@@ -117,140 +105,69 @@ check_connection() {
     255) log "NAS $NAS_HOST unreachable over SSH (is Tailscale up?)"; return 2 ;;
     *)
       log "NAS $NAS_HOST reachable, but $NAS_DEST is missing or not writable."
-      log "To create it (run yourself, after review):"
-      log "  ssh $NAS_HOST 'mkdir -p $NAS_DEST'"
+      log "Create it yourself after review:  ssh $NAS_HOST 'mkdir -p $NAS_DEST'"
       return 3 ;;
   esac
 }
 
-# ------------------------------------------------------------------------------ rsync
 rsync_args=()
 build_rsync() {
-  local ssh_cmd="ssh"
-  local opt
+  local ssh_cmd="ssh" opt protected
   for opt in "${ssh_opts[@]}"; do ssh_cmd+=" $(printf '%q' "$opt")"; done
   rsync_args=(
-    -az
-    --itemize-changes
-    --human-readable
-    --stats
-    --exclude-from="$EXCLUDES"
-    --rsync-path=/usr/bin/rsync
-    --timeout=120
-    -e "$ssh_cmd"
+    -az --itemize-changes --human-readable --stats
+    --exclude-from="$EXCLUDES" --rsync-path=/usr/bin/rsync --timeout=120 -e "$ssh_cmd"
   )
-  # Receiver-side protection: never delete the NAS runtime folders or its .env files, even
-  # with RSYNC_DELETE=1 (they are not part of the source tree).
-  local protected
-  for protected in /data/ /backups/ /thumbnails/ /exports/ /uploads/ /logs/ /media/ .env 'infrastructure/docker/synology/.env'; do
-    rsync_args+=(--filter="P $protected")
-  done
-  [[ "$RSYNC_DELETE" == "1" ]] && rsync_args+=(--delete)
-  [[ "$DRY_RUN" == "1" || "$MODE" == "dry-run" ]] && rsync_args+=(--dry-run)
-  return 0
+  for protected in "${PROTECTED_PATHS[@]}"; do rsync_args+=(--filter="P $protected"); done
+  if [[ "$RSYNC_DELETE" == "1" ]]; then rsync_args+=(--delete); fi
+  if [[ "$MODE" == "dry-run" ]]; then rsync_args+=(--dry-run); fi
+}
+
+# Record which local revision was synced so `nas:deploy` and `nas:status` can show it.
+source_revision() {
+  local head dirty
+  head="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+  dirty="clean"
+  if ! git -C "$ROOT" diff --quiet 2>/dev/null || ! git -C "$ROOT" diff --cached --quiet 2>/dev/null; then dirty="dirty"; fi
+  printf 'revision=%s\nworking_tree=%s\nsynced_at=%s\nsynced_from=%s\n' \
+    "$head" "$dirty" "$(date -u '+%FT%TZ')" "$(hostname)"
 }
 
 sync_once() {
-  local label="sync"
-  [[ "$DRY_RUN" == "1" || "$MODE" == "dry-run" ]] && label="dry-run"
-  log "$label: $ROOT/ → $NAS_HOST:$NAS_DEST${RSYNC_DELETE:+ (delete=$RSYNC_DELETE)}"
-  local started rc=0
+  local label="sync" started rc=0
+  [[ "$MODE" == "dry-run" ]] && label="dry-run"
+  log "$label: $ROOT/ → $NAS_HOST:$NAS_DEST (delete=$RSYNC_DELETE, protected: ${PROTECTED_PATHS[*]})"
   started=$(date +%s)
   rsync "${rsync_args[@]}" "$ROOT/" "$NAS_HOST:$NAS_DEST" || rc=$?
-  if [[ $rc -eq 0 ]]; then
-    log "$label done in $(( $(date +%s) - started ))s"
-  else
-    log "$label FAILED (rsync exit $rc)"
+  if [[ $rc -ne 0 ]]; then log "$label FAILED (rsync exit $rc)"; return "$rc"; fi
+  if [[ "$MODE" != "dry-run" ]]; then
+    # shellcheck disable=SC2029
+    source_revision | ssh "${ssh_opts[@]}" "$NAS_HOST" "mkdir -p '$NAS_DEST.deploy' && cat > '$NAS_DEST.deploy/source-revision'" \
+      || log "warning: could not record the source revision on the NAS"
   fi
-  return "$rc"
+  log "$label done in $(( $(date +%s) - started ))s"
 }
 
-# ------------------------------------------------------------------------------ watch
-drain_events() {
-  # Swallow fswatch batches that arrived while a sync was running, plus one more debounce
-  # window of stragglers, so a burst of edits costs one sync instead of several (coalescing).
-  while read -r -t "$DEBOUNCE_SECONDS" _; do :; done
-  return 0
-}
-
-watch_loop() {
-  command -v fswatch >/dev/null || die 6 "fswatch is not installed (sudo apt install fswatch)"
-  local backoff=$RETRY_MIN pending=1 line
-  log "watching $ROOT (debounce ${DEBOUNCE_SECONDS}s); Ctrl-C to stop"
-  # fswatch -o prints one line per batch of events. Directory excludes mirror .rsyncignore
-  # so build output and caches never trigger a sync.
-  fswatch -o -r -l "$DEBOUNCE_SECONDS" \
-    --exclude='(^|/)\.git(/|$)' \
-    --exclude='(^|/)node_modules(/|$)' \
-    --exclude='(^|/)\.next(/|$)' \
-    --exclude='(^|/)\.turbo(/|$)' \
-    --exclude='(^|/)\.venv(/|$)' \
-    --exclude='(^|/)__pycache__(/|$)' \
-    --exclude='(^|/)\.pytest_cache(/|$)' \
-    --exclude='(^|/)\.ruff_cache(/|$)' \
-    --exclude='(^|/)\.mypy_cache(/|$)' \
-    --exclude='(^|/)\.claude(/|$)' \
-    --exclude='(^|/)logs(/|$)' \
-    --exclude='(^|/)tmp(/|$)' \
-    --exclude='\.(log|tmp|swp)$' \
-    "$ROOT" |
-  while true; do
-    if [[ $pending -eq 0 ]]; then
-      # Block until the next batch of changes.
-      read -r line || break
-      drain_events
-      pending=1
-    fi
-    if sync_once; then
-      pending=0
-      backoff=$RETRY_MIN
-    else
-      # Transient failure (Tailscale down, NAS asleep): wait with capped exponential backoff,
-      # keep absorbing change events meanwhile, then retry. Never a busy loop.
-      log "retrying in ${backoff}s (changes keep accumulating)"
-      local waited=0
-      while [[ $waited -lt $backoff ]]; do
-        if read -r -t 1 line; then :; fi
-        waited=$((waited + 1))
-      done
-      backoff=$(( backoff * 2 > RETRY_MAX ? RETRY_MAX : backoff * 2 ))
-    fi
-  done
-  log "watch stopped"
-}
-
-# ------------------------------------------------------------------------------ main
 main() {
   case "$MODE" in
-    dry-run|once|watch) ;;
-    -h|--help|help|"") usage; exit 1 ;;
-    *) usage; die 1 "unknown mode '$MODE'" ;;
+    dry-run|once) ;;
+    -h|--help|help) usage; exit 1 ;;
+    *) usage; die 1 "unknown mode '$MODE' (watch mode was removed; sync is explicit)" ;;
   esac
   validate_config
   build_ssh
   build_rsync
-
-  # One sync at a time per machine (a second `watch` or `once` must not race the first).
   exec 9>"$LOCK_FILE"
-  if ! flock -n 9; then
-    die 4 "another nas-sync is running (lock $LOCK_FILE)"
-  fi
-
+  flock -n 9 || die 4 "another nas-sync is running (lock $LOCK_FILE)"
   local rc=0
   check_connection || rc=$?
-  if [[ $rc -eq 2 ]]; then exit 2; fi
-  if [[ $rc -eq 3 && "$MODE" != "dry-run" && "$DRY_RUN" != "1" ]]; then exit 3; fi
-  [[ $rc -eq 3 ]] && log "dry-run continues against the missing directory (nothing is created)"
-
-  case "$MODE" in
-    dry-run|once)
-      sync_once || exit 5
-      ;;
-    watch)
-      trap 'log "stopping watch"; exit 0' INT TERM
-      watch_loop
-      ;;
-  esac
+  [[ $rc -ne 2 ]] || exit 2
+  if [[ $rc -eq 3 ]]; then
+    [[ "$MODE" == "dry-run" ]] || exit 3
+    log "dry-run continues against the missing directory (nothing is created)"
+  fi
+  sync_once || exit 5
+  [[ "$MODE" == "dry-run" ]] || log "source is on the NAS; deploy it when you want with: pnpm nas:deploy"
 }
 
 main "$@"

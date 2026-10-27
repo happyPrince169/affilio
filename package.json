@@ -30,7 +30,8 @@
     "dev:publisher": "pnpm --filter @affilio/api publisher",
     "nas:dry-run": "./scripts/nas-sync.sh dry-run",
     "nas:sync": "./scripts/nas-sync.sh once",
-    "nas:watch": "./scripts/nas-sync.sh watch"
+    "nas:deploy": "./scripts/nas-deploy.sh",
+    "nas:status": "./scripts/nas-status.sh"
   },
   "devDependencies": {
     "@affilio/config": "workspace:*",
