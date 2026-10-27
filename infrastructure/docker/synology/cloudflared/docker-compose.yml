@@ -1,0 +1,36 @@
+# AFFILIO Cloudflare Tunnel connector (DS923+). A separate compose project ("affilio-tunnel")
+# so that `pnpm nas:deploy` (project "affilio") never builds, restarts or removes it.
+#
+# Tunnel: affilio-nas (28cdb9b3-be9f-4d71-bb9e-7fff3442b02d), remotely managed: the public
+# hostname app.aaffilio.online → http://192.168.1.3:3080 lives in the Cloudflare dashboard
+# (Zero Trust → Networks → Tunnels). The only local secret is the connector token, read from the
+# git-ignored, sync-protected .env next to this file (mode 600) and passed as an environment
+# variable so it never appears in `docker ps` or the compose file.
+#
+# No published ports (cloudflared only needs outbound 443). The container reaches the AFFILIO
+# web origin on the NAS LAN address through the default bridge network.
+name: affilio-tunnel
+
+services:
+  cloudflared:
+    # Pinned like the other tunnels on this NAS; bump deliberately.
+    image: cloudflare/cloudflared:2025.2.0
+    container_name: affilio-cloudflared
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in cloudflared/.env (mode 600)}
+      TUNNEL_METRICS: 127.0.0.1:2000
+    # No `ports:` on purpose. No volumes: nothing is stored locally.
+    deploy:
+      resources:
+        limits:
+          memory: ${CLOUDFLARED_MEMORY:-128M}
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp

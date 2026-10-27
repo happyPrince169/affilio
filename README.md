@@ -143,6 +143,7 @@ also run hourly by the worker); key rotation: `uv run python -m affilio.scripts.
 | `pnpm dev:worker`         | Background worker: scan jobs + thumbnails                      |
 | `pnpm media:scan`         | Synchronous CLI scan (`-- --full`, `-- --thumbnails`)          |
 | `pnpm nas:sync` / `nas:dry-run` | Copy the source tree to the NAS project folder (`/volume1/docker/affilio/`) over Tailscale SSH; never builds or restarts anything |
+| `pnpm nas:tunnel` | Operate the AFFILIO Cloudflare Tunnel connector on the NAS (`config` / `up` / `status` / `logs` / `restart` / `down`) |
 | `pnpm nas:deploy` / `nas:status` | Deploy the source already on the NAS (`check` / `deploy` / `rollback`), or read its status; independent of sync (`docs/deployment/nas-sync.md`) |
 | `pnpm db:backup`          | `pg_dump` from the postgres container to `./backups`           |
 

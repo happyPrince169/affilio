@@ -107,6 +107,42 @@ deploy, it runs the synced copy of its remote script so the SSH session keeps a 
 `sudo` can prompt for the container section; without a password (or `NAS_SSH_TTY=0`) the
 rest is still shown.
 
+## Cloudflare Tunnel connector (`pnpm nas:tunnel`)
+
+The public hostname `app.aaffilio.online` reaches the NAS through a **remotely managed**
+Cloudflare Tunnel (`affilio-nas`, id `28cdb9b3-be9f-4d71-bb9e-7fff3442b02d`): the route
+`app.aaffilio.online → http://192.168.1.3:3080` is configured in the Cloudflare dashboard, and
+the NAS only runs a connector container defined in
+`infrastructure/docker/synology/cloudflared/docker-compose.yml` (compose project
+`affilio-tunnel`, separate from `affilio` so deployments never touch it; no ports, no volumes,
+read-only filesystem, 128 M memory limit, `restart: unless-stopped`).
+
+The connector token is the only secret. It lives in `cloudflared/.env` **on the NAS** (mode
+600), is git-ignored, excluded from and protected against `nas:sync`, and is passed to the
+container as an environment variable (never as a command-line argument).
+
+| Command | What it does |
+| --- | --- |
+| `pnpm nas:tunnel config` | validates the compose file and `.env` on the NAS (no sudo) |
+| `pnpm nas:tunnel up` | starts or updates the connector (sudo prompt) |
+| `pnpm nas:tunnel status` | container state and the last 20 log lines |
+| `pnpm nas:tunnel logs` | follow the log |
+| `pnpm nas:tunnel restart` / `down` | restart / stop and remove the connector container |
+
+Supplying the token without echoing it (run from the laptop; the token is typed into the
+NAS session and written straight to the file):
+
+```bash
+pnpm nas:sync                                   # the cloudflared compose file must be on the NAS
+ssh -t leosunnas 'umask 077; d=/volume1/docker/affilio/infrastructure/docker/synology/cloudflared;   read -r -s -p "TUNNEL_TOKEN: " t; echo; printf "TUNNEL_TOKEN=%s\nCLOUDFLARED_MEMORY=128M\n" "$t" > "$d/.env";   chmod 600 "$d/.env"; ls -l "$d/.env"'
+pnpm nas:tunnel config
+pnpm nas:tunnel up
+pnpm nas:tunnel status                           # expect "Registered tunnel connection" lines
+```
+
+Then in Cloudflare Zero Trust: the tunnel shows **Healthy**, and `https://app.aaffilio.online`
+serves the login page. Protect the hostname with a Cloudflare Access policy before sharing it.
+
 ## Persistent data vs replaceable source
 
 | Lives in `/volume1/docker/affilio/` | Owner | Touched by sync | Touched by deploy |

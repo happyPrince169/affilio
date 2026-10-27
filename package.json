@@ -31,7 +31,8 @@
     "nas:dry-run": "./scripts/nas-sync.sh dry-run",
     "nas:sync": "./scripts/nas-sync.sh once",
     "nas:deploy": "./scripts/nas-deploy.sh",
-    "nas:status": "./scripts/nas-status.sh"
+    "nas:status": "./scripts/nas-status.sh",
+    "nas:tunnel": "./scripts/nas-tunnel.sh"
   },
   "devDependencies": {
     "@affilio/config": "workspace:*",

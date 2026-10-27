@@ -150,7 +150,15 @@ Prepared on `leosunnas` without starting anything. No secret values are recorded
 | Meta | `META_PROVIDER_MODE=live` (fixed by compose), `META_LIVE_PUBLISHING_ENABLED=false`, app id/secret empty (connections refused with a clear "not configured" message), `META_OAUTH_REDIRECT_URI=https://app.aaffilio.online/api/v1/accounts/connect/facebook/callback` pre-set for the future app |
 | Stray file | `/volume1/docker/affilio/.env` (byte-identical copy of the dev template, not read by compose) can be deleted; the compose directory `.env` is the real one |
 
-### Cloudflare Tunnel targets (to configure after deployment)
+### Cloudflare Tunnel connector
+
+Prepared as the separate compose project `affilio-tunnel`
+(`infrastructure/docker/synology/cloudflared/`, `pnpm nas:tunnel …`, see `nas-sync.md`):
+tunnel `affilio-nas` (`28cdb9b3-be9f-4d71-bb9e-7fff3442b02d`), route
+`app.aaffilio.online → http://192.168.1.3:3080` managed in the dashboard, token only in the
+NAS-side `cloudflared/.env` (mode 600).
+
+### Cloudflare Tunnel targets
 
 | Public hostname | Tunnel service | Notes |
 | --- | --- | --- |
