@@ -1,6 +1,8 @@
 # M3B — Facebook Page Reels through the Graph API: plan
 
-- **Status:** M3B.0 (feasibility and architecture) complete on 2026-10-26; M3B.1 not started.
+- **Status:** M3B.0 complete (2026-10-26). M3B.1 is split: **M3B.1A** (connection
+  infrastructure, vault, mock provider) implemented 2026-10-28 — see
+  `M3B1A-meta-connection-infrastructure.md`; **M3B.1B** (uploads, publisher worker) not started.
 - **Depends on:** M3A accepted; M3A.1 accepted; pre-M3B hardening (commit `6378300`) merged.
 - **Reads first:** `docs/integrations/facebook-reels-feasibility.md`,
   `docs/integrations/facebook-reels-architecture.md`, `docs/integrations/meta-app-setup.md`,

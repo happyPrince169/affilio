@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from zoneinfo import available_timezones
 
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from affilio.core.enums import MembershipRole, UserStatus
@@ -175,6 +175,32 @@ def revoke_all_sessions(session: Session, user: User) -> int:
     count = 0
     for record in session.scalars(
         select(UserSession).where(UserSession.user_id == user.id, UserSession.revoked_at.is_(None))
+    ):
+        record.revoked_at = datetime.now(UTC)
+        count += 1
+    return count
+
+
+def purge_sessions(session: Session, *, retention: timedelta) -> int:
+    """Delete sessions that expired or were revoked more than `retention` ago (M3B.1A).
+
+    Live sessions are never touched: a row is removed only when it could not authenticate
+    anyway. Audit events keep the user id, so no history is lost.
+    """
+    cutoff = datetime.now(UTC) - retention
+    result = session.execute(
+        delete(UserSession).where(
+            or_(UserSession.expires_at < cutoff, UserSession.revoked_at < cutoff)
+        )
+    )
+    return int(result.rowcount or 0)
+
+
+def revoke_sessions_for_user(session: Session, user_id: uuid.UUID) -> int:
+    """Admin "sign out everywhere" for a member (M3B.1A). Returns the number revoked."""
+    count = 0
+    for record in session.scalars(
+        select(UserSession).where(UserSession.user_id == user_id, UserSession.revoked_at.is_(None))
     ):
         record.revoked_at = datetime.now(UTC)
         count += 1

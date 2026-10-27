@@ -11,6 +11,7 @@ from affilio.api.deps import CurrentIdentity, DbSession, RequireAdmin
 from affilio.core.audit import record_audit
 from affilio.core.enums import Platform
 from affilio.modules.accounts import service
+from affilio.modules.accounts.connect_router import router as connect_router
 from affilio.modules.accounts.schemas import (
     ChannelProfileResponse,
     ChannelProfileUpdate,
@@ -63,6 +64,11 @@ def register(
     )
     session.commit()
     return service.to_response(account)
+
+
+# Connection routes carry static segments (/connect/..., /connections/...) and must be
+# registered before the `/{account_id}` routes below.
+router.include_router(connect_router)
 
 
 @router.get("/{account_id}", response_model=SocialAccountResponse, summary="Account detail")

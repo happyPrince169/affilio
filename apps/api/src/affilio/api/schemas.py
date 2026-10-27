@@ -26,6 +26,18 @@ class DatabaseStatus(ApiModel):
     latency_ms: float | None = None
 
 
+class MetaIntegrationInfo(ApiModel):
+    """Facts about the Meta integration: mode and whether it is configured. Never values."""
+
+    mode: str = Field(description="live | mock (mock is refused outside development/test)")
+    configured: bool
+    graph_api_version: str
+
+
+class IntegrationsInfo(ApiModel):
+    meta: MetaIntegrationInfo
+
+
 class SystemInfoResponse(ApiModel):
     service: str
     version: str
@@ -35,6 +47,7 @@ class SystemInfoResponse(ApiModel):
     timestamp: datetime
     database: DatabaseStatus
     modules: list[str] = Field(description="Registered domain modules, in dependency order.")
+    integrations: IntegrationsInfo
 
 
 class ErrorBody(ApiModel):

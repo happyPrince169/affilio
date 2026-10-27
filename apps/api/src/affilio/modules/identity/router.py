@@ -343,6 +343,32 @@ def update_member(
     )
 
 
+@router.post(
+    "/members/{user_id}/sessions/revoke",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Sign a member out everywhere (admin). Owners can only be signed out by owners.",
+)
+def revoke_member_sessions(
+    user_id: uuid.UUID, identity: RequireAdmin, session: DbSession, response: Response
+) -> Response:
+    membership = service.get_member(session, identity.organization.id, user_id)
+    if membership.role == "owner" and identity.role != "owner":
+        raise NotFoundError("Only an owner can sign out an owner")
+    revoked = service.revoke_sessions_for_user(session, user_id)
+    record_audit(
+        session,
+        organization_id=identity.organization.id,
+        identity=identity,
+        action="member.sessions_revoked",
+        entity_type="user",
+        entity_id=user_id,
+        data={"revoked": revoked},
+    )
+    session.commit()
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response
+
+
 @router.patch(
     "/organization", response_model=MembershipResponse, summary="Update organization (admin)"
 )

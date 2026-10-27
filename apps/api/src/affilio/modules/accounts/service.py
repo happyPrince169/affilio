@@ -67,6 +67,14 @@ def to_response(account: SocialAccount) -> SocialAccountResponse:
         registered_by=account.registered_by,
         created_at=account.created_at,
         updated_at=account.updated_at,
+        connection_id=account.connection_id,
+        connected_at=account.connected_at,
+        last_verified_at=account.last_verified_at,
+        disconnect_reason=account.disconnect_reason,
+        page_tasks=list(account.page_tasks) if account.page_tasks is not None else None,
+        is_mock=account.is_mock,
+        can_publish=account.can_publish,
+        permission_status=account.permission_status,
     )
 
 

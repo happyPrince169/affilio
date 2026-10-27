@@ -180,6 +180,39 @@ class SocialAccountSource(StrEnum):
     OAUTH = "oauth"
 
 
+class ConnectionProvider(StrEnum):
+    META = "meta"
+
+
+class ConnectionStatus(StrEnum):
+    """Health of a provider-level grant (one Meta user authorizing the app)."""
+
+    ACTIVE = "active"
+    REVOKED = "revoked"  # revoked by an admin (locally and, when possible, at the provider)
+    EXPIRED = "expired"  # the provider reports the user grant expired
+    INVALID = "invalid"  # the provider rejected the stored token (190 and friends)
+
+
+class CredentialKind(StrEnum):
+    META_USER = "meta_user_long_lived"
+    META_PAGE = "meta_page"
+
+
+class CredentialStatus(StrEnum):
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"  # replaced by a newer version (reconnect / rotation)
+    REVOKED = "revoked"
+    INVALID = "invalid"
+
+
+class OAuthAttemptStatus(StrEnum):
+    PENDING = "pending"
+    COMPLETED = "completed"
+    DENIED = "denied"  # the person cancelled at the consent screen
+    FAILED = "failed"  # provider or validation error
+    EXPIRED = "expired"  # swept without ever being consumed
+
+
 class AffiliateLinkStatus(StrEnum):
     ACTIVE = "active"
     ARCHIVED = "archived"

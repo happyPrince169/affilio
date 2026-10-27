@@ -30,6 +30,8 @@ const FORWARD_RESPONSE_HEADERS = [
   "etag",
   "last-modified",
   "x-request-id",
+  // OAuth callbacks answer with a redirect (M3B.1A); the browser must see where to go.
+  "location",
 ];
 
 type Context = { params: Promise<{ path: string[] }> };

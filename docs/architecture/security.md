@@ -61,8 +61,8 @@ publication transition. Admins read it via `GET /auth/audit`.
 
 ## Secrets and tokens
 
-- No platform tokens exist in M3A. `social_accounts` has no credential column; M3B will add a
-  separate encrypted credential store, never plaintext on the account row.
+- Platform tokens live only in the credential vault below; `social_accounts` has no
+  credential column.
 - Settings that are secrets are `SecretStr`; `.env.example` holds placeholders only.
 - Passwords are never accepted on the command line: `affilio.scripts.create_user` reads them
   from `AFFILIO_NEW_USER_PASSWORD` or an interactive prompt.
@@ -80,16 +80,89 @@ The limiter is in-process (`affilio.core.ratelimit`): the Synology deployment ru
 uvicorn worker, so the limit is exact there; with N workers it is N × limit. A shared store
 is deliberately not introduced.
 
+## Credential vault (M3B.1A)
+
+- **Where.** `account_credentials` holds one row per token version: `ciphertext`, `nonce`,
+  `key_id`, a SHA-256 `token_fingerprint`, scopes, lifetimes and status. The plaintext exists
+  only inside `accounts/vault.py::open_token` and is handed straight to a provider call.
+- **How.** AES-256-GCM (`cryptography`) with a 96-bit random nonce. The associated data binds
+  each ciphertext to organization, connection, subject (Meta user or Page id), credential kind,
+  key id and version, so a ciphertext copied to another row fails authentication.
+- **Keys.** `CREDENTIAL_ENCRYPTION_KEYS` is a key ring (`key_id:base64(32 bytes)`, comma
+  separated); `CREDENTIAL_ENCRYPTION_ACTIVE_KEY_ID` names the key used for new encryptions
+  (defaults to the only key). Keys come from the environment / `.env` (mode 600) and are never
+  in the database, logs, audit data or `/system/info`.
+- **Fail closed.** Without a usable ring the connection endpoints answer 503
+  `credential_vault_unavailable` and store nothing. A row whose key id is unknown or whose
+  tag does not verify is `credential_undecryptable`: the Page is marked disconnected
+  (`disconnect_reason`) and must be reconnected; no plaintext fallback exists.
+- **Rotation.** Add `v2:<key>`, set the active id to `v2`, restart, run
+  `python -m affilio.scripts.rotate_credential_keys` (re-encrypts active rows in one
+  transaction; `--check` lists rows per key id), then remove `v1` once no row uses it.
+- **Versioning and revocation.** Reconnecting stores a new version and marks the previous
+  row `superseded`; disconnect marks it `revoked`; a provider rejection (190) marks it
+  `invalid` with the reason. History is kept; only one row per subject is `active`
+  (partial unique index).
+- **Backup and restore.** Database dumps contain ciphertext only. Back the key ring up
+  separately (password manager / DSM Key Manager). Restoring a dump without the key leaves
+  every connected Page as `credential_undecryptable` → "Reconnect"; tokens are re-issuable by
+  Meta, so key loss is an outage, not data loss. Test the restore path before relying on it.
+
+## Meta connections (M3B.1A)
+
+- **Flow.** Admin → `POST /accounts/connect/facebook` creates an `oauth_states` row (256-bit
+  random state, SHA-256 stored, 10-minute TTL, bound to the user, session and organization)
+  and returns the authorize URL; the browser navigates there; the callback
+  (`GET …/callback`, cookie-authenticated, admin) consumes the state exactly once
+  (`UPDATE … WHERE consumed_at IS NULL`), exchanges the code server-side, inspects the token
+  (`/debug_token`: app id, scopes, expiry), discovers Pages, stores the user and Page tokens
+  encrypted, and answers with a redirect only. Denials, replays, expired or foreign states,
+  forged codes and provider errors all end as an audited attempt plus a redirect carrying an
+  error code; nothing is stored.
+- **Redirect URI.** `META_OAUTH_REDIRECT_URI` is fixed configuration (https outside
+  development), never derived from request headers; it must match Meta's Strict Mode entry.
+- **Binding.** A `platform_connections` row is unique per (organization, provider, Meta user).
+  Pages become `social_accounts` rows (`source=oauth`, `is_verified=true`,
+  `status=connected`); an existing manual row with the same Page id is upgraded in place.
+  Reconnecting re-binds every OAuth row automatically and versions the credentials.
+- **Health.** "Verify" asks the provider whether a stored token still works; an invalid
+  token marks the Page (or the whole grant) disconnected with a reason. Disconnect and revoke
+  are admin actions; revoke also calls the provider's permission revocation when possible.
+- **Mock provider.** `META_PROVIDER_MODE=mock` (refused outside development/test) replaces the
+  Graph API with a deterministic in-process provider. Mock tokens are prefixed `mock:` and
+  rejected by the live provider; every mock connection, credential and account carries
+  `is_mock=true` and is labelled as mock in the API and UI. Mock-only endpoints answer 404
+  `mock_mode_disabled` in live mode.
+- **Audit.** `account.connect_started/completed/denied/failed`, `account.page_linked`,
+  `account.verified`, `account.token_invalid`, `account.disconnected`,
+  `connection.verified/token_invalid/revoked`, `mock.action` — never with a token.
+
+## Service token scope (M3B.1A)
+
+`X-Affilio-Admin-Token` may only call the allow-listed internal operations
+(`api/deps.py::SERVICE_TOKEN_ALLOWED`): `GET /auth/me`, `GET /media/roots`, scan triggers and
+status (`/media/scans…`), and `POST /publishing/queue/release-due`. Any other route answers
+403 `service_scope_denied` even with a valid token.
+
+## Session hygiene (M3B.1A)
+
+- The worker runs `affilio.worker.maintenance` hourly (`MAINTENANCE_INTERVAL_SECONDS`) and
+  `python -m affilio.scripts.maintenance` runs it once: sessions expired or revoked for more
+  than `SESSION_RETENTION_DAYS` and finished/expired OAuth attempts older than
+  `OAUTH_STATE_RETENTION_HOURS` are deleted. Live sessions are never touched.
+- `POST /auth/members/{id}/sessions/revoke` (admin) signs a member out everywhere; owners can
+  only be signed out by an owner. Audited as `member.sessions_revoked`.
+
 ## Review notes (pre-M3B)
 
 | Area | State | Note |
 | --- | --- | --- |
-| Session expiry | sliding 14 days, touched at most every 15 min | expired rows are not purged yet; add a worker sweep when the table grows |
-| Revocation | logout revokes the session; password change revokes all others; suspended users fail resolution | no admin "sign out everywhere" endpoint yet (use `create_user --reset-password`) |
+| Session expiry | sliding 14 days, touched at most every 15 min | expired/revoked rows purged by the worker (M3B.1A) |
+| Revocation | logout revokes the session; password change revokes all others; suspended users fail resolution; admin "sign out everywhere" (M3B.1A) | — |
 | Cookie | HttpOnly, SameSite=Lax, Path=/, Secure unless `SESSION_COOKIE_SECURE=false` | the Synology example sets `false` for plain-HTTP LAN; switch to unset once TLS terminates on the DSM reverse proxy |
 | CSRF | Origin / Sec-Fetch-Site check on cookie writes + Lax | `X-Forwarded-Host` is trusted from the web proxy only because the API has no published port |
 | Roles | enforced per router (`RequireEditor` / `RequireAdmin`), services scope by organization | viewer cannot mutate anything; owner is only assignable through the seed or SQL |
-| Service token | acts as **owner** of one organization | broader than needed; M3B should narrow it to scan / release-due / reconciliation endpoints |
+| Service token | owner role **only on the allow-listed routes** (scans, release-due, `/auth/me`) | narrowed in M3B.1A |
 | Seed credentials | `seed_dev` refuses outside development/test; production users via `create_user` with password from env or prompt | `SEED_ADMIN_PASSWORD` default is documented as a local placeholder and never used in production |
 
 ## Known limitations
@@ -98,4 +171,4 @@ is deliberately not introduced.
 - Session cookies are host-scoped: in development the web app and the API must be reached
   through the same host name (`localhost:3000` and `localhost:8000`), or use the same-origin
   proxy (`NEXT_PUBLIC_API_URL=""`).
-- Expired sessions are retained until a cleanup sweep exists.
+- The login rate limiter is in-process (exact with one uvicorn worker).

@@ -89,6 +89,21 @@ impossible: an asset from another organization is simply "not found".
 - **Finals are not footage.** The finals root produces `asset_kind = final` assets with their
   own duplicate scope, no proxy linking, and a human handoff gate (`handoff_status`).
 
+### accounts: connections, vault and providers (M3B.1A)
+
+```
+accounts/    += crypto.py (AES-256-GCM key ring), vault.py (encrypted credential rows; the only
+             code that decrypts), connections.py (OAuth attempts, grants, Page linking, health),
+             connect_router.py (/accounts/connect/facebook/*, /accounts/connections/*,
+             /accounts/{id}/disconnect|verify|credentials), providers/{base,live,mock}.py
+worker/      += maintenance.py (session + OAuth-attempt purge), called hourly by runner.py
+scripts/     += maintenance.py, rotate_credential_keys.py
+```
+
+Dependency direction is unchanged: `accounts` imports `identity` only; `publishing` will read
+Page credentials through `accounts.vault`/`accounts.connections` service functions in M3B.1B
+and never through the tables. Provider adapters are the only code that may talk to Meta.
+
 ### accounts, content and publishing (M3A)
 
 ```

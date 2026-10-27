@@ -4,14 +4,18 @@ Identity resolution (fail closed):
 1. Session cookie → user. Cookie-authenticated unsafe requests must come from an allowed
    Origin (CSRF defence on top of SameSite=Lax). The organization is the one named by
    `X-Organization-Slug` if the user is a member of it, else the user's first membership.
-2. `X-Affilio-Admin-Token` → *service* identity (CLI, cron, worker). Acts as OWNER of the
-   organization named by the header or `DEFAULT_ORGANIZATION_SLUG`. Never used by browsers.
+2. `X-Affilio-Admin-Token` → *service* identity (CLI, cron). It may only call the internal
+   operations listed in `SERVICE_TOKEN_ALLOWED` (scan triggers, scan status, release-due,
+   its own identity); every other route answers 403 `service_scope_denied`. Within that
+   allow-list it acts with the OWNER role for the organization named by the header or
+   `DEFAULT_ORGANIZATION_SLUG`. Never used by browsers.
 3. Otherwise 401 `authentication_required`.
 """
 
 from __future__ import annotations
 
 import hmac
+import re
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Annotated, Literal
@@ -40,6 +44,15 @@ SettingsDep = Annotated[Settings, Depends(settings_dep)]
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+# Internal operations the service token may perform (method, path regex relative to the API
+# prefix). Everything else is refused: the token is for cron/CLI automation, not a user.
+SERVICE_TOKEN_ALLOWED: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
+    (frozenset({"GET"}), re.compile(r"^/auth/me$")),
+    (frozenset({"GET"}), re.compile(r"^/media/roots$")),
+    (frozenset({"GET", "POST"}), re.compile(r"^/media/scans(/[^/]+)?(/status)?$")),
+    (frozenset({"POST"}), re.compile(r"^/publishing/queue/release-due$")),
+)
+
 
 class AuthenticationRequiredError(AppError):
     status_code = status.HTTP_401_UNAUTHORIZED
@@ -59,6 +72,19 @@ class CsrfRejectedError(AppError):
 class AdminEndpointsDisabledError(AppError):
     status_code = status.HTTP_403_FORBIDDEN
     code = "admin_endpoints_disabled"
+
+
+class ServiceScopeDeniedError(AppError):
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "service_scope_denied"
+
+
+def service_token_allows(method: str, path: str, api_prefix: str) -> bool:
+    relative = path[len(api_prefix) :] if path.startswith(api_prefix) else path
+    return any(
+        method.upper() in methods and pattern.match(relative)
+        for methods, pattern in SERVICE_TOKEN_ALLOWED
+    )
 
 
 @dataclass(slots=True)
@@ -154,6 +180,11 @@ def get_identity(
             raise AdminEndpointsDisabledError("Service token is not configured on this server")
         if not hmac.compare_digest(x_affilio_admin_token, expected):
             raise AuthenticationRequiredError("Invalid service token")
+        if not service_token_allows(request.method, request.url.path, settings.api_v1_prefix):
+            raise ServiceScopeDeniedError(
+                "The service token may only trigger scans and release due publications",
+                details={"method": request.method, "path": request.url.path},
+            )
         slug = (x_organization_slug or settings.default_organization_slug).strip().lower()
         organization = session.scalar(select(Organization).where(Organization.slug == slug))
         if organization is None:

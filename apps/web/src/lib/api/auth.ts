@@ -26,6 +26,10 @@ export const fetchMembers = () => apiFetch<Member[]>(`${BASE}/members`);
 export const createMember = (body: MemberCreate) => send<Member>(`${BASE}/members`, body);
 export const updateMemberRole = (userId: string, body: MemberRoleUpdate) =>
   send<Member>(`${BASE}/members/${encodeURIComponent(userId)}`, body, "PATCH");
+export const revokeMemberSessions = (userId: string) =>
+  apiFetch<void>(`${BASE}/members/${encodeURIComponent(userId)}/sessions/revoke`, {
+    method: "POST",
+  });
 export const updateOrganization = (body: OrganizationUpdate) =>
   send<Membership>(`${BASE}/organization`, body, "PATCH");
 export const fetchAudit = (params: {

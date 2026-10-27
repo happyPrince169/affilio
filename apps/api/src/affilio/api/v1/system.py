@@ -8,7 +8,12 @@ from datetime import UTC, datetime
 from fastapi import APIRouter
 
 from affilio import __version__
-from affilio.api.schemas import DatabaseStatus, SystemInfoResponse
+from affilio.api.schemas import (
+    DatabaseStatus,
+    IntegrationsInfo,
+    MetaIntegrationInfo,
+    SystemInfoResponse,
+)
 from affilio.core.config import get_settings
 from affilio.db.session import probe_database
 from affilio.modules import DOMAIN_MODULES
@@ -37,4 +42,11 @@ def read_system_info() -> SystemInfoResponse:
             latency_ms=probe.latency_ms,
         ),
         modules=list(DOMAIN_MODULES),
+        integrations=IntegrationsInfo(
+            meta=MetaIntegrationInfo(
+                mode=settings.meta_provider_mode,
+                configured=settings.is_meta_configured,
+                graph_api_version=settings.meta_graph_api_version,
+            )
+        ),
     )

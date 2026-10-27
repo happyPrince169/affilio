@@ -107,6 +107,15 @@ sees `NEXT_PUBLIC_*` variables, inlined at build time.
 Never commit `.env` or any real credential. `ANTHROPIC_API_KEY`, NAS paths, and platform
 tokens are reserved for later milestones and must stay out of the repository.
 
+**Meta / Facebook connection (M3B.1A).** `META_PROVIDER_MODE=mock` (development/test only;
+refused in staging/production) lets you connect deterministic mock Pages without a Meta app;
+`live` needs `META_APP_ID`, `META_APP_SECRET` and an https `META_OAUTH_REDIRECT_URI`. Stored
+tokens are encrypted with the key ring in `CREDENTIAL_ENCRYPTION_KEYS` (generate with
+`openssl rand -base64 32`; the connection endpoints answer 503 without it). In the split dev
+setup set `WEB_BASE_URL=http://localhost:3000` so the OAuth callback returns to the web app.
+Maintenance: `uv run python -m affilio.scripts.maintenance` (session and OAuth-attempt purge,
+also run hourly by the worker); key rotation: `uv run python -m affilio.scripts.rotate_credential_keys`.
+
 ## Everyday commands
 
 | Command                   | What it does                                                   |

@@ -48,6 +48,9 @@ EXPECTED_TABLES = {
     "channel_category_rules",
     "media_content_categories",
     "folder_category_rules",
+    "platform_connections",
+    "account_credentials",
+    "oauth_states",
 }
 
 pytestmark = pytest.mark.database

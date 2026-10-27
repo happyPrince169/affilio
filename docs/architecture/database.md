@@ -273,6 +273,33 @@ Procedure (no data loss, Alembic history preserved):
 Databases that never saw the interim 0006 need nothing special: `upgrade head` applies 0006
 (original shape) and then 0007.
 
+## Meta connection infrastructure (migration `0008_meta_connections`)
+
+```
+platform_connections                            account_credentials (encrypted; versioned)
+  id, organization_id FK, provider meta,          id, organization_id FK, connection_id FK CASCADE,
+  external_user_id, external_user_name,           social_account_id FK CASCADE (null until linked),
+  status active|revoked|expired|invalid,          external_subject_id (Meta user or Page id),
+  granted_scopes, missing_scopes, discovered_pages kind meta_user_long_lived|meta_page, version,
+  (jsonb, no tokens), token_expires_at,           status active|superseded|revoked|invalid,
+  data_access_expires_at, is_mock,                ciphertext bytea, nonce bytea, key_id,
+  connected_by_user_id FK SET NULL,               token_fingerprint (sha256), scopes, page_tasks,
+  connected_by_label, connected_at,               issued_at, expires_at, data_access_expires_at,
+  last_checked_at, last_error, created/updated    last_validated_at, last_used_at,
+  UNIQUE(organization_id, provider, external_user_id) invalidated_reason, is_mock, created_by_label
+                                                  partial UNIQUE(connection_id, external_subject_id,
+oauth_states (one-time attempts)                     kind) WHERE status = 'active'
+  id, organization_id FK, user_id FK, session_id FK SET NULL, provider, state_hash UNIQUE (sha256),
+  redirect_uri, requested_scopes, mock_scenario, status pending|completed|denied|failed|expired,
+  error, connection_id FK SET NULL, expires_at, consumed_at, created_at
+
+social_accounts += connection_id FK SET NULL, connected_at, last_verified_at, disconnect_reason,
+  page_tasks jsonb (nullable), is_mock bool
+```
+
+No table stores a plaintext token or a host-specific value. `is_mock` rows only exist in
+development/test databases (mock mode is refused elsewhere) and are never shown as real.
+
 ## Growth plan (not implemented)
 
 | Milestone | Tables (indicative)                                                              |

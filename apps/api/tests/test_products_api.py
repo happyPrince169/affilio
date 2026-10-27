@@ -220,9 +220,12 @@ def test_writes_require_admin_token_when_configured(
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         assert client.post("/api/v1/products", json={"name": "x"}).status_code == 401
         assert client.get("/api/v1/products").status_code == 401
-        ok = client.post(
+        # M3B.1A: the service token is scoped to scans and release-due; it cannot write
+        # products (or anything else) even when valid.
+        denied = client.post(
             "/api/v1/products", json={"name": "x"}, headers={"X-Affilio-Admin-Token": "tok"}
         )
-        assert ok.status_code == 201
+        assert denied.status_code == 403
+        assert denied.json()["error"]["code"] == "service_scope_denied"
     dispose_engine()
     get_settings.cache_clear()

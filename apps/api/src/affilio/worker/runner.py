@@ -21,6 +21,7 @@ from affilio.modules.media.probe import Prober
 from affilio.modules.media.roots import ROOT_KEYS, MediaRootRegistry
 from affilio.modules.media.scanner import MediaScanner
 from affilio.modules.media.thumbnails import ThumbnailGenerator
+from affilio.worker.maintenance import run_maintenance
 
 log = structlog.get_logger("affilio.worker")
 
@@ -142,8 +143,15 @@ def run_forever(stop_event: threading.Event | None = None) -> None:
         poll_interval=settings.worker_poll_interval_seconds,
         roots={k: bool(registry.get(k)) for k in ROOT_KEYS},
     )
+    next_maintenance = time.monotonic()  # first tick runs maintenance once at startup
     while not stop_event.is_set():
         _touch_heartbeat(settings)
+        if time.monotonic() >= next_maintenance:
+            next_maintenance = time.monotonic() + settings.maintenance_interval_seconds
+            try:
+                run_maintenance(settings)
+            except Exception as exc:
+                log.exception("worker.maintenance_failed", error=str(exc))
         try:
             did_work = run_once(settings=settings, registry=registry)
         except Exception as exc:

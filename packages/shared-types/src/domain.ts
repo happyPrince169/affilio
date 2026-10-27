@@ -29,6 +29,40 @@ export type SocialAccountType = (typeof SOCIAL_ACCOUNT_TYPES)[number];
 export const SOCIAL_ACCOUNT_SOURCES = ["manual", "oauth"] as const;
 export type SocialAccountSource = (typeof SOCIAL_ACCOUNT_SOURCES)[number];
 
+// ---------------------------------------------------------------- M3B.1A connections
+
+export const CONNECTION_PROVIDERS = ["meta"] as const;
+export type ConnectionProvider = (typeof CONNECTION_PROVIDERS)[number];
+
+export const CONNECTION_STATUSES = ["active", "revoked", "expired", "invalid"] as const;
+export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
+
+export const CREDENTIAL_KINDS = ["meta_user_long_lived", "meta_page"] as const;
+export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
+
+export const CREDENTIAL_STATUSES = ["active", "superseded", "revoked", "invalid"] as const;
+export type CredentialStatus = (typeof CREDENTIAL_STATUSES)[number];
+
+export const OAUTH_ATTEMPT_STATUSES = [
+  "pending",
+  "completed",
+  "denied",
+  "failed",
+  "expired",
+] as const;
+export type OAuthAttemptStatus = (typeof OAUTH_ATTEMPT_STATUSES)[number];
+
+export type MetaProviderMode = "live" | "mock";
+
+export const PERMISSION_STATUSES = [
+  "ok",
+  "missing_page_task",
+  "missing_scopes",
+  "unknown",
+  "not_connected",
+] as const;
+export type PermissionStatus = (typeof PERMISSION_STATUSES)[number];
+
 export const AFFILIATE_LINK_STATUSES = ["active", "archived"] as const;
 export type AffiliateLinkStatus = (typeof AFFILIATE_LINK_STATUSES)[number];
 

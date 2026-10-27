@@ -119,6 +119,8 @@ Copy `infrastructure/docker/synology/.env.example` to `.env` **next to the compo
 | `MEDIA_ADMIN_TOKEN` | Generate: `openssl rand -hex 32`. Service token for CLI/cron calls (scan triggers, release-due). Since M3A the web container does **not** hold it; browsers authenticate with session cookies. |
 | `SESSION_COOKIE_SECURE` | `false` when the UI is served over plain HTTP on the LAN (no TLS); otherwise leave unset so the cookie is `Secure`. |
 | `SESSION_TTL_DAYS` | Session lifetime (sliding). Default 14. |
+| `META_APP_ID` / `META_APP_SECRET` / `META_OAUTH_REDIRECT_URI` | Meta app settings (M3B.1A). Leave empty until the app exists: the accounts page then shows which names are missing and "Connect Facebook Page" is disabled. Production always runs the live provider. See `docs/integrations/meta-app-activation-checklist.md`. |
+| `CREDENTIAL_ENCRYPTION_KEYS` / `CREDENTIAL_ENCRYPTION_ACTIVE_KEY_ID` | Key ring for the credential vault (`openssl rand -base64 32`). **Back it up outside the database backups**; without it every connected Page must be reconnected. |
 | `MEDIA_PROXY_PATTERNS` | How a proxy filename derives from an original (`{stem}`, `{name}`, `{ext}` placeholders), same relative directory under the proxies root. **Confirm against the real proxy naming scheme before the first scan.** |
 | `MEDIA_VIDEO_EXTENSIONS` | Extensions to index. |
 | `*_CPUS` / `*_MEMORY` | Resource limits (§6). |
@@ -186,7 +188,10 @@ The API and PostgreSQL publish no ports; probe them through the web proxy or `do
 
 ## 8. Backups
 
-The database is the only state besides thumbnails (which can be regenerated).
+The database is the only state besides thumbnails (which can be regenerated) and the
+credential vault key in `.env`: dumps contain only ciphertext, so keep a copy of
+`CREDENTIAL_ENCRYPTION_KEYS` in a password manager. A restore without the key leaves Pages as
+"reconnect needed" (tokens are re-issued by Meta on reconnect); nothing else is lost.
 
 ```bash
 # Logical dump (compressed, custom format), keeps the last 14 files

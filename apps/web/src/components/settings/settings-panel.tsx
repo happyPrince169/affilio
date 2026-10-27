@@ -28,6 +28,7 @@ import {
   authQueries,
   changePassword,
   createMember,
+  revokeMemberSessions,
   updateMemberRole,
   updateOrganization,
 } from "@/lib/api/auth";
@@ -150,6 +151,11 @@ function MembersCard() {
     },
     onError: (error) => toast.error("Could not change role", { description: error.message }),
   });
+  const signOutEverywhere = useMutation({
+    mutationFn: (userId: string) => revokeMemberSessions(userId),
+    onSuccess: () => toast.success("Member signed out on every device"),
+    onError: (error) => toast.error("Could not revoke sessions", { description: error.message }),
+  });
 
   return (
     <Card>
@@ -184,6 +190,19 @@ function MembersCard() {
                     {m.email} · last sign-in {formatDateTime(m.last_login_at)}
                   </p>
                 </div>
+                {can("manage_members") &&
+                m.user_id !== user.id &&
+                (m.role !== "owner" || user.organization.role === "owner") ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => signOutEverywhere.mutate(m.user_id)}
+                    disabled={signOutEverywhere.isPending}
+                    title="Revoke every session of this member"
+                  >
+                    Sign out everywhere
+                  </Button>
+                ) : null}
                 {can("manage_members") && m.role !== "owner" && m.user_id !== user.id ? (
                   <Select
                     value={m.role}

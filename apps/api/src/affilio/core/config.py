@@ -15,7 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 API_DIR = Path(__file__).resolve().parents[3]  # apps/api (or /app inside the container)
@@ -25,6 +25,10 @@ REPO_ROOT = API_DIR.parents[1] if len(API_DIR.parents) > 1 else API_DIR
 
 AppEnv = Literal["development", "test", "staging", "production"]
 LogFormat = Literal["console", "json"]
+MetaProviderMode = Literal["live", "mock"]
+
+# Settings a live Meta connection needs. Names only; reported by the API when missing.
+META_LIVE_REQUIRED = ("META_APP_ID", "META_APP_SECRET", "META_OAUTH_REDIRECT_URI")
 
 
 class Settings(BaseSettings):
@@ -135,6 +139,40 @@ class Settings(BaseSettings):
     # --- publishing (M3A) ---
     publication_min_gap_minutes: int = 30
 
+    # --- Meta / Facebook Page connection (M3B.1A) ---
+    # `live` talks to the Graph API through the live provider (needs the app settings below);
+    # `mock` uses the deterministic in-process provider for development and tests and is
+    # refused outside development/test (validated below).
+    meta_provider_mode: MetaProviderMode = "live"
+    meta_app_id: str | None = None
+    meta_app_secret: SecretStr | None = None
+    meta_graph_api_version: str = "v26.0"
+    # Browser-facing callback URL, byte-identical to the Meta app's "Valid OAuth Redirect URIs".
+    # Never derived from request headers. Must be https outside development/test.
+    meta_oauth_redirect_uri: str | None = None
+    meta_oauth_scopes: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["pages_show_list", "pages_read_engagement", "pages_manage_posts"]
+    )
+    # Facebook Login for Business configuration id (replaces `scope` when set).
+    meta_login_config_id: str | None = None
+    meta_oauth_state_ttl_seconds: int = 600
+    # Where the OAuth callback sends the browser afterwards. Empty → relative to the API host
+    # (correct behind the same-origin web proxy); set to the web origin in split-host dev.
+    web_base_url: str | None = None
+
+    # --- credential vault (M3B.1A) ---
+    # Key ring: comma-separated `key_id:base64(32 bytes)` entries. Generate each key with
+    # `openssl rand -base64 32`. Never committed; backed up separately from the database.
+    credential_encryption_keys: SecretStr | None = None
+    # Key used for new encryptions; defaults to the only key when exactly one is configured.
+    credential_encryption_active_key_id: str | None = None
+
+    # --- maintenance (M3B.1A) ---
+    # Expired/revoked sessions and finished OAuth attempts are deleted after these windows.
+    session_retention_days: int = 30
+    oauth_state_retention_hours: int = 24
+    maintenance_interval_seconds: int = 3600
+
     # --- background worker ---
     worker_poll_interval_seconds: float = 5.0
     worker_heartbeat_path: Path = Path("/tmp/affilio-worker-heartbeat")  # noqa: S108
@@ -145,6 +183,7 @@ class Settings(BaseSettings):
         "media_ignore_names",
         "media_proxy_patterns",
         "media_temp_name_markers",
+        "meta_oauth_scopes",
         mode="before",
     )
     @classmethod
@@ -180,10 +219,47 @@ class Settings(BaseSettings):
             return Path(stripped).expanduser() if stripped else None
         return value
 
-    @field_validator("media_admin_token", mode="before")
+    @field_validator(
+        "media_admin_token",
+        "meta_app_id",
+        "meta_app_secret",
+        "meta_oauth_redirect_uri",
+        "meta_login_config_id",
+        "credential_encryption_keys",
+        "credential_encryption_active_key_id",
+        "web_base_url",
+        mode="before",
+    )
     @classmethod
     def _empty_token_is_none(cls, value: object) -> object:
         return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("meta_graph_api_version")
+    @classmethod
+    def _graph_version(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized.startswith("v") or not normalized[1:].replace(".", "", 1).isdigit():
+            msg = f"META_GRAPH_API_VERSION must look like v26.0, got {value!r}"
+            raise ValueError(msg)
+        return normalized
+
+    @model_validator(mode="after")
+    def _meta_mode_guard(self) -> Settings:
+        """Fail at startup rather than at request time for unsafe Meta configurations."""
+        if self.meta_provider_mode == "mock" and not self.is_development:
+            msg = (
+                "META_PROVIDER_MODE=mock is only allowed when APP_ENV is development or test; "
+                "mock Facebook connections must never exist in staging or production"
+            )
+            raise ValueError(msg)
+        if (
+            self.meta_oauth_redirect_uri
+            and not self.is_development
+            and not self.meta_oauth_redirect_uri.lower().startswith("https://")
+        ):
+            msg = "META_OAUTH_REDIRECT_URI must use https outside development/test"
+            raise ValueError(msg)
+        return self
 
     @field_validator("log_level")
     @classmethod
@@ -209,6 +285,22 @@ class Settings(BaseSettings):
         return not self.is_development
 
     @property
+    def meta_live_missing_settings(self) -> list[str]:
+        """Names (never values) of the live-provider settings that are not configured."""
+        present = {
+            "META_APP_ID": bool(self.meta_app_id),
+            "META_APP_SECRET": bool(self.meta_app_secret),
+            "META_OAUTH_REDIRECT_URI": bool(self.meta_oauth_redirect_uri),
+        }
+        return [name for name in META_LIVE_REQUIRED if not present[name]]
+
+    @property
+    def is_meta_configured(self) -> bool:
+        if self.meta_provider_mode == "mock":
+            return True
+        return not self.meta_live_missing_settings
+
+    @property
     def database_dialect(self) -> str:
         """Driver-agnostic dialect name, safe to expose (e.g. `postgresql`)."""
         return self.database_url.get_secret_value().split(":", 1)[0].split("+", 1)[0]
@@ -223,6 +315,8 @@ class Settings(BaseSettings):
             "log_format": self.log_format,
             "cors_origins": self.cors_origins,
             "database_dialect": self.database_dialect,
+            "meta_provider_mode": self.meta_provider_mode,
+            "meta_configured": self.is_meta_configured,
         }
 
 
