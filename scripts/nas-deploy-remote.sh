@@ -26,6 +26,12 @@ DOCKER_BIN="${DOCKER##* }"
 PROJECT=affilio
 IMAGES=(affilio-api affilio-web)
 SERVICES=(postgres api worker publisher web)
+# Opt-in export worker (Export pipeline E1/E2): runs only with COMPOSE_PROFILES=exports in .env.
+# Images older than E1 have no `exporter` entrypoint, so deploy and rollback check the image
+# before starting the service and never leave an unsupported exporter in a restart loop.
+EXPORTER_SERVICE=exporter
+EXPORTER_CONTAINER="affilio-$EXPORTER_SERVICE"
+EXPORTER_PROBE="import affilio.worker.exporter"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-240}"
 AFFILIO_DEPLOY_YES="${AFFILIO_DEPLOY_YES:-0}"
 STEP="start"
@@ -51,6 +57,37 @@ compose_nosudo() { "$DOCKER_BIN" compose --project-name "$PROJECT" -f "$COMPOSE_
 
 # Never fails (a missing key yields an empty value) so command substitutions do not trip ERR.
 env_value() { { grep -E "^$1=" "$ENV_FILE" || true; } | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'"; }
+
+# COMPOSE_PROFILES in .env lists the opt-in profiles (comma separated).
+exports_profile_active() {
+  case ",$(env_value COMPOSE_PROFILES | tr -d ' '),"
+  in *,exports,*) return 0 ;; *) return 1 ;; esac
+}
+
+# Does this image know the exporter? (an import, no database, no media; the image's own user)
+image_supports_exporter() {
+  ${DOCKER} run --rm --entrypoint python "$1" -c "$EXPORTER_PROBE" >/dev/null 2>&1
+}
+
+exporter_container_exists() {
+  { ${DOCKER} ps -a --filter "name=^${EXPORTER_CONTAINER}\$" --format '{{.Names}}' 2>/dev/null || true; } | grep -qx "$EXPORTER_CONTAINER"
+}
+
+# Stop and remove the exporter container only (its queue rows and files are untouched).
+remove_exporter_container() {
+  if exporter_container_exists; then
+    ${DOCKER} stop "$EXPORTER_CONTAINER" >/dev/null
+    ${DOCKER} rm "$EXPORTER_CONTAINER" >/dev/null
+    log "stopped and removed $EXPORTER_CONTAINER"
+  fi
+}
+
+# `compose` with the exports profile forced off for this one invocation. The override is
+# passed through `env` so it survives sudo's env_reset; .env itself is never modified.
+compose_without_exports_profile() {
+  local prefix="${DOCKER%"$DOCKER_BIN"}"
+  ${prefix} env COMPOSE_PROFILES= "$DOCKER_BIN" compose --project-name "$PROJECT" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+}
 
 preflight() {
   STEP="preflight"
@@ -97,6 +134,11 @@ preflight() {
     compose_nosudo config -q || fail "docker compose config rejected the compose file / .env"
   else
     compose config -q || fail "docker compose config rejected the compose file / .env"
+  fi
+  if exports_profile_active; then
+    log "exports profile: active (COMPOSE_PROFILES=exports) — the exporter service is deployed and health-checked"
+  else
+    log "exports profile: inactive — the exporter service is not started"
   fi
   log "preflight OK (compose project '$PROJECT', live publishing disabled)"
 }
@@ -182,6 +224,10 @@ deploy() {
   STEP="build"
   log "building AFFILIO images (api, web) from $PROJECT_DIR"
   compose build --pull api web
+  if exports_profile_active; then
+    image_supports_exporter "affilio-api:latest" || fail "COMPOSE_PROFILES=exports is set but the built affilio-api image has no exporter (python -c '$EXPORTER_PROBE' failed); remove the profile from .env or deploy a release that includes it"
+    log "exporter supported by the built image"
+  fi
   STEP="up"
   compose up -d postgres
   wait_healthy postgres
@@ -190,10 +236,19 @@ deploy() {
   compose run --rm --no-deps api migrate
   STEP="up"
   log "starting / updating the AFFILIO services"
-  compose up -d --remove-orphans
+  if exports_profile_active; then
+    compose up -d --remove-orphans
+  else
+    # A container left from an earlier profile-enabled deploy would keep running old code.
+    remove_exporter_container
+    compose_without_exports_profile up -d --remove-orphans
+  fi
   STEP="health"
   local service
   for service in "${SERVICES[@]}"; do wait_healthy "$service"; log "$service healthy"; done
+  if exports_profile_active; then
+    wait_healthy "$EXPORTER_SERVICE"; log "$EXPORTER_SERVICE healthy"
+  fi
   http_checks
   STEP="record"
   mkdir -p "$DEPLOY_DIR"
@@ -218,12 +273,29 @@ rollback() {
   for image in "${IMAGES[@]}"; do
     ${DOCKER} image inspect "$image:previous" >/dev/null 2>&1 || fail "no $image:previous image: nothing to roll back to"
   done
+  # Profile-aware: an exporter is kept only when the previous image can run it.
+  local exporter_plan="absent"
+  if exports_profile_active; then
+    if image_supports_exporter "affilio-api:previous"; then
+      exporter_plan="keep"
+      log "exports profile active and affilio-api:previous supports the exporter: it is kept and health-checked"
+    else
+      exporter_plan="remove"
+      log "exports profile active but affilio-api:previous has no exporter: $EXPORTER_CONTAINER will be stopped and removed; COMPOSE_PROFILES=exports stays in .env for the next deploy of a supporting release"
+    fi
+  fi
   read -r -p "Switch AFFILIO back to the previous images and restart its containers? [y/N] " answer
   [[ "$answer" == "y" || "$answer" == "Y" ]] || fail "aborted"
   for image in "${IMAGES[@]}"; do ${DOCKER} tag "$image:previous" "$image:latest"; done
-  compose up -d --no-build
+  if [[ "$exporter_plan" == "remove" ]]; then
+    remove_exporter_container
+    compose_without_exports_profile up -d --no-build
+  else
+    compose up -d --no-build
+  fi
   local service
   for service in "${SERVICES[@]}"; do wait_healthy "$service"; done
+  [[ "$exporter_plan" != "keep" ]] || wait_healthy "$EXPORTER_SERVICE"
   log "containers run the previous images again."
   log "If the new release applied a migration the old code cannot use, also restore the pre-deploy dump:"
   log "  scripts/db-restore.sh $BACKUP_DIR/pre-deploy-<timestamp>.dump affilio-postgres   (stops api/worker/publisher first)"

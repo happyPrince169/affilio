@@ -176,3 +176,14 @@ serves the login page. Protect the hostname with a Cloudflare Access policy befo
 | deploy: "cannot talk to Docker" | wrong sudo password, or run `pnpm nas:deploy` from a real terminal (needs a tty) |
 | deploy: "nas-deploy-remote.sh is missing on the NAS" | run `pnpm nas:sync` once with the current repository |
 | status shows an older revision than expected | you have not synced since that commit; sync and deploy are independent by design |
+
+## Exports profile and rollback
+
+`COMPOSE_PROFILES=exports` in the NAS `.env` turns on the opt-in `exporter` service. The deploy
+script then verifies that the freshly built `affilio-api` image contains the exporter (an
+import probe, no media or database) before `up`, and waits for the exporter's health check
+after `up`. Rollback is profile-aware: if `affilio-api:previous` predates the exporter, the
+`affilio-exporter` container is stopped and removed and the stack is started with the profile
+forced off for that run only, so no unsupported service can restart-loop; the `.env` line is
+left in place for the next deploy. A deploy without the profile removes a leftover exporter
+container. Export jobs (database rows) and export files are untouched by both paths.

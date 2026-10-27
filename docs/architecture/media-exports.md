@@ -108,5 +108,10 @@ bound). The first 86 finals (19 minutes of video) take 45–90 minutes of wall t
 
 `alembic downgrade 0010_overdue_review` drops `media_export_jobs`, the export variant rows and
 the provenance columns (no other table changes). Export files under the `exports` root are
-regenerable and can be deleted. The `exporter` service is opt-in; removing
-`COMPOSE_PROFILES=exports` stops it on the next `up -d`.
+regenerable and can be deleted. The `exporter` service is opt-in via `COMPOSE_PROFILES=exports`
+in the NAS `.env`. The deploy script verifies that the built image can run the exporter
+before starting anything and health-checks it; `pnpm nas:deploy rollback` checks the previous
+image too and, when that image predates the exporter, stops and removes `affilio-exporter` and
+brings the stack up with the profile forced off for that run (`.env` is not modified, so the
+next deploy of a supporting release starts it again). A deploy without the profile removes a
+leftover exporter container; queued jobs and files are never touched by either path.
