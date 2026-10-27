@@ -254,3 +254,33 @@ def test_full_rescan_reprobes_everything(db_session, organization, media_dirs) -
     _scan(db_session, organization.id, media_dirs, prober)
     _scan(db_session, organization.id, media_dirs, prober, full_rescan=True)
     assert len(prober.calls) == 2
+
+
+def test_proxies_arriving_after_the_original_are_linked_on_an_incremental_scan(
+    db_session, organization, media_dirs
+) -> None:
+    """ContentFactory renders proxies minutes after a clip lands; a cancelled or recovered
+    scan can also leave committed assets unlinked. Neither needs a full rescan."""
+    write_bytes(media_dirs.originals / "shoot" / "B001.MOV", 20_000, seed=1)
+    write_bytes(media_dirs.originals / "shoot" / "B002.MOV", 20_000, seed=2)
+    prober = FakeProber()
+    first = _scan(db_session, organization.id, media_dirs, prober)
+    assert first.added == 2 and first.proxies_linked == 0
+
+    write_bytes(media_dirs.proxies / "shoot" / "B001.mp4", 5_000, seed=11)
+    probes_before = len(prober.calls)
+    second = _scan(db_session, organization.id, media_dirs, prober)
+
+    assert second.unchanged == 2 and second.added == 0  # originals untouched: no reads
+    assert second.proxies_linked == 1
+    assert len(prober.calls) == probes_before + 1  # only the new proxy was probed
+    by_title = {a.title: a for a in _assets(db_session, organization.id)}
+    for asset in by_title.values():
+        db_session.refresh(asset)
+    b001 = by_title["B001"].variant(MediaVariantKind.PROXY)
+    assert b001 is not None and b001.status == MediaVariantStatus.PRESENT
+    assert by_title["B002"].variant(MediaVariantKind.PROXY) is None
+
+    # A third pass with nothing new links nothing and probes nothing.
+    third = _scan(db_session, organization.id, media_dirs, prober)
+    assert third.proxies_linked == 0 and len(prober.calls) == probes_before + 1

@@ -15,11 +15,18 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from affilio.app import create_app
 from affilio.core.config import get_settings
-from affilio.core.enums import MembershipRole, ScanJobStatus, ScanTrigger
+from affilio.core.enums import (
+    MediaVariantKind,
+    MediaVariantStatus,
+    MembershipRole,
+    ScanJobStatus,
+    ScanTrigger,
+    ThumbnailStatus,
+)
 from affilio.db.session import dispose_engine
 from affilio.modules.identity.models import AuditEvent
 from affilio.modules.media.errors import ScanNotCancellableError
-from affilio.modules.media.models import MediaAsset, MediaScanJob
+from affilio.modules.media.models import MediaAsset, MediaFileVariant, MediaScanJob
 from affilio.modules.media.service import cancel_scan, enqueue_scan, recover_stale_scan_jobs
 from affilio.worker.runner import claim_next_scan_job, execute_scan_job
 from tests.auth_helpers import sign_in
@@ -359,3 +366,82 @@ def test_service_token_may_cancel_scans(
         assert client.post(f"/api/v1/media/scans/{job_id}/cancel").status_code == 401
         cancelled = client.post(f"/api/v1/media/scans/{job_id}/cancel", headers=headers)
         assert cancelled.status_code == 200 and cancelled.json()["status"] == "cancelled"
+
+
+# ------------------------------------------------------------------ partial-commit resume
+
+
+class _CancellingProber:
+    """Probes like FakeProber but cancels the job (from another session) on the N-th call,
+    i.e. while the worker is in the middle of a file operation."""
+
+    def __init__(self, inner: FakeProber, *, on_call: int, cancel) -> None:
+        self.inner = inner
+        self.on_call = on_call
+        self.cancel = cancel
+
+    def probe(self, path):
+        result = self.inner.probe(path)
+        if len(self.inner.calls) == self.on_call:
+            self.cancel()
+        return result
+
+
+def test_cancelled_scan_resumes_without_duplicates_or_dangling_state(
+    db_session: Session, organization, media_dirs, schema: Engine
+) -> None:
+    for index in range(3):
+        write_bytes(media_dirs.originals / "shoot" / f"C{index}.MOV", 6_000 + index, seed=index)
+        write_bytes(media_dirs.proxies / "shoot" / f"C{index}.mp4", 1_000 + index, seed=50 + index)
+    # Checkpoint after every unit of work, never on time: file 1 commits, file 2 is in flight
+    # when the cancel lands, file 3 is never reached.
+    settings = build_settings(
+        media_dirs,
+        media_scan_commit_every=1,
+        media_scan_heartbeat_seconds=3_600,
+        media_scan_stale_after_seconds=36_000,
+    )
+    job = _claimed_job(db_session, organization, media_dirs)
+    other_factory = sessionmaker(bind=schema, autoflush=False, expire_on_commit=False)
+
+    def cancel_from_admin() -> None:
+        with other_factory() as admin:
+            cancel_scan(admin, organization.id, job.id, actor="admin")
+            admin.commit()
+
+    # Walk: root dir, shoot dir, C0 (probe 1 → checkpoint commits C0), C1 (probe 2 → cancel,
+    # then the checkpoint is fenced out and the uncommitted C1 is rolled back).
+    prober = _CancellingProber(FakeProber(), on_call=2, cancel=cancel_from_admin)
+    result = execute_scan_job(
+        db_session, job, settings=settings, registry=media_dirs.registry, prober=prober
+    )
+    assert result.status == ScanJobStatus.CANCELLED
+    assert _asset_count(db_session, organization.id) == 1  # C0 only, no proxy linked yet
+    assert result.stats["added"] == 1  # progress counters reflect the last checkpoint
+
+    # Resume with a fresh job: nothing duplicated, everything linked, counters consistent.
+    resume = _claimed_job(db_session, organization, media_dirs)
+    done = execute_scan_job(
+        db_session,
+        resume,
+        settings=build_settings(media_dirs),
+        registry=media_dirs.registry,
+        prober=FakeProber(),
+    )
+    assert done.status == ScanJobStatus.SUCCEEDED
+    assert done.stats["added"] == 2 and done.stats["unchanged"] == 1
+    assert done.stats["proxies_linked"] == 3 and done.stats["duplicates"] == 0
+    assets = db_session.scalars(
+        select(MediaAsset).where(MediaAsset.organization_id == organization.id)
+    ).all()
+    assert len(assets) == 3
+    for asset in assets:
+        db_session.refresh(asset)
+        original = asset.variant(MediaVariantKind.ORIGINAL)
+        proxy = asset.variant(MediaVariantKind.PROXY)
+        assert original is not None and original.fingerprint and original.probed_at
+        assert proxy is not None and proxy.status == MediaVariantStatus.PRESENT
+        assert asset.thumbnail_status == ThumbnailStatus.PENDING
+        assert asset.duplicate_of_id is None
+    paths = db_session.scalars(select(MediaFileVariant.relative_path)).all()
+    assert len(paths) == len(set(paths)) == 6  # 3 originals + 3 proxies, each path once

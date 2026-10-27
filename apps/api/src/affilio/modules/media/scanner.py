@@ -27,8 +27,8 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 import structlog
-from sqlalchemy import ColumnElement, select, update
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import ColumnElement, and_, exists, select, update
+from sqlalchemy.orm import Session, aliased, selectinload
 
 from affilio.core.config import Settings
 from affilio.core.enums import (
@@ -269,6 +269,8 @@ class MediaScanner:
         while stack:
             directory = stack.pop()
             ctx.stats.directories += 1
+            # Deep trees with few videos would otherwise go a long time without a heartbeat.
+            self._maybe_commit(ctx, ctx.job)
             try:
                 with os.scandir(directory) as iterator:
                     entries = list(iterator)
@@ -499,7 +501,14 @@ class MediaScanner:
         proxy_root = self._db_root(ctx, "proxies")
         if proxy_root is None:
             return
-        for asset in ctx.touched_assets.values():
+        # Touched assets plus every asset of this root still without a present proxy: proxies
+        # are generated after the original lands (ContentFactory worker) and a scan that was
+        # cancelled or recovered before this step left committed assets unlinked. Both must
+        # converge on the next incremental scan without touching unchanged originals.
+        candidates: dict[uuid.UUID, MediaAsset] = dict(ctx.touched_assets)
+        for asset in self._assets_without_proxy(ctx):
+            candidates.setdefault(asset.id, asset)
+        for asset in candidates.values():
             original = asset.variant(MediaVariantKind.ORIGINAL)
             if original is None or original.status != MediaVariantStatus.PRESENT:
                 continue
@@ -548,6 +557,37 @@ class MediaScanner:
                     existing.probed_at = ctx.now
             ctx.stats.proxies_linked += 1
             self._maybe_commit(ctx, ctx.job)
+
+    def _assets_without_proxy(self, ctx: _ScanContext) -> list[MediaAsset]:
+        """Active footage assets of this root whose proxy variant is absent or missing."""
+        self.session.flush()  # autoflush=False: make this scan's rows visible to the query
+        original = aliased(MediaFileVariant)
+        proxy = aliased(MediaFileVariant)
+        has_present_proxy = exists().where(
+            proxy.asset_id == MediaAsset.id,
+            proxy.kind == MediaVariantKind.PROXY,
+            proxy.status == MediaVariantStatus.PRESENT,
+        )
+        stmt = (
+            select(MediaAsset)
+            .options(selectinload(MediaAsset.variants))
+            .join(
+                original,
+                and_(
+                    original.asset_id == MediaAsset.id,
+                    original.kind == MediaVariantKind.ORIGINAL,
+                    original.media_root_id == ctx.root.id,
+                    original.status == MediaVariantStatus.PRESENT,
+                ),
+            )
+            .where(
+                MediaAsset.organization_id == ctx.organization_id,
+                MediaAsset.status == MediaAssetStatus.ACTIVE,
+                ~has_present_proxy,
+            )
+            .order_by(MediaAsset.created_at)
+        )
+        return list(self.session.scalars(stmt))
 
     def _find_proxy(
         self, proxies: RootBinding, original_rel: str

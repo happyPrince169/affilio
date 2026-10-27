@@ -28,8 +28,14 @@ from sqlalchemy import Engine, create_engine, text  # noqa: E402
 from sqlalchemy.exc import SQLAlchemyError  # noqa: E402
 
 from affilio.app import create_app  # noqa: E402
-from affilio.core.config import get_settings  # noqa: E402
+from affilio.core.config import Settings, get_settings  # noqa: E402
 from affilio.db.session import dispose_engine  # noqa: E402
+
+# Test isolation: never read the developer's `.env` files. Every value a test needs is pinned
+# above, by a fixture, or through monkeypatch, so real credentials sitting in a local `.env`
+# (for example META_APP_SECRET) cannot leak into assertions that expect an unconfigured app.
+# Only the test process is affected; the application's own settings sources are unchanged.
+Settings.model_config["env_file"] = None
 
 
 def pytest_configure(config: pytest.Config) -> None:

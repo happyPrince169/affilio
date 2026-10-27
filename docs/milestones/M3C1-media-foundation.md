@@ -59,6 +59,22 @@ refuses while a queued/running job exists). There was no way to stop a scan.
 `docs/api/README.md`. Tests: `tests/test_media_watchdog.py` (recovery, retries, lock skipping,
 zombie fence, cancellation paths, API lifecycle, RBAC, service token) and `test_config.py`.
 
+**Partial-commit consistency (follow-up review, 2026-10-27).** Checkpoints commit whole
+units of work (one file: asset + variant + fingerprint + probe; one hash; one proxy link), so
+every committed state is one the next scan can continue from: unchanged files are skipped by
+size + mtime, files that were in flight when the run was fenced out are rolled back and
+re-indexed as new, duplicate detection re-examines every present variant of the root, and
+`_link_proxies` now also covers assets of the root that have no present proxy yet (not only
+assets touched in this scan). That last point also fixes a pre-existing gap: proxies rendered
+by the ContentFactory worker minutes after the original landed were never linked until a
+full rescan. The walk heartbeats per directory so deep trees with few videos cannot look
+dead. Progress counters in `stats` reflect the last checkpoint; a resumed attempt starts its
+own counters. `media_roots.last_scan_at` is only written by a successful run.
+
+**Test isolation.** `tests/conftest.py` disables pydantic's `.env` sources for the test
+process (`Settings.model_config["env_file"] = None`): every value a test needs is pinned
+explicitly, so real credentials in a developer `.env` can no longer leak into assertions.
+
 **Known limits.** A cancelled running job's worker keeps reading files until its next
 checkpoint (bounded by the heartbeat interval plus one file operation); with the single
 production worker a new scan of the same root therefore starts only after the abort. The
