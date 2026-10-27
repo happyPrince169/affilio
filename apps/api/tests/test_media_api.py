@@ -231,6 +231,7 @@ def test_scan_refused_in_production_without_token(
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("DEFAULT_ORGANIZATION_SLUG", organization.slug)
     monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("META_PROVIDER_MODE", "live")  # a dev .env may select mock mode
     monkeypatch.delenv("MEDIA_ADMIN_TOKEN", raising=False)
     get_settings.cache_clear()
     with TestClient(create_app(), raise_server_exceptions=False) as client:

@@ -7,13 +7,22 @@
 set -Eeuo pipefail
 
 ACTION="${1:-check}"
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Normally this file lives in <project>/scripts; AFFILIO_PROJECT_DIR overrides that (e.g. when
+# the script is streamed over ssh for a preflight without a sync).
+if [[ -n "${AFFILIO_PROJECT_DIR:-}" ]]; then
+  PROJECT_DIR="${AFFILIO_PROJECT_DIR%/}"
+else
+  PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
+fi
 COMPOSE_DIR="$PROJECT_DIR/infrastructure/docker/synology"
 COMPOSE_FILE="$COMPOSE_DIR/docker-compose.yml"
 ENV_FILE="$COMPOSE_DIR/.env"
 DEPLOY_DIR="$PROJECT_DIR/.deploy"
 BACKUP_DIR="$PROJECT_DIR/backups"
 DOCKER="${NAS_DOCKER:-sudo /usr/local/bin/docker}"
+# The docker CLI binary without sudo: `compose config` only parses files and needs no daemon,
+# so preflight can run without a password.
+DOCKER_BIN="${DOCKER##* }"
 PROJECT=affilio
 IMAGES=(affilio-api affilio-web)
 SERVICES=(postgres api worker publisher web)
@@ -25,6 +34,7 @@ log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*" >&2; }
 fail() { log "ERROR: $*"; exit 1; }
 on_error() {
   local rc=$?
+  trap - ERR
   log "FAILED during step '$STEP' (exit $rc)."
   case "$STEP" in
     build) log "Nothing was changed: the running containers (if any) are untouched. Fix the build and re-run 'pnpm nas:deploy deploy'." ;;
@@ -37,8 +47,10 @@ on_error() {
 trap on_error ERR
 
 compose() { ${DOCKER} compose --project-name "$PROJECT" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"; }
+compose_nosudo() { "$DOCKER_BIN" compose --project-name "$PROJECT" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"; }
 
-env_value() { grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'"; }
+# Never fails (a missing key yields an empty value) so command substitutions do not trip ERR.
+env_value() { { grep -E "^$1=" "$ENV_FILE" || true; } | tail -1 | cut -d= -f2- | tr -d '"' | tr -d "'"; }
 
 preflight() {
   STEP="preflight"
@@ -81,7 +93,11 @@ preflight() {
     [[ -d "$(env_value "$var")" ]] || fail "$var points to a missing folder: $(env_value "$var") (create it: sudo mkdir -p ... && sudo chown 1026:100 ...)"
   done
   STEP="compose-config"
-  compose config -q || fail "docker compose config rejected the compose file / .env"
+  if [[ -x "$DOCKER_BIN" ]]; then
+    compose_nosudo config -q || fail "docker compose config rejected the compose file / .env"
+  else
+    compose config -q || fail "docker compose config rejected the compose file / .env"
+  fi
   log "preflight OK (compose project '$PROJECT', live publishing disabled)"
 }
 

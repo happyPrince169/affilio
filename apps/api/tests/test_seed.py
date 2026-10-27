@@ -48,7 +48,7 @@ def test_seed_is_idempotent(engine: Engine) -> None:
 
 
 def test_seed_refuses_non_development_environments(capsys: pytest.CaptureFixture[str]) -> None:
-    exit_code = seed_dev.main(Settings(app_env="production"))
+    exit_code = seed_dev.main(Settings(app_env="production", meta_provider_mode="live"))
 
     assert exit_code == 2
     assert "Refusing to seed" in capsys.readouterr().err

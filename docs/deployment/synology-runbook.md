@@ -136,6 +136,37 @@ Restore drill (recommended once): stop api/worker/publisher/web, `db-restore.sh 
 start again; with the key present connected Pages come back as connected, without it they
 show "reconnect needed" (tokens are re-issued on reconnect).
 
+## 6a. Production environment record (prepared 2026-10-27, not yet deployed)
+
+Prepared on `leosunnas` without starting anything. No secret values are recorded here.
+
+| Item | State |
+| --- | --- |
+| Compose `.env` | `/volume1/docker/affilio/infrastructure/docker/synology/.env`, mode 600, owner uid 1026; `POSTGRES_PASSWORD`, `MEDIA_ADMIN_TOKEN` (64 hex chars) and `CREDENTIAL_ENCRYPTION_KEYS` (`v1:` + 32 random bytes, base64) generated on the NAS with `openssl rand`; back the key up out of band |
+| Media roots (read-only bind mounts) | originals `/volume1/ContentFactory/fashion/originals`, proxies `/volume1/ContentFactory/fashion/proxies` (same relative names, `{stem}.mp4`), finals `/volume1/ContentFactory/fashion/FINAL`. `/volume1/ContentFactory/finals/` does not exist: ContentFactory is organised per channel (`fashion`, `Only channel`, …); other channels need either a second deployment root decision or multi-root support (not in scope) |
+| Runtime folders | `/volume1/docker/affilio/{data/postgres,thumbnails,exports,backups}`, uid 1026 / gid 100, mode 770; protected from `nas:sync` deletion |
+| Web port | `192.168.1.3:3080` (LAN only; the API and PostgreSQL publish no ports; another PostgreSQL already listens on the NAS loopback 5432, which does not conflict) |
+| Origins / cookies | `CORS_ORIGINS=https://app.aaffilio.online`; `SESSION_COOKIE_SECURE` unset → `Secure` cookie (production); same-origin `/api` proxy, so the browser only ever talks to `app.aaffilio.online` |
+| Meta | `META_PROVIDER_MODE=live` (fixed by compose), `META_LIVE_PUBLISHING_ENABLED=false`, app id/secret empty (connections refused with a clear "not configured" message), `META_OAUTH_REDIRECT_URI=https://app.aaffilio.online/api/v1/accounts/connect/facebook/callback` pre-set for the future app |
+| Stray file | `/volume1/docker/affilio/.env` (byte-identical copy of the dev template, not read by compose) can be deleted; the compose directory `.env` is the real one |
+
+### Cloudflare Tunnel targets (to configure after deployment)
+
+| Public hostname | Tunnel service | Notes |
+| --- | --- | --- |
+| `app.aaffilio.online` | `http://192.168.1.3:3080` (the `affilio-web` container; or `http://affilio-web:3000` if `cloudflared` joins the `affilio` compose network) | the only hostname the browser needs: the Next.js route handler proxies `/api/*` to `http://api:8000` inside the compose network |
+| `api.aaffilio.online` | not required; if created, point it at the same web service, **not** at the API container | `NEXT_PUBLIC_API_URL` is baked into the web image as `""` (same origin). Pointing the browser at `api.aaffilio.online` would make the session cookie cross-site (`SameSite=Lax`, host-scoped) and break login; the OAuth callback also relies on the `app` host cookie |
+
+Cloudflare Access: protect `app.aaffilio.online` as a whole. Paths that must stay reachable by
+the people who use them are all browser flows behind the same login, including the Meta
+OAuth callback (`/api/v1/accounts/connect/facebook/callback`), so no bypass is needed for
+them. Server-to-server callbacks from Meta (deauthorize / data deletion) are not configured
+and would need an Access bypass rule if ever enabled; the CLI service token is used from the
+NAS itself, not through the tunnel. Rate limiting behind the tunnel keys on the first
+`X-Forwarded-For` hop that `cloudflared` sets (`TRUST_PROXY_HEADERS=true` is correct because
+the API is only reachable through the web proxy); LAN clients hitting `:3080` directly could
+spoof that header, which is acceptable on the private LAN.
+
 ## 7. Security findings (2026-10-29 review)
 
 | # | Finding | Severity | Action |

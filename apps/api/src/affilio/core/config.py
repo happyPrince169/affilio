@@ -258,6 +258,10 @@ class Settings(BaseSettings):
         "credential_encryption_keys",
         "credential_encryption_active_key_id",
         "web_base_url",
+        # Compose passes `${SESSION_COOKIE_SECURE:-}` / `${SESSION_COOKIE_DOMAIN:-}` as empty
+        # strings when unset; an empty value must mean "not configured", not a parse error.
+        "session_cookie_secure",
+        "session_cookie_domain",
         mode="before",
     )
     @classmethod

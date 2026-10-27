@@ -53,7 +53,7 @@ laptop ──(1) pnpm nas:sync: rsync over ssh──► /volume1/docker/affilio/
 
 | | |
 | --- | --- |
-| `pnpm nas:deploy check` | preflight only, changes nothing |
+| `pnpm nas:deploy check` | preflight only, changes nothing; needs no sudo (the compose file is only parsed), so `NAS_SSH_TTY=0 pnpm nas:deploy check` works non-interactively |
 | `pnpm nas:deploy deploy` | full deployment (default when you type `pnpm nas:deploy deploy`) |
 | `pnpm nas:deploy rollback` | switch back to the previous images |
 
@@ -95,6 +95,9 @@ script uses `--project-name affilio` and the AFFILIO compose file only, and neve
 `pnpm nas:deploy rollback` re-tags `:previous` → `:latest`, restarts the AFFILIO services
 without building, waits for health, and prints the database instructions. Every migration
 in this repository has a tested `downgrade()`.
+
+To run the preflight with the laptop's copy of the script (for example after fixing it, before
+syncing) stream it over SSH: `ssh leosunnas 'AFFILIO_PROJECT_DIR=/volume1/docker/affilio bash -s check' < scripts/nas-deploy-remote.sh`.
 
 ## Status (`scripts/nas-status.sh`)
 

@@ -38,3 +38,27 @@ def test_empty_media_paths_mean_not_configured(
 
     assert settings.media_originals_path is None
     assert settings.media_thumbnails_path == tmp_path
+
+
+def test_empty_compose_values_mean_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Synology compose file forwards `${VAR:-}` as empty strings; they must not break
+    startup and must fall back to the production default (Secure cookie, no domain)."""
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("META_PROVIDER_MODE", "live")  # the local .env may select mock mode
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "")
+    monkeypatch.setenv("SESSION_COOKIE_DOMAIN", "")
+    monkeypatch.setenv("META_APP_ID", "")
+    monkeypatch.setenv("META_APP_SECRET", "")
+    monkeypatch.setenv("META_OAUTH_REDIRECT_URI", "")
+    monkeypatch.setenv("CREDENTIAL_ENCRYPTION_KEYS", "")
+    monkeypatch.setenv("CORS_ORIGINS", "https://app.example.test")
+    settings = Settings()
+    assert settings.session_cookie_secure is None and settings.cookie_secure is True
+    assert settings.session_cookie_domain is None
+    assert settings.meta_live_missing_settings == [
+        "META_APP_ID",
+        "META_APP_SECRET",
+        "META_OAUTH_REDIRECT_URI",
+    ]
+    assert settings.credential_encryption_keys is None
+    assert settings.cors_origins == ["https://app.example.test"]
