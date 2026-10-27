@@ -128,7 +128,7 @@ Copy `infrastructure/docker/synology/.env.example` to `.env` **next to the compo
 | `CREDENTIAL_ENCRYPTION_KEYS` / `CREDENTIAL_ENCRYPTION_ACTIVE_KEY_ID` | Key ring for the credential vault (`openssl rand -base64 32`). **Back it up outside the database backups**; without it every connected Page must be reconnected. |
 | `MEDIA_PROXY_PATTERNS` | How a proxy filename derives from an original (`{stem}`, `{name}`, `{ext}` placeholders), same relative directory under the proxies root. **Confirm against the real proxy naming scheme before the first scan.** |
 | `MEDIA_VIDEO_EXTENSIONS` | Extensions to index. |
-| `*_CPUS` / `*_MEMORY` | Resource limits (§6). |
+| `*_MEMORY` | Memory limits (§6); CPU limits are not supported by the DSM kernel. |
 
 Application paths inside the containers are fixed (`/media/originals`, `/media/proxies`,
 `/data/thumbnails`, `/data/exports`); only host paths change. The database stores logical
@@ -167,15 +167,20 @@ through the UI instead of the CLI; both methods are equivalent.
 
 Defaults (set in `.env`) suit a 4-core / 8 GB NAS:
 
-| Service | CPUs | Memory | Notes |
-| --- | --- | --- | --- |
-| postgres | 1.0 | 512M | `shm_size` 128M |
-| api | 1.0 | 512M | one uvicorn worker |
-| worker | 2.0 | 768M | ffprobe/ffmpeg run single-threaded; `MEDIA_THUMBNAIL_CONCURRENCY` controls parallel renders (default 1) |
-| publisher | 0.5 | 256M | Reels publisher (M3B.2A): streams finals in 4 MiB chunks, no transcoding; `PUBLISHER_MAX_CONCURRENT_UPLOADS` (default 1) |
-| web | 1.0 | 384M | |
+| Service | Memory | Notes |
+| --- | --- | --- |
+| postgres | 512M | `shm_size` 128M |
+| api | 512M | one uvicorn worker |
+| worker | 768M | ffprobe/ffmpeg run single-threaded; `MEDIA_THUMBNAIL_CONCURRENCY` controls parallel renders (default 1) |
+| publisher | 256M | Reels publisher (M3B.2A): streams finals in 4 MiB chunks, no transcoding; `PUBLISHER_MAX_CONCURRENT_UPLOADS` (default 1) |
+| web | 384M | |
 
-Lower the worker's CPU share if the NAS also transcodes for the existing pipeline. Scans are
+CPU limits are deliberately absent: DSM's kernel has no CFS bandwidth control, so a `cpus:`
+limit makes `docker compose up` fail ("NanoCpus can not be set"). Use
+`MEDIA_THUMBNAIL_CONCURRENCY` and `PUBLISHER_MAX_CONCURRENT_UPLOADS` to bound CPU use, or
+`cpu_shares` for relative weighting.
+
+Keep thumbnail concurrency at 1 if the NAS also transcodes for the existing pipeline. Scans are
 I/O-bound and read at most 3 MiB per changed file; full hashes are only computed to confirm
 duplicates.
 

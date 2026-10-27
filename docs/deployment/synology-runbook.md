@@ -9,7 +9,7 @@ complements `synology.md` (reference) and records the readiness review of 2026-1
 
 | Area | State in `infrastructure/docker/synology/` | Verdict |
 | --- | --- | --- |
-| CPU / memory limits | postgres 1.0/512M, api 1.0/512M, worker 2.0/768M, publisher 0.5/256M, web 1.0/384M (≈ 2.4 GB total; `deploy.resources.limits`) | OK for 20 GB; raise `WORKER_MEMORY` to 1G if thumbnails of 4K originals time out |
+| Resource limits | memory only: postgres 512M, api 512M, worker 768M, publisher 256M, web 384M (≈ 2.4 GB total; `deploy.resources.limits.memory`). CPU limits removed after the first deployment attempt failed with "NanoCpus can not be set" (DSM kernel 4.4 has no CFS bandwidth control) | OK for 20 GB; raise `WORKER_MEMORY` to 1G if thumbnails of 4K originals time out |
 | PostgreSQL persistence | bind mount `${AFFILIO_DATA_HOST_PATH}/postgres`, `--data-checksums`, no published port, `shm_size` 128M | OK |
 | Read-only media mounts | originals, proxies, finals `read_only: true` on api and worker; publisher mounts **only** finals read-only; thumbnails/exports read-write | OK (matches CLAUDE.md §6b) |
 | Encryption key | `CREDENTIAL_ENCRYPTION_KEYS` / `..._ACTIVE_KEY_ID` passed from `.env`; API answers 503 for connections without it | **Required before connecting any Page**; back the key up out of band |
