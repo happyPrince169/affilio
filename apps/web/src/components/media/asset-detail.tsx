@@ -200,6 +200,9 @@ function Detail({ asset }: { asset: MediaAssetDetail }) {
                 }
               />
               <Row label="First seen" value={formatDateTime(asset.first_seen_at)} />
+              {asset.asset_kind === "final" ? (
+                <Row label="Production period" value={asset.production_period ?? "–"} />
+              ) : null}
               <Row label="Last seen" value={formatDateTime(asset.last_seen_at)} />
               {asset.missing_since ? (
                 <Row label="Missing since" value={formatDateTime(asset.missing_since)} />

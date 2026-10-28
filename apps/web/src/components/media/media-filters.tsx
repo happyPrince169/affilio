@@ -58,7 +58,8 @@ export function MediaFilters({ filters, onChange, disabled }: MediaFiltersProps)
     filters.has_proxy !== undefined ||
     Boolean(filters.duplicates_only) ||
     Boolean(filters.category_id) ||
-    Boolean(filters.uncategorized);
+    Boolean(filters.uncategorized) ||
+    Boolean(filters.production_period);
 
   return (
     <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
@@ -142,6 +143,15 @@ export function MediaFilters({ filters, onChange, disabled }: MediaFiltersProps)
             ))}
           </SelectContent>
         </Select>
+        <Input
+          type="month"
+          value={filters.production_period ?? ""}
+          onChange={(event) => update({ production_period: event.target.value || undefined })}
+          className="w-40"
+          disabled={disabled}
+          aria-label="Production period"
+          title="Production period (month of first ingestion)"
+        />
         <CategorySelect
           value={filters.category_id ?? null}
           onChange={(id) => update({ category_id: id ?? undefined, uncategorized: undefined })}

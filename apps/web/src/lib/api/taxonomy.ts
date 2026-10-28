@@ -1,4 +1,9 @@
-import type { CategoryCreate, CategoryUpdate, ContentCategory } from "@affilio/shared-types";
+import type {
+  CategoryCreate,
+  CategoryUpdate,
+  ContentCategory,
+  FacetRootsResponse,
+} from "@affilio/shared-types";
 import { queryOptions } from "@tanstack/react-query";
 
 import { API_V1_PREFIX, apiFetch } from "@/lib/api/client";
@@ -17,6 +22,8 @@ export const deleteCategory = (id: string) =>
   apiFetch<void>(`${BASE}/${encodeURIComponent(id)}`, { method: "DELETE" });
 export const ensureUncategorized = () =>
   apiFetch<ContentCategory>(`${BASE}/ensure-uncategorized`, { method: "POST" });
+export const ensureFacets = () =>
+  apiFetch<FacetRootsResponse>(`${BASE}/ensure-facets`, { method: "POST" });
 
 export const taxonomyQueries = {
   all: () => ["taxonomy"] as const,

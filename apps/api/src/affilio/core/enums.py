@@ -327,6 +327,22 @@ class CategoryAssignmentSource(StrEnum):
     MANUAL = "manual"
     IMPORT = "import"
     AI_FUTURE = "ai_future"  # reserved; no AI classification exists yet
+    PATH = "path"  # derived from the structured finals path (facet classification)
+
+
+class CategoryFacet(StrEnum):
+    """Logical dimension of a category. Facet roots are top-level categories carrying a
+    facet; their descendants inherit it. Categories without a facet are generic (M3A.1)."""
+
+    PRODUCTION_OWNER = "production_owner"
+    PRODUCT_CATEGORY = "product_category"
+    CONTENT_TYPE = "content_type"
+
+
+class CategorySuggestionStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 
 class ChannelMatchPolicy(StrEnum):

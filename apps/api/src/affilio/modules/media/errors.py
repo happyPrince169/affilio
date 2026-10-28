@@ -74,3 +74,8 @@ class InvalidFolderPathError(AppError):
 
     status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
     code = "invalid_folder_path"
+
+
+class SuggestionNameMismatchError(AppError):
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "suggestion_name_mismatch"

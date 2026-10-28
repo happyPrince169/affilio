@@ -125,6 +125,9 @@ Schedules missed while the stack was down follow `PUBLISHER_OVERDUE_GRACE_MINUTE
 `PUBLISHER_OVERDUE_POLICY` (older than the grace window → operator review in the queue).
 Maintenance: `uv run python -m affilio.scripts.maintenance` (session and OAuth-attempt purge,
 also run hourly by the worker); key rotation: `uv run python -m affilio.scripts.rotate_credential_keys`.
+Finals folder tree (`{Owner}/{ProductCategory}/{ContentType}`, ADR 0011): `uv run python -m
+affilio.scripts.media_folder_bootstrap --root <finals root>` prints the plan; `--apply` creates only
+the missing directories (standard library only, so it also runs with the NAS `python3`).
 
 ## Everyday commands
 

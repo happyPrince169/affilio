@@ -11,6 +11,11 @@ Rule resolution for a file at `a/b/c/video.mp4` (folder `a/b/c`):
 Classification is idempotent: the folder-derived assignment is a single row with
 `assignment_source = folder`; it is rewritten only when the resolved category changes.
 Manual rows are never touched by the scanner. A manual primary wins over the folder one.
+
+Facet classification (`media/facets.py`) adds derived rows with `assignment_source = path`
+(one per facet named by a structured path). Derived primary precedence: a folder rule, then
+the path's product category, then the Uncategorized fallback, which is only written when
+neither of the first two applies. A manual primary still wins over all of them.
 """
 
 from __future__ import annotations
@@ -23,7 +28,12 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from affilio.core.enums import CategoryAssignmentSource, MediaRootKind, MediaVariantKind
+from affilio.core.enums import (
+    CategoryAssignmentSource,
+    CategoryFacet,
+    MediaRootKind,
+    MediaVariantKind,
+)
 from affilio.core.errors import ConflictError, NotFoundError
 from affilio.modules.media.errors import InvalidFolderPathError
 from affilio.modules.media.models import (
@@ -272,8 +282,35 @@ def folder_report(session: Session, organization_id: uuid.UUID) -> list[FolderRe
 # ---------------------------------------------------------------- assignments
 
 
+DERIVED_SOURCES = {CategoryAssignmentSource.FOLDER, CategoryAssignmentSource.PATH}
+
+
 def _assignments(asset: MediaAsset) -> list[MediaContentCategory]:
     return list(asset.category_assignments)
+
+
+def _is_derived(assignment: MediaContentCategory) -> bool:
+    return assignment.assignment_source in DERIVED_SOURCES
+
+
+def derived_primary(assignments: list[MediaContentCategory]) -> MediaContentCategory | None:
+    """The derived row that holds primacy when no manual primary exists: the folder row
+    (rule or fallback) first, then the path row of the product category facet."""
+    folder = next(
+        (a for a in assignments if a.assignment_source == CategoryAssignmentSource.FOLDER), None
+    )
+    if folder is not None:
+        return folder
+    return next(
+        (
+            a
+            for a in assignments
+            if a.assignment_source == CategoryAssignmentSource.PATH
+            and a.category is not None
+            and a.category.facet == CategoryFacet.PRODUCT_CATEGORY
+        ),
+        None,
+    )
 
 
 def apply_folder_classification(
@@ -284,9 +321,11 @@ def apply_folder_classification(
     relative_path: str,
     rules: list[FolderCategoryRule] | None = None,
     now: datetime | None = None,
+    facet_assignments: dict[CategoryFacet, uuid.UUID] | None = None,
 ) -> bool:
-    """Ensure the folder-derived assignment reflects the file's folder. Returns True when the
-    derived category changed (callers may then flag downstream reviews)."""
+    """Ensure the derived assignments (folder rule / fallback and path facets) reflect the
+    file's folders. Returns True when a previously derived classification changed (callers
+    may then flag downstream reviews); the first classification is not a change."""
     if root.kind != MediaRootKind.FINAL:
         return False
     now = now or datetime.now(UTC)
@@ -294,49 +333,73 @@ def apply_folder_classification(
         rules if rules is not None else rules_for_root(session, asset.organization_id, root.id)
     )
     rule = resolve_rule(rule_set, folder_of(relative_path))
-    category_id = (
-        rule.category_id
-        if rule
-        else taxonomy_service.ensure_uncategorized(session, asset.organization_id).id
-    )
+    facets = dict(facet_assignments or {})
+    product_id = facets.get(CategoryFacet.PRODUCT_CATEGORY)
+
+    # Desired derived rows, in primacy order: folder rule → product category → fallback.
+    desired: dict[uuid.UUID, CategoryAssignmentSource] = {}
+    if rule is not None:
+        desired[rule.category_id] = CategoryAssignmentSource.FOLDER
+    elif product_id is None:
+        fallback = taxonomy_service.ensure_uncategorized(session, asset.organization_id).id
+        desired[fallback] = CategoryAssignmentSource.FOLDER
+    for facet in (
+        CategoryFacet.PRODUCT_CATEGORY,
+        CategoryFacet.PRODUCTION_OWNER,
+        CategoryFacet.CONTENT_TYPE,
+    ):
+        category_id = facets.get(facet)
+        if category_id is not None and category_id not in desired:
+            desired[category_id] = CategoryAssignmentSource.PATH
+    primary_candidate = next(iter(desired), None)
 
     assignments = _assignments(asset)
-    folder_rows = [a for a in assignments if a.assignment_source == CategoryAssignmentSource.FOLDER]
-    manual_primary = any(
-        a.is_primary and a.assignment_source != CategoryAssignmentSource.FOLDER for a in assignments
-    )
-    current = folder_rows[0] if folder_rows else None
-    if current is not None and current.category_id == category_id:
-        # Idempotent: unchanged folder → no writes (primary flag may still need fixing).
-        if (
-            not manual_primary
-            and not current.is_primary
-            and not any(a.is_primary for a in assignments)
-        ):
-            current.is_primary = True
+    existing = {a.category_id: a.assignment_source for a in assignments if _is_derived(a)}
+    manual_primary = any(a.is_primary and not _is_derived(a) for a in assignments)
+    old_primary = next((a for a in assignments if a.is_primary and _is_derived(a)), None)
+    if existing == desired:
+        # Idempotent: nothing differs → no writes (primary flag may still need fixing).
+        if not manual_primary and not any(a.is_primary for a in assignments):
+            for a in assignments:
+                if _is_derived(a) and a.category_id == primary_candidate:
+                    a.is_primary = True
         return False
 
-    changed = current is not None
-    for extra in folder_rows:
-        asset.category_assignments.remove(extra)
-    session.flush()
-    # A manual secondary assignment of the same category is absorbed by the folder row.
+    changed = bool(existing) and (
+        set(existing) != set(desired)
+        or (old_primary is not None and old_primary.category_id != primary_candidate)
+    )
+    absorbed_primary: uuid.UUID | None = None
     for a in list(asset.category_assignments):
-        if a.category_id == category_id and a.assignment_source != CategoryAssignmentSource.FOLDER:
+        if _is_derived(a) and desired.get(a.category_id) != a.assignment_source:
+            asset.category_assignments.remove(a)
+        elif not _is_derived(a) and a.category_id in desired:
+            # A manual assignment of a now-derived category is absorbed by the derived row;
+            # if it was the manual primary, that category stays primary.
             if a.is_primary:
-                manual_primary = True
+                absorbed_primary = a.category_id
             asset.category_assignments.remove(a)
     session.flush()
-    asset.category_assignments.append(
-        MediaContentCategory(
-            id=uuid.uuid4(),
-            organization_id=asset.organization_id,
-            media_asset_id=asset.id,
-            category_id=category_id,
-            is_primary=not manual_primary,
-            assignment_source=CategoryAssignmentSource.FOLDER,
+    kept = {a.category_id for a in asset.category_assignments}
+    for category_id, source in desired.items():
+        if category_id in kept:
+            continue
+        asset.category_assignments.append(
+            MediaContentCategory(
+                id=uuid.uuid4(),
+                organization_id=asset.organization_id,
+                media_asset_id=asset.id,
+                category_id=category_id,
+                is_primary=False,
+                assignment_source=source,
+            )
         )
+    primary_id = (
+        None if manual_primary else absorbed_primary if absorbed_primary else primary_candidate
     )
+    for a in asset.category_assignments:
+        if _is_derived(a):
+            a.is_primary = primary_id is not None and a.category_id == primary_id
     if changed:
         asset.classification_changed_at = now
     session.flush()
@@ -351,28 +414,29 @@ def set_manual_categories(
     primary_category_id: uuid.UUID | None,
     secondary_category_ids: list[uuid.UUID],
 ) -> None:
-    """Operator override. `primary_category_id=None` returns primacy to the folder-derived
-    category. Secondary categories are replaced wholesale; the folder row is preserved."""
+    """Operator override. `primary_category_id=None` returns primacy to the derived primary
+    (folder rule / fallback, else the path's product category). Secondary categories are
+    replaced wholesale; derived rows (folder and path) are preserved."""
     wanted = [*([primary_category_id] if primary_category_id else []), *secondary_category_ids]
     taxonomy_service.get_categories(session, organization_id, wanted)
     assignments = _assignments(asset)
-    folder_row = next(
-        (a for a in assignments if a.assignment_source == CategoryAssignmentSource.FOLDER), None
-    )
+    derived_rows = [a for a in assignments if _is_derived(a)]
+    derived_by_category = {a.category_id: a for a in derived_rows}
     for a in assignments:
-        if a.assignment_source != CategoryAssignmentSource.FOLDER:
+        if not _is_derived(a):
             asset.category_assignments.remove(a)
-    if folder_row is not None:
-        folder_row.is_primary = False
+    for a in derived_rows:
+        a.is_primary = False
     session.flush()
-    chosen_primary: uuid.UUID | None = primary_category_id
-    if chosen_primary is None and folder_row is not None:
-        folder_row.is_primary = True
-        chosen_primary = folder_row.category_id
+    if primary_category_id is None:
+        fallback_primary = derived_primary(derived_rows)
+        if fallback_primary is not None:
+            fallback_primary.is_primary = True
     for category_id in dict.fromkeys(wanted):
-        if folder_row is not None and category_id == folder_row.category_id:
+        derived = derived_by_category.get(category_id)
+        if derived is not None:
             if category_id == primary_category_id:
-                folder_row.is_primary = True
+                derived.is_primary = True
             continue
         asset.category_assignments.append(
             MediaContentCategory(

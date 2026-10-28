@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CategoriesManager } from "@/components/taxonomy/categories-manager";
+import { CategorySuggestions } from "@/components/taxonomy/category-suggestions";
 import { FolderRulesManager } from "@/components/taxonomy/folder-rules-manager";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -391,7 +392,8 @@ export function SettingsPanel() {
         <TabsContent value="categories" className="pt-4">
           <CategoriesManager />
         </TabsContent>
-        <TabsContent value="folders" className="pt-4">
+        <TabsContent value="folders" className="space-y-4 pt-4">
+          <CategorySuggestions />
           <FolderRulesManager />
         </TabsContent>
         <TabsContent value="organization" className="pt-4">

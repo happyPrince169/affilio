@@ -1,4 +1,4 @@
-import type { CategoryAssignmentSource } from "./domain";
+import type { CategoryAssignmentSource, CategoryFacet, CategorySuggestionStatus } from "./domain";
 
 /**
  * Media library contracts (M1). Mirrors `apps/api/src/affilio/modules/media/schemas.py`.
@@ -125,6 +125,7 @@ export interface AssetCategory {
   path: string;
   is_primary: boolean;
   assignment_source: CategoryAssignmentSource;
+  facet: CategoryFacet | null;
 }
 
 export interface MediaAssetSummary {
@@ -134,6 +135,8 @@ export interface MediaAssetSummary {
   folder_path: string | null;
   categories: AssetCategory[];
   classification_changed_at: string | null;
+  /** "YYYY-MM" (UTC) of the first ingestion; never changed by rescans or moves. */
+  production_period: string | null;
   status: MediaAssetStatus;
   asset_kind: MediaAssetKind;
   handoff_status: HandoffStatus | null;
@@ -265,6 +268,7 @@ export interface MediaAssetFilters {
   duplicates_only?: boolean;
   category_id?: string;
   uncategorized?: boolean;
+  production_period?: string;
   sort?: MediaSortKey;
   page?: number;
   page_size?: number;
@@ -275,6 +279,42 @@ export interface MediaAssetFilters {
 export interface AssetCategoriesUpdate {
   primary_category_id: string | null;
   secondary_category_ids: string[];
+}
+
+// ---------------------------------------------------------------- facet suggestions
+
+export interface CategorySuggestion {
+  id: string;
+  facet: CategoryFacet;
+  name: string;
+  normalized_name: string;
+  root_key: string;
+  relative_folder_path: string;
+  example_relative_path: string | null;
+  status: CategorySuggestionStatus;
+  seen_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  decided_at: string | null;
+  decided_by: string | null;
+  note: string | null;
+  category_id: string | null;
+  category_name: string | null;
+}
+
+export interface SuggestionApprove {
+  name?: string | null;
+  slug?: string | null;
+}
+
+export interface SuggestionReject {
+  note?: string | null;
+}
+
+export interface SuggestionDecision {
+  suggestion: CategorySuggestion;
+  category_id: string | null;
+  reclassified_assets: number;
 }
 
 export interface FolderRule {

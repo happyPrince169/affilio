@@ -32,6 +32,7 @@ const STAT_LABELS: Array<[string, string]> = [
   ["duplicates", "duplicates"],
   ["proxies_linked", "proxies"],
   ["settling", "settling"],
+  ["suggestions", "new folder suggestions"],
   ["errors", "errors"],
 ];
 

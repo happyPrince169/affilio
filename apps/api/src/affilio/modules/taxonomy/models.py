@@ -8,7 +8,7 @@ from sqlalchemy import ForeignKey, Index, Integer, String, Text, UniqueConstrain
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from affilio.core.enums import CategoryStatus
+from affilio.core.enums import CategoryFacet, CategoryStatus
 from affilio.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from affilio.db.types import str_enum
 
@@ -28,6 +28,14 @@ class ContentCategory(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ),
         UniqueConstraint("organization_id", "id", name="uq_content_categories_org_id"),
         Index("ix_content_categories_organization_id_parent_id", "organization_id", "parent_id"),
+        # One facet root per organization and facet (facet classification).
+        Index(
+            "uq_content_categories_org_facet_root",
+            "organization_id",
+            "facet",
+            unique=True,
+            postgresql_where=text("parent_id IS NULL AND facet IS NOT NULL"),
+        ),
     )
 
     organization_id: Mapped[uuid.UUID] = mapped_column(
@@ -47,6 +55,10 @@ class ContentCategory(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     sort_order: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
+    )
+    # NULL for generic categories; set on facet roots and inherited by their descendants.
+    facet: Mapped[CategoryFacet | None] = mapped_column(
+        str_enum(CategoryFacet, "category_facet"), nullable=True
     )
 
     parent: Mapped[ContentCategory | None] = relationship(

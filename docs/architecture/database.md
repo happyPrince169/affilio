@@ -356,6 +356,26 @@ Export pipeline E2. `publication_uploads` gains `file_root_key` (`finals` or `ex
 `media_file_variants`, SET NULL). Existing rows with a relative path are backfilled to
 `finals`. The downgrade drops the three columns.
 
+## Facet classification (migration `0013_facet_classification`)
+
+ADR 0011. `content_categories.facet` (VARCHAR + CHECK `production_owner` | `product_category` |
+`content_type`, nullable) with a partial unique index `uq_content_categories_org_facet_root`
+on `(organization_id, facet)` where `parent_id IS NULL`. The check constraint on
+`media_content_categories.assignment_source` gains `path`. `media_assets.production_period`
+VARCHAR(7) is backfilled from `first_seen_at` (UTC month). New table:
+
+```
+category_suggestions
+  id, organization_id FK CASCADE, media_root_id FK CASCADE, facet, name, normalized_name,
+  relative_folder_path, example_relative_path, status pending|approved|rejected, seen_count,
+  first_seen_at, last_seen_at, decided_at, decided_by, note,
+  category_id FK content_categories SET NULL, created_at, updated_at
+  UNIQUE(organization_id, facet, normalized_name); INDEX(organization_id, status)
+```
+
+The downgrade deletes `path` assignments, drops the table, the period column, the index and
+the facet column.
+
 ## Growth plan (not implemented)
 
 | Milestone | Tables (indicative)                                                              |

@@ -5,10 +5,17 @@ import { FolderTree, Hand } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 export const SOURCE_LABEL: Record<AssetCategory["assignment_source"], string> = {
-  folder: "from folder",
+  folder: "from folder rule",
+  path: "from path",
   manual: "manual",
   import: "import",
   ai_future: "ai",
+};
+
+export const FACET_LABEL: Record<NonNullable<AssetCategory["facet"]>, string> = {
+  production_owner: "Production owner",
+  product_category: "Product category",
+  content_type: "Content type",
 };
 
 export function CategoryBadge({
@@ -18,12 +25,14 @@ export function CategoryBadge({
   category: AssetCategory;
   className?: string;
 }) {
-  const Icon = category.assignment_source === "folder" ? FolderTree : Hand;
+  const derived = category.assignment_source === "folder" || category.assignment_source === "path";
+  const Icon = derived ? FolderTree : Hand;
+  const facet = category.facet ? ` · ${FACET_LABEL[category.facet]}` : "";
   return (
     <Badge
       variant={category.is_primary ? "default" : "outline"}
       className={cn("gap-1 text-[10px]", className)}
-      title={`${category.path} · ${SOURCE_LABEL[category.assignment_source]}`}
+      title={`${category.path}${facet} · ${SOURCE_LABEL[category.assignment_source]}`}
     >
       <Icon className="size-3" /> {category.name}
     </Badge>

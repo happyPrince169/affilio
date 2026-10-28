@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -10,11 +12,12 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from affilio.core.enums import CategoryStatus
+from affilio.core.enums import CategoryFacet, CategoryStatus
 from affilio.core.errors import NotFoundError
 from affilio.modules.taxonomy.errors import (
     CategoryArchivedError,
     CategoryCycleError,
+    CategoryFacetMismatchError,
     CategoryInUseError,
     DuplicateCategorySlugError,
 )
@@ -28,6 +31,29 @@ from affilio.modules.taxonomy.schemas import (
 )
 
 MAX_DEPTH = 6
+
+# Facet roots: (slug, name, sort_order). Created on demand by `ensure_facet_roots`; their
+# descendants are the facet's values (Production owner / Hang, Product category / Sports, ...).
+FACET_ROOTS: dict[CategoryFacet, tuple[str, str, int]] = {
+    CategoryFacet.PRODUCTION_OWNER: ("production-owner", "Production owner", 10),
+    CategoryFacet.PRODUCT_CATEGORY: ("product-category", "Product category", 20),
+    CategoryFacet.CONTENT_TYPE: ("content-type", "Content type", 30),
+}
+
+_APOSTROPHES = "'\u2019\u2018`\u02bc"
+_NON_WORD = re.compile(r"[^0-9a-z\u00c0-\u024f\u1e00-\u1eff]+")
+
+
+def normalize_name(value: str) -> str:
+    """Matching key for folder names and category names/slugs: NFKC, case-folded, apostrophes
+    dropped, every other non-alphanumeric run collapsed to one space. "Men's Fashion",
+    "mens-fashion" and "MENS_FASHION" all normalize to "mens fashion"; Vietnamese letters
+    are kept so "Minh Anh" and "minh-anh" match while "Hào" and "Hao" do not."""
+    text_value = unicodedata.normalize("NFKC", value or "").casefold()
+    for mark in _APOSTROPHES:
+        text_value = text_value.replace(mark, "")
+    return _NON_WORD.sub(" ", text_value).strip()[:160]
+
 
 # Tables that may reference a category; checked before destructive changes. Registered by the
 # owning modules at import time so taxonomy never imports modules listed after it.
@@ -95,6 +121,32 @@ class CategoryTree:
         cat = self.by_id[category_id]
         return CategoryRef(id=cat.id, slug=cat.slug, name=cat.name, path=self.path(cat.id))
 
+    def facet_root(self, facet: CategoryFacet) -> ContentCategory | None:
+        return next(
+            (c for c in self.by_id.values() if c.parent_id is None and c.facet == facet), None
+        )
+
+    def facet_roots(self) -> dict[CategoryFacet, ContentCategory]:
+        return {f: r for f in CategoryFacet if (r := self.facet_root(f)) is not None}
+
+    def facet_values(self, facet: CategoryFacet) -> list[ContentCategory]:
+        """Active categories under the facet root (any depth), excluding the root itself."""
+        root = self.facet_root(facet)
+        if root is None:
+            return []
+        ids = self.descendants(root.id)
+        return [self.by_id[i] for i in ids if self.by_id[i].status == CategoryStatus.ACTIVE]
+
+    def find_facet_value(self, facet: CategoryFacet, raw_name: str) -> ContentCategory | None:
+        """Active facet value whose name or slug normalizes like `raw_name` (a folder name)."""
+        wanted = normalize_name(raw_name)
+        if not wanted:
+            return None
+        for cat in sorted(self.facet_values(facet), key=lambda c: (self.depth(c.id), c.name)):
+            if normalize_name(cat.name) == wanted or normalize_name(cat.slug) == wanted:
+                return cat
+        return None
+
 
 def load_tree(session: Session, organization_id: uuid.UUID) -> CategoryTree:
     rows = session.scalars(
@@ -150,6 +202,7 @@ def to_response(tree: CategoryTree, category: ContentCategory) -> CategoryRespon
         description=category.description,
         status=category.status,
         sort_order=category.sort_order,
+        facet=category.facet,
         depth=tree.depth(category.id),
         path=tree.path(category.id),
         path_slugs=tree.path_slugs(category.id),
@@ -209,12 +262,19 @@ def create_category(
     session: Session, organization_id: uuid.UUID, data: CategoryCreate
 ) -> ContentCategory:
     parent = get_category(session, organization_id, data.parent_id) if data.parent_id else None
+    facet = data.facet
     if parent is not None:
         if parent.status == CategoryStatus.ARCHIVED:
             raise CategoryArchivedError("Cannot add a child under an archived category")
         tree = load_tree(session, organization_id)
         if tree.depth(parent.id) + 1 > MAX_DEPTH:
             raise CategoryCycleError(f"Category depth is limited to {MAX_DEPTH} levels")
+        if facet is not None and facet != parent.facet:
+            raise CategoryFacetMismatchError(
+                "A child category inherits its parent's facet",
+                details={"parent_facet": parent.facet.value if parent.facet else None},
+            )
+        facet = parent.facet
     slug = data.slug or slugify(data.name) or "category"
     category = ContentCategory(
         id=uuid.uuid4(),
@@ -224,6 +284,7 @@ def create_category(
         name=data.name,
         description=(data.description or "").strip() or None,
         sort_order=data.sort_order,
+        facet=facet,
     )
     session.add(category)
     try:
@@ -231,7 +292,8 @@ def create_category(
             session.flush()
     except IntegrityError as exc:
         raise DuplicateCategorySlugError(
-            "A sibling category with this slug already exists", details={"slug": slug}
+            "A sibling category with this slug (or a root for this facet) already exists",
+            details={"slug": slug, "facet": facet.value if facet else None},
         ) from exc
     return category
 
@@ -241,17 +303,29 @@ def update_category(
 ) -> ContentCategory:
     category = get_category(session, organization_id, category_id)
     changes = data.model_dump(exclude_unset=True)
+    moved_facet: CategoryFacet | object | None = _UNSET
     if "parent_id" in changes:
         new_parent = changes["parent_id"]
+        tree = load_tree(session, organization_id)
         if new_parent is not None:
             parent = get_category(session, organization_id, new_parent)
             if parent.status == CategoryStatus.ARCHIVED:
                 raise CategoryArchivedError("Cannot move under an archived category")
-        _assert_no_cycle(load_tree(session, organization_id), category.id, new_parent)
+            moved_facet = parent.facet
+        elif category.facet is not None and tree.facet_root(category.facet) is not None:
+            # A value moved to the top level would become a second root for its facet.
+            moved_facet = None
+        _assert_no_cycle(tree, category.id, new_parent)
     if changes.get("status") == CategoryStatus.ARCHIVED:
         _assert_archivable(session, organization_id, category)
     for key, value in changes.items():
         setattr(category, key, value)
+    if moved_facet is not _UNSET:
+        # The subtree follows its new parent's facet (or loses it at the top level).
+        tree = load_tree(session, organization_id)
+        category.facet = moved_facet  # type: ignore[assignment]
+        for child_id in tree.descendants(category.id):
+            tree.by_id[child_id].facet = moved_facet  # type: ignore[assignment]
     try:
         with session.begin_nested():
             session.flush()
@@ -260,6 +334,9 @@ def update_category(
             "A sibling category with this slug already exists", details={"slug": category.slug}
         ) from exc
     return category
+
+
+_UNSET = object()
 
 
 def count_references(session: Session, category_id: uuid.UUID) -> dict[str, int]:
@@ -280,6 +357,8 @@ def _assert_archivable(
 ) -> None:
     if category.slug == UNCATEGORIZED_SLUG and category.parent_id is None:
         raise CategoryInUseError("The Uncategorized fallback cannot be archived")
+    if category.facet is not None and category.parent_id is None:
+        raise CategoryInUseError("A facet root cannot be archived; archive its values instead")
     active_children = session.scalar(
         select(func.count()).where(
             ContentCategory.parent_id == category.id,
@@ -330,3 +409,54 @@ def ensure_uncategorized(session: Session, organization_id: uuid.UUID) -> Conten
     session.add(category)
     session.flush()
     return category
+
+
+def facet_roots(
+    session: Session, organization_id: uuid.UUID
+) -> dict[CategoryFacet, ContentCategory]:
+    return load_tree(session, organization_id).facet_roots()
+
+
+def facets_enabled(session: Session, organization_id: uuid.UUID) -> bool:
+    """Path-based facet classification runs only once every facet root exists."""
+    return len(facet_roots(session, organization_id)) == len(CategoryFacet)
+
+
+def ensure_facet_roots(
+    session: Session, organization_id: uuid.UUID
+) -> dict[CategoryFacet, ContentCategory]:
+    """Create the missing facet roots (idempotent). A top-level category that already uses a
+    root's slug is adopted as that root instead of duplicated."""
+    tree = load_tree(session, organization_id)
+    roots = tree.facet_roots()
+    for facet, (slug, name, sort_order) in FACET_ROOTS.items():
+        if facet in roots:
+            continue
+        existing = next(
+            (
+                c
+                for c in tree.by_id.values()
+                if c.parent_id is None and c.slug == slug and c.facet is None
+            ),
+            None,
+        )
+        if existing is not None:
+            existing.facet = facet
+            for child_id in tree.descendants(existing.id):
+                tree.by_id[child_id].facet = facet
+            roots[facet] = existing
+            continue
+        root = ContentCategory(
+            id=uuid.uuid4(),
+            organization_id=organization_id,
+            parent_id=None,
+            slug=slug,
+            name=name,
+            description=f"Facet root: {name.lower()} values derived from the finals path.",
+            sort_order=sort_order,
+            facet=facet,
+        )
+        session.add(root)
+        roots[facet] = root
+    session.flush()
+    return roots

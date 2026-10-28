@@ -11,11 +11,16 @@ import type {
   ScanStatus,
   AssetCategoriesUpdate,
   CategoryCount,
+  CategorySuggestion,
+  CategorySuggestionStatus,
   FolderPreview,
   FolderReportEntry,
   FolderRule,
   FolderRuleCreate,
   FolderRuleUpdate,
+  SuggestionApprove,
+  SuggestionDecision,
+  SuggestionReject,
 } from "@affilio/shared-types";
 import { queryOptions } from "@tanstack/react-query";
 
@@ -167,6 +172,20 @@ export const fetchFolderPreview = (rootId: string, path: string) =>
     `${MEDIA}/folder-rules/preview?${new URLSearchParams({ media_root_id: rootId, relative_folder_path: path })}`,
   );
 export const fetchCategoryCounts = () => apiFetch<CategoryCount[]>(`${MEDIA}/categories/counts`);
+export const fetchCategorySuggestions = (status?: CategorySuggestionStatus) =>
+  apiFetch<CategorySuggestion[]>(
+    `${MEDIA}/category-suggestions${status ? `?${new URLSearchParams({ status })}` : ""}`,
+  );
+export const approveCategorySuggestion = (id: string, body: SuggestionApprove = {}) =>
+  sendMedia<SuggestionDecision>(
+    `${MEDIA}/category-suggestions/${encodeURIComponent(id)}/approve`,
+    body,
+  );
+export const rejectCategorySuggestion = (id: string, body: SuggestionReject = {}) =>
+  sendMedia<CategorySuggestion>(
+    `${MEDIA}/category-suggestions/${encodeURIComponent(id)}/reject`,
+    body,
+  );
 
 export const classificationQueries = {
   all: () => ["media", "classification"] as const,
@@ -193,6 +212,12 @@ export const classificationQueries = {
     queryOptions({
       queryKey: [...classificationQueries.all(), "counts"] as const,
       queryFn: fetchCategoryCounts,
+      staleTime: 5_000,
+    }),
+  suggestions: (status?: CategorySuggestionStatus) =>
+    queryOptions({
+      queryKey: [...classificationQueries.all(), "suggestions", status ?? "all"] as const,
+      queryFn: () => fetchCategorySuggestions(status),
       staleTime: 5_000,
     }),
 };

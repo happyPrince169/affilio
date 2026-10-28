@@ -15,6 +15,7 @@ import { useState, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { useAuth } from "@/components/auth/auth-provider";
+import { FACET_LABEL } from "@/components/taxonomy/category-badges";
 import { CategorySelect } from "@/components/taxonomy/category-select";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +38,7 @@ import { classificationQueries } from "@/lib/api/media";
 import {
   createCategory,
   deleteCategory,
+  ensureFacets,
   ensureUncategorized,
   taxonomyQueries,
   updateCategory,
@@ -191,10 +193,24 @@ export function CategoriesManager() {
     onSuccess: () => void invalidate(),
     onError: (error) => toast.error("Could not create fallback", { description: describe(error) }),
   });
+  const facets = useMutation({
+    mutationFn: ensureFacets,
+    onSuccess: () => {
+      toast.success("Facet roots ready", {
+        description: "Add owners, product categories and content types under them.",
+      });
+      void invalidate();
+    },
+    onError: (error) => toast.error("Could not enable facets", { description: describe(error) }),
+  });
   const admin = can("manage_accounts");
   const hasFallback = (categories.data ?? []).some(
     (c) => c.slug === "uncategorized" && !c.parent_id,
   );
+  const facetRoots = new Set(
+    (categories.data ?? []).filter((c) => c.facet && !c.parent_id).map((c) => c.facet),
+  );
+  const facetsEnabled = facetRoots.size === 3;
 
   return (
     <Card>
@@ -204,6 +220,9 @@ export function CategoriesManager() {
           <CardDescription>
             Hierarchy used to classify final videos and to route them to Pages. Folder rules and
             channel rules reference these categories; referenced categories can only be archived.
+            {facetsEnabled
+              ? " Finals under Owner/ProductCategory/ContentType/ are classified by the values under the three facet roots."
+              : " Enable facets to classify finals from Owner/ProductCategory/ContentType/ folders."}
           </CardDescription>
         </div>
         {admin ? (
@@ -216,6 +235,16 @@ export function CategoriesManager() {
                 disabled={fallback.isPending}
               >
                 Create “Uncategorized”
+              </Button>
+            ) : null}
+            {!facetsEnabled && categories.data ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => facets.mutate()}
+                disabled={facets.isPending}
+              >
+                Enable facets
               </Button>
             ) : null}
             <CategoryDialog
@@ -267,6 +296,11 @@ export function CategoriesManager() {
                     {c.name}
                   </span>{" "}
                   <span className="font-mono text-xs text-muted-foreground">{c.slug}</span>
+                  {c.facet && !c.parent_id ? (
+                    <Badge variant="secondary" className="ml-2 text-[10px]">
+                      facet · {FACET_LABEL[c.facet]}
+                    </Badge>
+                  ) : null}
                   {c.description ? (
                     <span className="block truncate text-xs text-muted-foreground">
                       {c.description}

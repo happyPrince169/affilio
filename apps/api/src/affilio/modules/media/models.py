@@ -33,6 +33,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from affilio.core.enums import (
     CategoryAssignmentSource,
+    CategoryFacet,
+    CategorySuggestionStatus,
     ExportJobStatus,
     ExportTrigger,
     HandoffStatus,
@@ -157,6 +159,9 @@ class MediaAsset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     classification_changed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # "YYYY-MM" (UTC) of the first ingestion. Written once when the asset is created; rescans
+    # and moves never change it (facet classification).
+    production_period: Mapped[str | None] = mapped_column(String(7), nullable=True)
 
     category_assignments: Mapped[list[MediaContentCategory]] = relationship(
         back_populates="asset", cascade="all, delete-orphan"
@@ -496,6 +501,61 @@ class FolderCategoryRule(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     root: Mapped[MediaRoot] = relationship()
     category: Mapped[ContentCategory] = relationship()
+
+
+class CategorySuggestion(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A facet value named by the folders of a valid final that matches no category yet. One
+    row per (organization, facet, normalized name); created by the scanner, decided by an admin
+    (facet classification). Approval links `category_id`; rejection keeps the row so the scanner
+    does not raise it again."""
+
+    __tablename__ = "category_suggestions"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "facet",
+            "normalized_name",
+            name="uq_category_suggestions_org_facet_name",
+        ),
+        Index("ix_category_suggestions_organization_id_status", "organization_id", "status"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    media_root_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("media_roots.id", ondelete="CASCADE"), nullable=False
+    )
+    facet: Mapped[CategoryFacet] = mapped_column(
+        str_enum(CategoryFacet, "category_facet"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)  # folder name as seen
+    normalized_name: Mapped[str] = mapped_column(String(160), nullable=False)
+    relative_folder_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    example_relative_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    status: Mapped[CategorySuggestionStatus] = mapped_column(
+        str_enum(CategorySuggestionStatus, "category_suggestion_status"),
+        nullable=False,
+        default=CategorySuggestionStatus.PENDING,
+        server_default=text("'pending'"),
+    )
+    seen_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )  # finals under the folder in the most recent scan
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("content_categories.id", ondelete="SET NULL"), nullable=True
+    )
+
+    root: Mapped[MediaRoot] = relationship()
+    category: Mapped[ContentCategory | None] = relationship()
+
+    def __repr__(self) -> str:
+        return f"<CategorySuggestion facet={self.facet} name={self.name!r} status={self.status}>"
 
 
 taxonomy_service.register_reference("media_content_categories", "category_id")

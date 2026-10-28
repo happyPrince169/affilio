@@ -42,7 +42,7 @@ from affilio.core.enums import (
     ThumbnailStatus,
 )
 from affilio.core.redaction import Redactor
-from affilio.modules.media import classification
+from affilio.modules.media import classification, facets
 from affilio.modules.media.errors import (
     InvalidMediaPathError,
     ScanAbortedError,
@@ -119,6 +119,7 @@ class ScanStats:
     directories: int = 0
     settling: int = 0  # finals root: files still being uploaded, not indexed yet
     reclassified: int = 0  # finals root: folder-derived category changed (moves, rule edits)
+    suggestions: int = 0  # finals root: new pending category suggestions from unknown folders
 
     def as_dict(self) -> dict[str, int]:
         return asdict(self)
@@ -144,6 +145,8 @@ class _ScanContext:
     pending_commit: int = 0
     folder_rules: list | None = None  # loaded once per scan for FINAL roots (M3A.1)
     reclassified: int = 0
+    facet_context: facets.FacetContext | None = None  # loaded once per scan for FINAL roots
+    suggestions: facets.SuggestionCollector = field(default_factory=facets.SuggestionCollector)
     job: MediaScanJob | None = None
     fence: JobFence | None = None
     last_heartbeat_monotonic: float = 0.0
@@ -219,6 +222,7 @@ class MediaScanner:
             ctx.folder_rules = classification.rules_for_root(
                 self.session, ctx.organization_id, root.id
             )
+            ctx.facet_context = facets.FacetContext.load(self.session, ctx.organization_id)
         existing = self._load_existing(ctx)
         seen: set[str] = set()
         new_entries: list[_Entry] = []
@@ -243,6 +247,15 @@ class MediaScanner:
         self._detect_duplicates(ctx)
         self._link_proxies(ctx)
         self._queue_thumbnails(ctx)
+        if ctx.facet_context is not None and ctx.facet_context.enabled:
+            ctx.stats.suggestions = facets.record_suggestions(
+                self.session,
+                ctx.organization_id,
+                root,
+                ctx.suggestions,
+                tree=ctx.facet_context.tree,
+                now=ctx.now,
+            )
 
         ctx.stats.reclassified = ctx.reclassified
         root.last_scan_at = ctx.now
@@ -418,6 +431,8 @@ class MediaScanner:
             handoff_status=HandoffStatus.PENDING_REVIEW if ctx.is_final_root else None,
             first_seen_at=ctx.now,
             last_seen_at=ctx.now,
+            # Derived from the first ingestion time only; never rewritten by later scans.
+            production_period=facets.production_period_for(ctx.now),
         )
         variant = MediaFileVariant(
             asset=asset,
@@ -658,10 +673,18 @@ class MediaScanner:
         return None
 
     def _classify(self, ctx: _ScanContext, asset: MediaAsset, relative_path: str) -> None:
-        """Folder-derived category for FINAL roots. Never touches the file or manual rows."""
+        """Folder-derived category and path facets for FINAL roots. Never touches the file or
+        manual rows; unknown facet values of valid finals are collected as suggestions."""
         if not ctx.is_final_root:
             return
         try:
+            facet_assignments = None
+            if ctx.facet_context is not None and ctx.facet_context.enabled:
+                path_result = ctx.facet_context.classify(relative_path)
+                facet_assignments = path_result.assignments
+                if path_result.unknown and facets.suggestion_is_valid_source(asset):
+                    for unknown in path_result.unknown:
+                        ctx.suggestions.add(unknown, relative_path)
             changed = classification.apply_folder_classification(
                 self.session,
                 asset,
@@ -669,6 +692,7 @@ class MediaScanner:
                 relative_path=relative_path,
                 rules=ctx.folder_rules or [],
                 now=ctx.now,
+                facet_assignments=facet_assignments,
             )
         except Exception as exc:
             self._record_error(ctx, "classification_error", relative_path, str(exc))

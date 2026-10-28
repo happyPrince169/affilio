@@ -146,6 +146,7 @@ inside `publishing` and perform no network I/O in M3A.
 taxonomy/    models (content_categories), schemas, errors, service (tree snapshot, cycle and slug
              guards, reference registry for safe archiving), router (/content-categories)
 accounts/    += channel_profiles, channel_category_rules, PUT /accounts/{id}/channel-profile
+media/       += category_suggestions, facets.py (structured-path facets, suggestions, ADR 0011)
 media/       += media_content_categories, folder_category_rules, classification.py (path
              normalization, rule resolution, idempotent assignment), scanner hooks, filters
 routing/     engine.py (pure scoring, inheritance, BLOCK precedence), service, router

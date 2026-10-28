@@ -10,7 +10,12 @@ from fastapi import APIRouter, Query, Response, status
 from affilio.api.deps import CurrentIdentity, DbSession, RequireAdmin
 from affilio.core.audit import record_audit
 from affilio.modules.taxonomy import service
-from affilio.modules.taxonomy.schemas import CategoryCreate, CategoryResponse, CategoryUpdate
+from affilio.modules.taxonomy.schemas import (
+    CategoryCreate,
+    CategoryResponse,
+    CategoryUpdate,
+    FacetRootsResponse,
+)
 
 router = APIRouter(prefix="/content-categories", tags=["taxonomy"])
 
@@ -62,6 +67,31 @@ def ensure_uncategorized(identity: RequireAdmin, session: DbSession) -> Category
     category = service.ensure_uncategorized(session, identity.organization.id)
     session.commit()
     return service.to_response(service.load_tree(session, identity.organization.id), category)
+
+
+@router.post(
+    "/ensure-facets",
+    response_model=FacetRootsResponse,
+    summary="Create the missing facet roots (admin)",
+)
+def ensure_facets(identity: RequireAdmin, session: DbSession) -> FacetRootsResponse:
+    before = set(service.facet_roots(session, identity.organization.id))
+    roots = service.ensure_facet_roots(session, identity.organization.id)
+    created = [f.value for f in roots if f not in before]
+    if created:
+        record_audit(
+            session,
+            organization_id=identity.organization.id,
+            identity=identity,
+            action="category.facets_enabled",
+            entity_type="content_category",
+            data={"created": created},
+        )
+    session.commit()
+    tree = service.load_tree(session, identity.organization.id)
+    return FacetRootsResponse(
+        roots=[service.to_response(tree, roots[f]) for f in sorted(roots, key=lambda f: f.value)]
+    )
 
 
 @router.get("/{category_id}", response_model=CategoryResponse, summary="Category detail")

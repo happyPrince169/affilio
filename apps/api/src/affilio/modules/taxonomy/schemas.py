@@ -8,7 +8,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from affilio.core.enums import CategoryStatus
+from affilio.core.enums import CategoryFacet, CategoryStatus
 
 _SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -53,6 +53,9 @@ class CategoryCreate(_CategoryRules):
     parent_id: uuid.UUID | None = None
     description: str | None = Field(default=None, max_length=2_000)
     sort_order: int = Field(default=0, ge=0, le=10_000)
+    # Only meaningful for a top-level category (it becomes the facet root); children inherit
+    # their parent's facet and may not state a different one.
+    facet: CategoryFacet | None = None
 
 
 class CategoryUpdate(_CategoryRules):
@@ -72,6 +75,7 @@ class CategoryResponse(CategoryModel):
     description: str | None
     status: CategoryStatus
     sort_order: int
+    facet: CategoryFacet | None = None
     depth: int
     path: str  # "Men's Sports / Pickleball"
     path_slugs: list[str]
@@ -85,3 +89,7 @@ class CategoryRef(CategoryModel):
     slug: str
     name: str
     path: str
+
+
+class FacetRootsResponse(CategoryModel):
+    roots: list[CategoryResponse]

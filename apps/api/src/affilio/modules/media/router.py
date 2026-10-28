@@ -24,19 +24,21 @@ from affilio.api.deps import (
 )
 from affilio.core.audit import record_audit
 from affilio.core.enums import (
+    CategorySuggestionStatus,
     ExportTrigger,
     HandoffStatus,
     MediaAssetKind,
     MediaAssetStatus,
     ScanTrigger,
 )
-from affilio.modules.media import classification, service
+from affilio.modules.media import classification, facets, service
 from affilio.modules.media import exports as exports_module
-from affilio.modules.media.models import FolderCategoryRule
+from affilio.modules.media.models import CategorySuggestion, FolderCategoryRule
 from affilio.modules.media.schemas import (
     AssetCategoriesUpdate,
     AssetExportStatus,
     CategoryCountEntry,
+    CategorySuggestionResponse,
     CreateScanRequest,
     ExportJobResponse,
     FolderPreviewResponse,
@@ -53,6 +55,9 @@ from affilio.modules.media.schemas import (
     ScanJobResponse,
     ScanStatusResponse,
     SortKey,
+    SuggestionApprove,
+    SuggestionDecisionResponse,
+    SuggestionReject,
 )
 from affilio.modules.media.service import AssetFilters, HandoffNotApplicableError
 from affilio.modules.taxonomy import service as taxonomy_service
@@ -93,6 +98,7 @@ def list_assets(
     duplicates_only: bool = False,
     category_id: uuid.UUID | None = None,
     uncategorized: bool = False,
+    production_period: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}$")] = None,
     sort: SortKey = "newest",
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=service.MAX_PAGE_SIZE)] = 24,
@@ -108,6 +114,7 @@ def list_assets(
         duplicates_only=duplicates_only,
         category_id=category_id,
         uncategorized=uncategorized,
+        production_period=production_period,
         sort=sort,
         page=page,
         page_size=page_size,
@@ -562,3 +569,114 @@ def delete_folder_rule(
     session.commit()
     response.status_code = status.HTTP_204_NO_CONTENT
     return response
+
+
+# ---------------------------------------------------------------- facet suggestions
+
+
+def _suggestion_response(row: CategorySuggestion) -> CategorySuggestionResponse:
+    return CategorySuggestionResponse(
+        id=row.id,
+        facet=row.facet,
+        name=row.name,
+        normalized_name=row.normalized_name,
+        root_key=row.root.key,
+        relative_folder_path=row.relative_folder_path,
+        example_relative_path=row.example_relative_path,
+        status=row.status,
+        seen_count=row.seen_count,
+        first_seen_at=row.first_seen_at,
+        last_seen_at=row.last_seen_at,
+        decided_at=row.decided_at,
+        decided_by=row.decided_by,
+        note=row.note,
+        category_id=row.category_id,
+        category_name=row.category.name if row.category is not None else None,
+    )
+
+
+@router.get(
+    "/category-suggestions",
+    response_model=list[CategorySuggestionResponse],
+    summary="Facet values seen in finals folders that match no category yet",
+)
+def list_category_suggestions(
+    session: DbSession,
+    identity: CurrentIdentity,
+    status_filter: Annotated[CategorySuggestionStatus | None, Query(alias="status")] = None,
+) -> list[CategorySuggestionResponse]:
+    rows = facets.list_suggestions(session, identity.organization.id, status=status_filter)
+    return [_suggestion_response(r) for r in rows]
+
+
+@router.post(
+    "/category-suggestions/{suggestion_id}/approve",
+    response_model=SuggestionDecisionResponse,
+    summary="Create the category for a suggestion and classify matching finals (admin)",
+)
+def approve_category_suggestion(
+    suggestion_id: uuid.UUID,
+    body: SuggestionApprove,
+    session: DbSession,
+    identity: RequireAdmin,
+) -> SuggestionDecisionResponse:
+    decision = facets.approve_suggestion(
+        session,
+        identity.organization.id,
+        suggestion_id,
+        name=body.name,
+        slug=body.slug,
+        decided_by=identity.label,
+    )
+    record_audit(
+        session,
+        organization_id=identity.organization.id,
+        identity=identity,
+        action="category_suggestion.approved",
+        entity_type="category_suggestion",
+        entity_id=suggestion_id,
+        data={
+            "facet": decision.suggestion.facet.value,
+            "name": decision.suggestion.name,
+            "category_id": str(decision.category.id) if decision.category else None,
+            "reclassified_assets": decision.reclassified_assets,
+        },
+    )
+    session.commit()
+    row = facets.get_suggestion(session, identity.organization.id, suggestion_id)
+    return SuggestionDecisionResponse(
+        suggestion=_suggestion_response(row),
+        category_id=row.category_id,
+        reclassified_assets=decision.reclassified_assets,
+    )
+
+
+@router.post(
+    "/category-suggestions/{suggestion_id}/reject",
+    response_model=CategorySuggestionResponse,
+    summary="Reject a suggestion so the scanner stops raising it (admin)",
+)
+def reject_category_suggestion(
+    suggestion_id: uuid.UUID,
+    body: SuggestionReject,
+    session: DbSession,
+    identity: RequireAdmin,
+) -> CategorySuggestionResponse:
+    row = facets.reject_suggestion(
+        session,
+        identity.organization.id,
+        suggestion_id,
+        note=body.note,
+        decided_by=identity.label,
+    )
+    record_audit(
+        session,
+        organization_id=identity.organization.id,
+        identity=identity,
+        action="category_suggestion.rejected",
+        entity_type="category_suggestion",
+        entity_id=suggestion_id,
+        data={"facet": row.facet.value, "name": row.name, "note": row.note},
+    )
+    session.commit()
+    return _suggestion_response(facets.get_suggestion(session, identity.organization.id, row.id))

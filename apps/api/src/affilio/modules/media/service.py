@@ -71,6 +71,7 @@ class AssetFilters:
     duplicates_only: bool = False
     category_id: uuid.UUID | None = None  # includes descendants
     uncategorized: bool = False  # no assignment at all, or only the Uncategorized fallback
+    production_period: str | None = None  # exact "YYYY-MM"
     sort: SortKey = "newest"
     page: int = 1
     page_size: int = 24
@@ -383,6 +384,8 @@ def _apply_filters(
         stmt = stmt.where(
             MediaAsset.id.in_(classification.asset_ids_in_categories(session, organization_id, ids))
         )
+    if filters.production_period:
+        stmt = stmt.where(MediaAsset.production_period == filters.production_period)
     if filters.uncategorized:
         fallback = taxonomy_service.ensure_uncategorized(session, organization_id)
         real = (
@@ -510,6 +513,7 @@ def _asset_categories(asset: MediaAsset) -> list[AssetCategoryResponse]:
                 path=" / ".join(reversed(chain)),
                 is_primary=a.is_primary,
                 assignment_source=a.assignment_source,
+                facet=a.category.facet,
             )
         )
     return out
@@ -526,6 +530,7 @@ def _summary_fields(asset: MediaAsset, *, thumbnail_url_prefix: str) -> dict:
         ),
         "categories": _asset_categories(asset),
         "classification_changed_at": asset.classification_changed_at,
+        "production_period": asset.production_period,
         "status": asset.status,
         "asset_kind": asset.asset_kind,
         "handoff_status": asset.handoff_status,

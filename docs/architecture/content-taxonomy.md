@@ -103,3 +103,49 @@ Publications compare `classification_changed_at` with their approved snapshot's
 
 Media summaries now carry `folder_path`, `categories[]` (with `is_primary` and
 `assignment_source`) and `classification_changed_at`.
+
+## Facets: `{Owner}/{ProductCategory}/{ContentType}/` (ADR 0011)
+
+Three logical dimensions share the category tree. `content_categories.facet`
+(`production_owner` | `product_category` | `content_type`, nullable) marks one **facet root**
+per organization and facet (`POST /content-categories/ensure-facets`, admin); values are its
+descendants and inherit the facet on create and on move. A root cannot be archived.
+
+`media/facets.py` parses a final's folders relative to the finals root:
+
+| Path | Kind | Derived |
+| --- | --- | --- |
+| `Hang/Mens-Fashion/Review/a.mp4` (deeper folders ignored) | structured | owner, product category, content type |
+| `Hang/T9/a.mp4`, `Hang/2026-09/a.mp4` | legacy (period token) | owner only |
+| `Hang/a.mp4`, `Hang/Mens-Fashion/a.mp4` | incomplete | owner only |
+| `a.mp4`, `.hidden/...` | not classified | nothing |
+
+Segments resolve to active facet values by normalized name or slug
+(`taxonomy.service.normalize_name`: NFKC, case-fold, apostrophes dropped, other
+non-alphanumerics collapsed to one space). Resolved values are written as assignments with
+`assignment_source = path`, one per facet. Derived primacy is folder rule → path product
+category → Uncategorized fallback (written only when neither applies); a manual primary wins.
+`PUT /media/assets/{id}/categories` keeps path rows like folder rows. Facets are inactive for an
+organization until all three roots exist, so untouched organizations behave exactly as before.
+
+**Suggestions.** A structured path naming an unknown value, under a final that probed as a
+supported video, is collected once per scan and upserted into `category_suggestions`
+(`UNIQUE(organization_id, facet, normalized_name)`, `status` pending | approved | rejected,
+`seen_count` = finals under the folder in the latest scan, example path). Empty folders,
+unsupported files, legacy and incomplete paths never suggest. `GET /media/category-suggestions`
+lists them; `POST …/{id}/approve` (admin) creates the category under the facet root or adopts an
+existing match, refuses a name or slug that would stop matching the folder
+(`suggestion_name_mismatch`, 422), and re-runs the path classification on the finals already
+indexed under that value from database rows alone (`reclassify_facet_value`); asset ids, files
+and handoff decisions are untouched. `POST …/{id}/reject` keeps the row so the scanner stops
+raising it. An approved suggestion whose category is archived reopens on the next scan.
+
+**Production period.** `media_assets.production_period` ("YYYY-MM", UTC) is derived from
+`first_seen_at` when the asset is created and never rewritten by rescans or moves; legacy
+period folders are not parsed into it. Summaries expose it and `GET /media/assets` filters on
+`production_period=YYYY-MM`.
+
+**Folder bootstrap.** `python -m affilio.scripts.media_folder_bootstrap --root <FINAL>` prints
+the planned `{Owner}/{ProductCategory}/{ContentType}` tree (dry run); `--apply` creates only the
+missing directories and refuses to run when a file occupies a planned path. It is standard
+library only so it can run on the NAS outside the containers; AFFILIO's mounts stay read-only.

@@ -23,3 +23,8 @@ class CategoryInUseError(AppError):
 class CategoryArchivedError(AppError):
     status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
     code = "category_archived"
+
+
+class CategoryFacetMismatchError(AppError):
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "category_facet_mismatch"

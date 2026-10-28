@@ -128,8 +128,21 @@ export type EvidenceKind = "operator_reported" | "api_verified";
 export const CATEGORY_STATUSES = ["active", "archived"] as const;
 export type CategoryStatus = (typeof CATEGORY_STATUSES)[number];
 
-export const CATEGORY_ASSIGNMENT_SOURCES = ["folder", "manual", "import", "ai_future"] as const;
+export const CATEGORY_ASSIGNMENT_SOURCES = [
+  "folder",
+  "manual",
+  "import",
+  "ai_future",
+  "path",
+] as const;
 export type CategoryAssignmentSource = (typeof CATEGORY_ASSIGNMENT_SOURCES)[number];
+
+/** Logical dimension of a category (facet classification). */
+export const CATEGORY_FACETS = ["production_owner", "product_category", "content_type"] as const;
+export type CategoryFacet = (typeof CATEGORY_FACETS)[number];
+
+export const CATEGORY_SUGGESTION_STATUSES = ["pending", "approved", "rejected"] as const;
+export type CategorySuggestionStatus = (typeof CATEGORY_SUGGESTION_STATUSES)[number];
 
 export const CHANNEL_MATCH_POLICIES = ["allow", "prefer", "block"] as const;
 export type ChannelMatchPolicy = (typeof CHANNEL_MATCH_POLICIES)[number];

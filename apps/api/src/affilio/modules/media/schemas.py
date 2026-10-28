@@ -10,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from affilio.core.enums import (
     CategoryAssignmentSource,
+    CategoryFacet,
+    CategorySuggestionStatus,
     ExportJobStatus,
     ExportTrigger,
     HandoffStatus,
@@ -84,6 +86,7 @@ class AssetCategoryResponse(MediaModel):
     path: str
     is_primary: bool
     assignment_source: CategoryAssignmentSource
+    facet: CategoryFacet | None = None
 
 
 class MediaAssetSummary(MediaModel):
@@ -92,6 +95,7 @@ class MediaAssetSummary(MediaModel):
     folder_path: str | None = None
     categories: list[AssetCategoryResponse] = Field(default_factory=list)
     classification_changed_at: datetime | None = None
+    production_period: str | None = None  # "YYYY-MM" from the first ingestion (finals)
     status: MediaAssetStatus
     asset_kind: MediaAssetKind = MediaAssetKind.FOOTAGE
     handoff_status: HandoffStatus | None = None
@@ -323,3 +327,47 @@ class FolderReportEntry(MediaModel):
 class CategoryCountEntry(MediaModel):
     category_id: uuid.UUID
     primary_count: int
+
+
+# ---------------------------------------------------------------- facet suggestions
+
+
+class CategorySuggestionResponse(MediaModel):
+    id: uuid.UUID
+    facet: CategoryFacet
+    name: str
+    normalized_name: str
+    root_key: str
+    relative_folder_path: str
+    example_relative_path: str | None
+    status: CategorySuggestionStatus
+    seen_count: int
+    first_seen_at: datetime
+    last_seen_at: datetime
+    decided_at: datetime | None
+    decided_by: str | None
+    note: str | None
+    category_id: uuid.UUID | None
+    category_name: str | None
+
+
+class SuggestionApprove(BaseModel):
+    """Optional display name / slug for the new category. Either must still normalize to the
+    folder name so later videos in that folder keep resolving to it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=120)
+    slug: str | None = Field(default=None, max_length=80)
+
+
+class SuggestionReject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str | None = Field(default=None, max_length=2_000)
+
+
+class SuggestionDecisionResponse(MediaModel):
+    suggestion: CategorySuggestionResponse
+    category_id: uuid.UUID | None
+    reclassified_assets: int
