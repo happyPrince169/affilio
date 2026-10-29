@@ -93,3 +93,85 @@ class OwnerMappingConflictError(AppError):
 
     status_code = status.HTTP_409_CONFLICT
     code = "owner_mapping_conflict"
+
+
+# ---------------------------------------------------------------- editor uploads (U4)
+
+
+class UploadForbiddenError(AppError):
+    """The caller may not submit for that owner / editor, or act on that session."""
+
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "upload_forbidden"
+
+
+class UploadInvalidTaxonomyError(AppError):
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "upload_invalid_taxonomy"
+
+
+class UploadInvalidRevisionError(AppError):
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "upload_invalid_revision"
+
+
+class UploadInvalidFileError(AppError):
+    """Filename, extension or size refused at session creation."""
+
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "upload_invalid_file"
+
+
+class UploadQuotaExceededError(AppError):
+    status_code = status.HTTP_409_CONFLICT
+    code = "upload_quota_exceeded"
+
+
+class UploadStateError(AppError):
+    """The operation is not valid in the session's current state."""
+
+    status_code = status.HTTP_409_CONFLICT
+    code = "upload_invalid_state"
+
+
+class UploadGoneError(AppError):
+    """Expired or aborted session."""
+
+    status_code = status.HTTP_410_GONE
+    code = "upload_gone"
+
+
+class UploadOffsetMismatchError(AppError):
+    """`Upload-Offset` differs from the committed offset; details carry the server value."""
+
+    status_code = status.HTTP_409_CONFLICT
+    code = "upload_offset_mismatch"
+
+
+class UploadLockedError(AppError):
+    """Another chunk for this session is being written."""
+
+    status_code = status.HTTP_423_LOCKED
+    code = "upload_locked"
+
+
+class UploadChunkTooLargeError(AppError):
+    status_code = status.HTTP_413_CONTENT_TOO_LARGE
+    code = "upload_chunk_too_large"
+
+
+class UploadChunkDigestMismatchError(AppError):
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "upload_chunk_digest_mismatch"
+
+
+class UploadIncompleteError(AppError):
+    status_code = status.HTTP_409_CONFLICT
+    code = "upload_incomplete"
+
+
+class UploadStorageUnavailableError(AppError):
+    """The staging directory is not configured or not writable."""
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    code = "upload_storage_unavailable"

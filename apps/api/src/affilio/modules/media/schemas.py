@@ -26,6 +26,7 @@ from affilio.core.enums import (
     ScanJobStatus,
     ScanTrigger,
     ThumbnailStatus,
+    UploadStatus,
 )
 
 Orientation = Literal["vertical", "horizontal", "square"]
@@ -410,3 +411,103 @@ class OwnerMappingResponse(BaseModel):
     revoked_at: datetime | None
     created_by_user_id: uuid.UUID | None
     revoked_by_user_id: uuid.UUID | None
+
+
+# ---------------------------------------------------------------- editor uploads (upload track U4)
+
+
+class UploadCreate(BaseModel):
+    """One resumable session per file. The server never uses `filename` as a path."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str = Field(min_length=1, max_length=255)
+    size: int = Field(gt=0)
+    production_owner_category_id: uuid.UUID
+    product_category_id: uuid.UUID
+    content_type_id: uuid.UUID
+    batch_id: uuid.UUID | None = None
+    replaces_asset_id: uuid.UUID | None = None
+    client_sha256: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
+    # Admin only: the editor the work is attributed to. The authenticated uploader is always
+    # recorded separately.
+    submitted_for_user_id: uuid.UUID | None = None
+
+    @field_validator("client_sha256")
+    @classmethod
+    def _lower(cls, value: str | None) -> str | None:
+        return value.lower() if value else None
+
+
+class UploadTaxonomyRef(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    slug: str
+    name: str
+
+
+class UploadReview(BaseModel):
+    """Handoff state of the registered asset, for the uploader's own list."""
+
+    handoff_status: HandoffStatus
+    handoff_note: str | None
+    handoff_reviewed_at: datetime | None
+    handoff_reviewed_by: str | None
+
+
+class UploadResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    status: UploadStatus
+    original_filename: str
+    expected_size: int
+    chunk_bytes: int
+    committed_offset: int
+    production_owner: UploadTaxonomyRef
+    production_owner_name: str
+    product_category: UploadTaxonomyRef
+    content_type: UploadTaxonomyRef
+    batch_id: uuid.UUID | None
+    replaces_asset_id: uuid.UUID | None
+    uploaded_by_user_id: uuid.UUID
+    submitted_for_user_id: uuid.UUID | None
+    media_asset_id: uuid.UUID | None
+    # Set only for `duplicate`; never carries the other asset's filename, path or owner.
+    duplicate_of_asset_id: uuid.UUID | None
+    failure_code: str | None
+    failure_detail: str | None
+    finalize_attempts: int
+    review: UploadReview | None
+    created_at: datetime
+    updated_at: datetime
+    uploaded_at: datetime | None
+    completed_at: datetime | None
+    expires_at: datetime
+
+
+class UploadChunkResponse(BaseModel):
+    id: uuid.UUID
+    status: UploadStatus
+    committed_offset: int
+    expected_size: int
+    replayed: bool
+
+
+class UploadLimitsResponse(BaseModel):
+    chunk_bytes: int
+    max_file_bytes: int
+    max_active_sessions_per_user: int
+    session_ttl_hours: int
+    default_concurrency: int = 2
+
+
+class UploadOptionsResponse(BaseModel):
+    facets_enabled: bool
+    can_submit_for_others: bool
+    owners: list[UploadTaxonomyRef]
+    product_categories: list[UploadTaxonomyRef]
+    content_types: list[UploadTaxonomyRef]
+    allowed_extensions: list[str]
+    limits: UploadLimitsResponse

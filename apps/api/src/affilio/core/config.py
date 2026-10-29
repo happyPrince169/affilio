@@ -119,6 +119,20 @@ class Settings(BaseSettings):
     media_scan_stale_after_seconds: int = 600
     # Final handoff: a file is indexed only once its mtime is older than this (upload settled).
     media_final_settle_seconds: int = 120
+    # --- editor uploads (upload track U4, ADR 0012) ---
+    # Hidden staging directory `FINAL/.affilio-incoming` as the API sees it (its own writable
+    # bind). The worker reaches the same directory through the finals root, which it may write
+    # only when MEDIA_FINALS_WRITABLE is true; every other process keeps finals read-only.
+    media_incoming_path: Path | None = None
+    media_finals_writable: bool = False
+    upload_chunk_bytes: int = 8 * 1024 * 1024
+    upload_max_file_bytes: int = 8 * 1024 * 1024 * 1024
+    upload_max_active_sessions_per_user: int = 20
+    upload_session_ttl_hours: int = 48
+    upload_staging_max_bytes: int = 100 * 1024 * 1024 * 1024
+    upload_free_space_headroom_bytes: int = 1024 * 1024 * 1024
+    upload_finalize_max_attempts: int = 3
+    upload_finalize_lease_seconds: int = 600
     media_temp_name_markers: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [".part", ".tmp", ".crdownload", ".partial", "~$", ".uploading"]
     )

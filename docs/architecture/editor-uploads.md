@@ -83,6 +83,31 @@ upload_chunk_too_large`, `422 upload_chunk_digest_mismatch`, `409 upload_incompl
 Authorization is evaluated on every endpoint: organization from the session, then
 `uploaded_by_user_id == identity.user.id` or admin.
 
+### 2.2a Implemented contract (U4)
+
+Routes live in `media/router.py` under `/api/v1/media/uploads`; request and response models
+in `media/schemas.py` (`UploadCreate`, `UploadResponse`, `UploadChunkResponse`,
+`UploadOptionsResponse`), mirrored in `packages/shared-types/src/media.ts`.
+
+| Call                                | Success                                                     | Errors (`error.code`)                                                                                                                                                                                                            |
+| ----------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /uploads/options`              | 200 owners, categories, extensions, limits                  | 403 role below editor                                                                                                                                                                                                            |
+| `POST /uploads`                     | 201 `UploadResponse` (`status: created`, `chunk_bytes`)     | 403 `upload_forbidden`, 404 unknown category/asset/member, 409 `upload_quota_exceeded`, 422 `upload_invalid_taxonomy` / `upload_invalid_file` / `upload_invalid_revision` / `validation_error`, 503 `upload_storage_unavailable` |
+| `GET /uploads`, `GET /uploads/{id}` | 200                                                         | 403 another user's session, 404 other organization                                                                                                                                                                               |
+| `PATCH /uploads/{id}/chunk`         | 200 `UploadChunkResponse` (`committed_offset`, `replayed`)  | 409 `upload_offset_mismatch` (details.committed_offset) / `upload_invalid_state`, 410 `upload_gone`, 413 `upload_chunk_too_large`, 422 `upload_chunk_digest_mismatch`, 423 `upload_locked`                                       |
+| `POST /uploads/{id}/complete`       | 202 `UploadResponse` (`status: uploaded`, idempotent after) | 409 `upload_incomplete`, 410 `upload_gone`                                                                                                                                                                                       |
+| `DELETE /uploads/{id}`              | 204 (idempotent)                                            | 409 `upload_invalid_state` while the worker holds the session                                                                                                                                                                    |
+
+Chunk headers: `Upload-Offset` (must equal `committed_offset`), `Content-Length` (1 … `chunk_bytes`),
+`X-Upload-Chunk-Sha256` (hex). A retry of the last committed chunk (same offset and digest)
+answers 200 with `replayed: true` and no write. `UploadResponse.review` carries the handoff
+state of the registered asset. Audit actions: `upload.created`, `upload.uploaded`,
+`upload.aborted` (user), `upload.completed`, `upload.duplicate`, `upload.failed`,
+`upload.expired` (system). Settings: `MEDIA_INCOMING_PATH`, `MEDIA_FINALS_WRITABLE`,
+`UPLOAD_CHUNK_BYTES`, `UPLOAD_MAX_FILE_BYTES`, `UPLOAD_MAX_ACTIVE_SESSIONS_PER_USER`,
+`UPLOAD_SESSION_TTL_HOURS`, `UPLOAD_STAGING_MAX_BYTES`, `UPLOAD_FREE_SPACE_HEADROOM_BYTES`,
+`UPLOAD_FINALIZE_MAX_ATTEMPTS`, `UPLOAD_FINALIZE_LEASE_SECONDS`.
+
 ### 2.3 Streaming and memory
 
 - The chunk endpoint is the one `async def` route in the API: it reads `request.stream()` in

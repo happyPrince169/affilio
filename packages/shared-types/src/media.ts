@@ -4,6 +4,7 @@ import type {
   CategoryStatus,
   CategorySuggestionStatus,
   OwnerMappingStatus,
+  UploadStatus,
 } from "./domain";
 
 /**
@@ -405,4 +406,90 @@ export interface OwnerMapping {
   revoked_at: string | null;
   created_by_user_id: string | null;
   revoked_by_user_id: string | null;
+}
+
+// ---------------------------------------------------------------- editor uploads (upload track U4)
+// Contract: docs/architecture/editor-uploads.md section 2. Mirrors media/schemas.py.
+
+export interface UploadCreate {
+  filename: string;
+  size: number;
+  production_owner_category_id: string;
+  product_category_id: string;
+  content_type_id: string;
+  batch_id?: string | null;
+  replaces_asset_id?: string | null;
+  client_sha256?: string | null;
+  /** Admin only: the editor the work is attributed to. */
+  submitted_for_user_id?: string | null;
+}
+
+export interface UploadTaxonomyRef {
+  id: string;
+  slug: string;
+  name: string;
+}
+
+export interface UploadReview {
+  handoff_status: HandoffStatus;
+  handoff_note: string | null;
+  handoff_reviewed_at: string | null;
+  handoff_reviewed_by: string | null;
+}
+
+export interface UploadSession {
+  id: string;
+  status: UploadStatus;
+  original_filename: string;
+  expected_size: number;
+  chunk_bytes: number;
+  /** Server-authoritative: resume from here after any interruption. */
+  committed_offset: number;
+  production_owner: UploadTaxonomyRef;
+  production_owner_name: string;
+  product_category: UploadTaxonomyRef;
+  content_type: UploadTaxonomyRef;
+  batch_id: string | null;
+  replaces_asset_id: string | null;
+  uploaded_by_user_id: string;
+  submitted_for_user_id: string | null;
+  media_asset_id: string | null;
+  /** Only for `duplicate`; never carries the other asset's filename, path or owner. */
+  duplicate_of_asset_id: string | null;
+  failure_code: string | null;
+  failure_detail: string | null;
+  finalize_attempts: number;
+  review: UploadReview | null;
+  created_at: string;
+  updated_at: string;
+  uploaded_at: string | null;
+  completed_at: string | null;
+  expires_at: string;
+}
+
+/** PATCH /media/uploads/{id}/chunk with headers Upload-Offset, Content-Length, X-Upload-Chunk-Sha256. */
+export interface UploadChunkResponse {
+  id: string;
+  status: UploadStatus;
+  committed_offset: number;
+  expected_size: number;
+  replayed: boolean;
+}
+
+export interface UploadLimits {
+  chunk_bytes: number;
+  max_file_bytes: number;
+  max_active_sessions_per_user: number;
+  session_ttl_hours: number;
+  default_concurrency: number;
+}
+
+export interface UploadOptions {
+  facets_enabled: boolean;
+  can_submit_for_others: boolean;
+  owners: UploadTaxonomyRef[];
+  product_categories: UploadTaxonomyRef[];
+  content_types: UploadTaxonomyRef[];
+  allowed_extensions: string[];
+  limits: UploadLimits;
 }

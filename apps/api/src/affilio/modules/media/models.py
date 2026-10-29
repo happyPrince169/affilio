@@ -38,6 +38,7 @@ from affilio.core.enums import (
     ExportJobStatus,
     ExportTrigger,
     HandoffStatus,
+    IngestSource,
     MediaAssetKind,
     MediaAssetStatus,
     MediaRootAccess,
@@ -48,6 +49,7 @@ from affilio.core.enums import (
     ScanJobStatus,
     ScanTrigger,
     ThumbnailStatus,
+    UploadStatus,
 )
 from affilio.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from affilio.db.types import str_enum
@@ -168,10 +170,27 @@ class MediaAsset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     category_assignments: Mapped[list[MediaContentCategory]] = relationship(
         back_populates="asset", cascade="all, delete-orphan"
     )
+    # How the asset entered the library and, for uploads, who delivered it (upload track U4).
+    # Written once at registration; there is no update path (attribution history).
+    ingest_source: Mapped[IngestSource] = mapped_column(
+        str_enum(IngestSource, "ingest_source"),
+        nullable=False,
+        default=IngestSource.SCAN,
+        server_default=text("'scan'"),
+    )
+    uploaded_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    # A corrected submission points at the rejected final it replaces; the original stays.
+    revision_of_asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("media_assets.id", ondelete="SET NULL"), nullable=True
+    )
     variants: Mapped[list[MediaFileVariant]] = relationship(
         back_populates="asset", cascade="all, delete-orphan", order_by="MediaFileVariant.kind"
     )
-    duplicate_of: Mapped[MediaAsset | None] = relationship(remote_side="MediaAsset.id")
+    duplicate_of: Mapped[MediaAsset | None] = relationship(
+        remote_side="MediaAsset.id", foreign_keys="MediaAsset.duplicate_of_id"
+    )
 
     @property
     def orientation(self) -> str | None:
@@ -606,6 +625,121 @@ class MediaOwnerMapping(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         return f"<MediaOwnerMapping user={self.user_id} owner={self.production_owner_category_id}>"
 
 
+class MediaUpload(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One resumable upload session per file (upload track U4, ADR 0012). Attribution
+    (uploader, attributed editor, owner id and name snapshot, taxonomy ids) is written at
+    creation and never updated; the state machine and recovery metadata live here."""
+
+    __tablename__ = "media_uploads"
+    __table_args__ = (
+        Index(
+            "ix_media_uploads_organization_id_uploaded_by_user_id_status",
+            "organization_id",
+            "uploaded_by_user_id",
+            "status",
+        ),
+        Index("ix_media_uploads_status_updated_at", "status", "updated_at"),
+        # Two sessions with identical content converge on one asset: the second one to claim
+        # the finalizing state fails this index and becomes a duplicate.
+        Index(
+            "uq_media_uploads_org_verified_sha256_finalized",
+            "organization_id",
+            "verified_sha256",
+            unique=True,
+            postgresql_where=text("status IN ('finalizing', 'completed')"),
+        ),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    uploaded_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    submitted_for_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    production_owner_category_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("content_categories.id", ondelete="RESTRICT"), nullable=False
+    )
+    production_owner_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    product_category_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("content_categories.id", ondelete="RESTRICT"), nullable=False
+    )
+    content_type_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("content_categories.id", ondelete="RESTRICT"), nullable=False
+    )
+    batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    replaces_asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("media_assets.id", ondelete="RESTRICT"), nullable=True
+    )
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    safe_filename: Mapped[str] = mapped_column(String(160), nullable=False)
+    expected_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    client_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    chunk_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    committed_offset: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    last_chunk_offset: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_chunk_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_chunk_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    staging_name: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    status: Mapped[UploadStatus] = mapped_column(
+        str_enum(UploadStatus, "upload_status"),
+        nullable=False,
+        default=UploadStatus.CREATED,
+        server_default=text("'created'"),
+    )
+    verified_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    final_relative_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    media_asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("media_assets.id", ondelete="SET NULL"), nullable=True
+    )
+    duplicate_of_asset_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("media_assets.id", ondelete="SET NULL"), nullable=True
+    )
+    failure_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    finalize_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    production_owner: Mapped[ContentCategory] = relationship(
+        foreign_keys=[production_owner_category_id]
+    )
+    product_category: Mapped[ContentCategory] = relationship(foreign_keys=[product_category_id])
+    content_type: Mapped[ContentCategory] = relationship(foreign_keys=[content_type_id])
+    media_asset: Mapped[MediaAsset | None] = relationship(foreign_keys=[media_asset_id])
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in TERMINAL_UPLOAD_STATUSES
+
+    def __repr__(self) -> str:
+        return f"<MediaUpload id={self.id} status={self.status} offset={self.committed_offset}>"
+
+
+TERMINAL_UPLOAD_STATUSES = frozenset(
+    {
+        UploadStatus.COMPLETED,
+        UploadStatus.DUPLICATE,
+        UploadStatus.FAILED,
+        UploadStatus.ABORTED,
+        UploadStatus.EXPIRED,
+    }
+)
+
+
 taxonomy_service.register_reference("media_content_categories", "category_id")
 taxonomy_service.register_reference("folder_category_rules", "category_id")
 taxonomy_service.register_reference("media_owner_mappings", "production_owner_category_id")
+taxonomy_service.register_reference("media_uploads", "production_owner_category_id")
+taxonomy_service.register_reference("media_uploads", "product_category_id")
+taxonomy_service.register_reference("media_uploads", "content_type_id")

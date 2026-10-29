@@ -3,7 +3,8 @@
 - **Status:** U0 implemented locally (commit `d98b08a`); U1 design accepted (`ada5462`,
   ADR 0012, `docs/architecture/editor-uploads.md`); U2 implemented locally (migration 0014,
   owner mappings API and members UI); U3 implemented locally (`media/ingest.py`);
-  U4–U7 planned. Nothing deployed.
+  U4 implemented locally (migration 0015, upload API, staging store, worker finalizer);
+  U5–U7 planned. Nothing deployed.
 - **Depends on:** M3A (sessions, roles), M3A.1 (taxonomy, folder rules), M3C.1 (finals,
   handoff review), Facets F1 (facet roots, path classification), Step 4 (75 directories).
 - **Goal:** editors submit finished videos through AFFILIO in bulk, resumably, attributed to a
@@ -50,7 +51,7 @@ pushed until U7 is approved separately.
 - Acceptance: `git diff` of scanner behaviour is a pure extraction; scan stats identical on
   the existing fixtures.
 
-### U4 — Resumable bulk-upload backend
+### U4 — Resumable bulk-upload backend (done locally)
 
 - Migration 0015: `media_uploads`; `media_assets.ingest_source`, `uploaded_by_user_id`,
   `revision_of_asset_id`; partial unique index on verified hash; downgrade.
@@ -116,6 +117,21 @@ rollback rehearsal. Nothing in U2–U6 writes to production.
 - [ ] Reports distinguish submitted, approved and corrected work per owner and uploader.
 - [ ] Only the API's staging bind and the worker's finals mount are writable; every other
       mount stays read-only.
+
+## Operational notes for U5 and U7
+
+- The API needs `MEDIA_INCOMING_PATH` (its own writable bind of `FINAL/.affilio-incoming`);
+  the worker needs `MEDIA_FINALS_WRITABLE=true`. Without them the upload routes answer 503
+  and the finalizer stays inert, so the code is safe to deploy before the mounts exist.
+- Chunk requests carry `Upload-Offset`, `Content-Length` and `X-Upload-Chunk-Sha256`; the
+  proxy must forward PATCH bodies. Buffering one 8 MiB chunk per request is acceptable.
+- Finalization runs one session per worker poll between scan claims and thumbnail work; a
+  queue of N uploads drains in roughly N × (hash time + ffprobe) with the 5 s poll interval.
+- `failed` sessions keep their staging copy until the TTL for inspection; `duplicate`,
+  `aborted`, `expired` and `completed` sessions lose it immediately or at the next hourly
+  maintenance run.
+- Hard links on the production share (btrfs) have not been exercised yet; U7 verifies them
+  with a probe file before the first real upload.
 
 ## Known limits
 

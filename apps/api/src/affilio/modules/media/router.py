@@ -8,10 +8,12 @@ production deployment keeps the API off the public internet (see docs/deployment
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Request, Response, status
+from fastapi import APIRouter, Header, Query, Request, Response, status
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from affilio.api.deps import (
     CurrentIdentity,
@@ -30,10 +32,12 @@ from affilio.core.enums import (
     MediaAssetKind,
     MediaAssetStatus,
     ScanTrigger,
+    UploadStatus,
 )
-from affilio.modules.media import classification, facets, owner_mappings, service
+from affilio.modules.media import classification, facets, owner_mappings, service, uploads
 from affilio.modules.media import exports as exports_module
-from affilio.modules.media.models import CategorySuggestion, FolderCategoryRule
+from affilio.modules.media.errors import UploadStorageUnavailableError
+from affilio.modules.media.models import CategorySuggestion, FolderCategoryRule, MediaUpload
 from affilio.modules.media.schemas import (
     AssetCategoriesUpdate,
     AssetExportStatus,
@@ -61,8 +65,16 @@ from affilio.modules.media.schemas import (
     SuggestionApprove,
     SuggestionDecisionResponse,
     SuggestionReject,
+    UploadChunkResponse,
+    UploadCreate,
+    UploadLimitsResponse,
+    UploadOptionsResponse,
+    UploadResponse,
+    UploadReview,
+    UploadTaxonomyRef,
 )
 from affilio.modules.media.service import AssetFilters, HandoffNotApplicableError
+from affilio.modules.media.upload_storage import StagingStore
 from affilio.modules.taxonomy import service as taxonomy_service
 
 router = APIRouter(prefix="/media", tags=["media"])
@@ -795,6 +807,269 @@ def revoke_owner_mapping(
                 "production_owner_category_id": str(mapping.production_owner_category_id),
                 "production_owner_slug": mapping.category.slug,
             },
+        )
+    session.commit()
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response
+
+
+# ---------------------------------------------------------------- editor uploads (upload track U4)
+# Contract: docs/architecture/editor-uploads.md section 2. Progress is server-authoritative.
+
+
+def _upload_response(upload: MediaUpload) -> UploadResponse:
+    asset = upload.media_asset
+    review = (
+        UploadReview(
+            handoff_status=asset.handoff_status,
+            handoff_note=asset.handoff_note,
+            handoff_reviewed_at=asset.handoff_reviewed_at,
+            handoff_reviewed_by=asset.handoff_reviewed_by,
+        )
+        if asset is not None and asset.handoff_status is not None
+        else None
+    )
+    return UploadResponse(
+        id=upload.id,
+        status=upload.status,
+        original_filename=upload.original_filename,
+        expected_size=upload.expected_size,
+        chunk_bytes=upload.chunk_bytes,
+        committed_offset=upload.committed_offset,
+        production_owner=UploadTaxonomyRef.model_validate(upload.production_owner),
+        production_owner_name=upload.production_owner_name,
+        product_category=UploadTaxonomyRef.model_validate(upload.product_category),
+        content_type=UploadTaxonomyRef.model_validate(upload.content_type),
+        batch_id=upload.batch_id,
+        replaces_asset_id=upload.replaces_asset_id,
+        uploaded_by_user_id=upload.uploaded_by_user_id,
+        submitted_for_user_id=upload.submitted_for_user_id,
+        media_asset_id=upload.media_asset_id,
+        duplicate_of_asset_id=upload.duplicate_of_asset_id,
+        failure_code=upload.failure_code,
+        failure_detail=upload.failure_detail,
+        finalize_attempts=upload.finalize_attempts,
+        review=review,
+        created_at=upload.created_at,
+        updated_at=upload.updated_at,
+        uploaded_at=upload.uploaded_at,
+        completed_at=upload.completed_at,
+        expires_at=upload.expires_at,
+    )
+
+
+def _staging(settings) -> StagingStore | None:
+    return StagingStore.for_api(settings.media_incoming_path)
+
+
+@router.get(
+    "/uploads/options",
+    response_model=UploadOptionsResponse,
+    summary="Owners, categories and limits the current user may upload with",
+)
+def upload_options(
+    session: DbSession, identity: RequireEditor, settings: SettingsDep
+) -> UploadOptionsResponse:
+    opts = uploads.options_for(session, identity)
+    limits = uploads.UploadLimits.from_settings(settings)
+    return UploadOptionsResponse(
+        facets_enabled=opts.facets_enabled,
+        can_submit_for_others=opts.can_submit_for_others,
+        owners=[UploadTaxonomyRef.model_validate(c) for c in opts.owners],
+        product_categories=[UploadTaxonomyRef.model_validate(c) for c in opts.product_categories],
+        content_types=[UploadTaxonomyRef.model_validate(c) for c in opts.content_types],
+        allowed_extensions=list(settings.media_video_extensions),
+        limits=UploadLimitsResponse(
+            chunk_bytes=limits.chunk_bytes,
+            max_file_bytes=limits.max_file_bytes,
+            max_active_sessions_per_user=limits.max_active_sessions_per_user,
+            session_ttl_hours=limits.session_ttl_hours,
+        ),
+    )
+
+
+@router.post(
+    "/uploads",
+    response_model=UploadResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a resumable upload session for one final video (editor)",
+)
+def create_upload(
+    body: UploadCreate, session: DbSession, identity: RequireEditor, settings: SettingsDep
+) -> UploadResponse:
+    upload = uploads.create_upload(
+        session,
+        identity,
+        data=body,
+        staging=_staging(settings),
+        limits=uploads.UploadLimits.from_settings(settings),
+        allowed_extensions=set(settings.media_video_extensions),
+    )
+    record_audit(
+        session,
+        organization_id=identity.organization.id,
+        identity=identity,
+        action="upload.created",
+        entity_type="media_upload",
+        entity_id=upload.id,
+        data={
+            "filename": upload.safe_filename,
+            "size": upload.expected_size,
+            "production_owner_category_id": str(upload.production_owner_category_id),
+            "submitted_for_user_id": (
+                str(upload.submitted_for_user_id) if upload.submitted_for_user_id else None
+            ),
+            "batch_id": str(upload.batch_id) if upload.batch_id else None,
+            "replaces_asset_id": str(upload.replaces_asset_id)
+            if upload.replaces_asset_id
+            else None,
+        },
+    )
+    session.commit()
+    return _upload_response(uploads.get_upload(session, identity.organization.id, upload.id))
+
+
+@router.get(
+    "/uploads",
+    response_model=list[UploadResponse],
+    summary="Upload sessions: the caller's own, or everyone's for admins",
+)
+def list_uploads(
+    session: DbSession,
+    identity: RequireEditor,
+    status_filter: Annotated[UploadStatus | None, Query(alias="status")] = None,
+    user_id: uuid.UUID | None = None,
+    batch_id: uuid.UUID | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[UploadResponse]:
+    rows = uploads.list_uploads(
+        session, identity, status=status_filter, user_id=user_id, batch_id=batch_id, limit=limit
+    )
+    return [_upload_response(u) for u in rows]
+
+
+@router.get("/uploads/{upload_id}", response_model=UploadResponse, summary="Upload session state")
+def read_upload(
+    upload_id: uuid.UUID, session: DbSession, identity: RequireEditor
+) -> UploadResponse:
+    upload = uploads.get_upload(session, identity.organization.id, upload_id)
+    uploads.authorize_access(identity, upload)
+    return _upload_response(upload)
+
+
+@router.patch(
+    "/uploads/{upload_id}/chunk",
+    response_model=UploadChunkResponse,
+    summary="Append one chunk at the committed offset (streamed, idempotent on retry)",
+)
+async def upload_chunk(
+    upload_id: uuid.UUID,
+    request: Request,
+    session: DbSession,
+    identity: RequireEditor,
+    settings: SettingsDep,
+    upload_offset: Annotated[int, Header(alias="Upload-Offset", ge=0)],
+    content_length: Annotated[int, Header(alias="Content-Length", ge=0)],
+    chunk_sha256: Annotated[
+        str, Header(alias="X-Upload-Chunk-Sha256", pattern=r"^[0-9a-fA-F]{64}$")
+    ],
+) -> UploadChunkResponse:
+    staging = _staging(settings)
+    if staging is None:
+        raise UploadStorageUnavailableError("Uploads are not enabled on this server")
+    now = datetime.now(UTC)
+    org_id = identity.organization.id
+
+    def _prepare() -> uploads.ChunkPlan:
+        upload = uploads.lock_for_chunk(session, org_id, upload_id)
+        uploads.authorize_access(identity, upload)
+        return uploads.plan_chunk(
+            upload, offset=upload_offset, length=content_length, sha256=chunk_sha256, now=now
+        )
+
+    plan = await run_in_threadpool(_prepare)
+    if plan.replay:
+        await run_in_threadpool(session.rollback)
+        return UploadChunkResponse(
+            id=plan.upload.id,
+            status=plan.upload.status,
+            committed_offset=plan.upload.committed_offset,
+            expected_size=plan.upload.expected_size,
+            replayed=True,
+        )
+    try:
+        committed = await uploads.write_chunk(
+            plan.upload,
+            staging,
+            offset=upload_offset,
+            length=content_length,
+            sha256=chunk_sha256,
+            body=request.stream(),
+            now=now,
+            ttl_hours=settings.upload_session_ttl_hours,
+        )
+    except Exception:
+        await run_in_threadpool(session.rollback)
+        raise
+    await run_in_threadpool(session.commit)
+    return UploadChunkResponse(
+        id=plan.upload.id,
+        status=plan.upload.status,
+        committed_offset=committed,
+        expected_size=plan.upload.expected_size,
+        replayed=False,
+    )
+
+
+@router.post(
+    "/uploads/{upload_id}/complete",
+    response_model=UploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Hand a fully received upload to the worker for verification and placement",
+)
+def complete_upload(
+    upload_id: uuid.UUID, session: DbSession, identity: RequireEditor
+) -> UploadResponse:
+    org_id = identity.organization.id
+    uploads.authorize_access(identity, uploads.get_upload(session, org_id, upload_id))
+    upload, changed = uploads.complete_upload(session, org_id, upload_id, now=datetime.now(UTC))
+    if changed:
+        record_audit(
+            session,
+            organization_id=org_id,
+            identity=identity,
+            action="upload.uploaded",
+            entity_type="media_upload",
+            entity_id=upload.id,
+            data={"size": upload.expected_size},
+        )
+    session.commit()
+    return _upload_response(uploads.get_upload(session, org_id, upload_id))
+
+
+@router.delete(
+    "/uploads/{upload_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Abort an upload session and discard its staged bytes",
+)
+def abort_upload(
+    upload_id: uuid.UUID,
+    session: DbSession,
+    identity: RequireEditor,
+    settings: SettingsDep,
+    response: Response,
+) -> Response:
+    org_id = identity.organization.id
+    uploads.authorize_access(identity, uploads.get_upload(session, org_id, upload_id))
+    upload, changed = uploads.abort_upload(session, org_id, upload_id, _staging(settings))
+    if changed:
+        record_audit(
+            session,
+            organization_id=org_id,
+            identity=identity,
+            action="upload.aborted",
+            entity_type="media_upload",
+            entity_id=upload.id,
         )
     session.commit()
     response.status_code = status.HTTP_204_NO_CONTENT

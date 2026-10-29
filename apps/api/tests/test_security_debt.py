@@ -109,7 +109,13 @@ def test_oauth_attempts_are_purged_by_maintenance(
     assert connections_service.purge_oauth_states(db_session, retention=timedelta(hours=24)) == 2
     db_session.commit()
     result = run_maintenance(get_settings())
-    assert set(result) == {"sessions_purged", "oauth_states_purged"}
+    assert set(result) == {
+        "sessions_purged",
+        "oauth_states_purged",
+        "uploads_expired",
+        "uploads_staging_removed",
+        "uploads_orphans_removed",
+    }
 
 
 def test_admin_can_sign_a_member_out_everywhere(

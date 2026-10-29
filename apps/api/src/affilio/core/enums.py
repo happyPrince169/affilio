@@ -352,6 +352,29 @@ class OwnerMappingStatus(StrEnum):
     REVOKED = "revoked"
 
 
+class UploadStatus(StrEnum):
+    """Editor upload session (upload track U4). Terminal: completed, duplicate, failed,
+    aborted, expired."""
+
+    CREATED = "created"
+    UPLOADING = "uploading"
+    UPLOADED = "uploaded"
+    VERIFYING = "verifying"
+    FINALIZING = "finalizing"
+    COMPLETED = "completed"
+    DUPLICATE = "duplicate"
+    FAILED = "failed"
+    ABORTED = "aborted"
+    EXPIRED = "expired"
+
+
+class IngestSource(StrEnum):
+    """How a media asset entered the library (upload track U4)."""
+
+    SCAN = "scan"
+    UPLOAD = "upload"
+
+
 class ChannelMatchPolicy(StrEnum):
     ALLOW = "allow"
     PREFER = "prefer"

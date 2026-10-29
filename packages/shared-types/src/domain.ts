@@ -25,6 +25,24 @@ export type MembershipRole = (typeof MEMBERSHIP_ROLES)[number];
 export const OWNER_MAPPING_STATUSES = ["active", "revoked"] as const;
 export type OwnerMappingStatus = (typeof OWNER_MAPPING_STATUSES)[number];
 
+/** Editor upload session states (upload track U4). Terminal: completed, duplicate, failed, aborted, expired. */
+export const UPLOAD_STATUSES = [
+  "created",
+  "uploading",
+  "uploaded",
+  "verifying",
+  "finalizing",
+  "completed",
+  "duplicate",
+  "failed",
+  "aborted",
+  "expired",
+] as const;
+export type UploadStatus = (typeof UPLOAD_STATUSES)[number];
+
+export const INGEST_SOURCES = ["scan", "upload"] as const;
+export type IngestSource = (typeof INGEST_SOURCES)[number];
+
 // ---------------------------------------------------------------- M3A additions
 
 export const SOCIAL_ACCOUNT_TYPES = ["page", "profile", "group", "channel", "shop"] as const;

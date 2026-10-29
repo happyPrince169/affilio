@@ -23,6 +23,7 @@ from affilio.modules.media.roots import ROOT_KEYS, MediaRootRegistry
 from affilio.modules.media.scanner import JobFence, MediaScanner
 from affilio.modules.media.service import recover_stale_scan_jobs, scan_retry_backoff
 from affilio.modules.media.thumbnails import ThumbnailGenerator
+from affilio.modules.media.upload_finalize import Finalizer
 from affilio.worker.maintenance import run_maintenance
 
 log = structlog.get_logger("affilio.worker")
@@ -164,6 +165,16 @@ def run_once(
             assert job is not None  # noqa: S101
             execute_scan_job(session, job, settings=settings, registry=registry, prober=prober)
             return True
+
+    # Editor uploads (U4): one finalization per iteration, only where the finals root is
+    # writable (the worker container). Scans keep priority; thumbnails follow.
+    if settings.media_finals_writable:
+        with session_factory() as session:
+            finalizer = Finalizer.build(
+                session, registry, settings, prober=prober, worker_id=WORKER_ID
+            )
+            if finalizer.run_next() is not None:
+                return True
 
     generator = ThumbnailGenerator(settings, registry)
     return generator.process_pending(session_factory) > 0

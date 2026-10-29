@@ -5,14 +5,14 @@ ORM models live in each module's `models.py` and are registered in `affilio/db/r
 
 ## Conventions
 
-| Concern            | Rule                                                                                  |
-| ------------------ | ------------------------------------------------------------------------------------- |
-| Primary keys       | `UUID`, generated client-side (`uuid4`) with `gen_random_uuid()` server default        |
-| Timestamps         | `TIMESTAMPTZ`, `created_at` / `updated_at` with `now()` defaults; `updated_at` is set on ORM update |
-| Tenant scoping     | Every business table has `organization_id` → `organizations.id` (`ON DELETE CASCADE`) |
-| Enum-like columns  | `VARCHAR(32)` + `CHECK (col IN (...))`; Python `StrEnum` in `affilio/core/enums.py`    |
-| Constraint names   | Naming convention in `affilio/db/base.py` (`pk_`, `fk_`, `uq_`, `ck_`, `ix_`)           |
-| Access pattern     | Synchronous SQLAlchemy 2 + psycopg 3 (`docs/decisions/0003-sync-database-access.md`)    |
+| Concern           | Rule                                                                                                |
+| ----------------- | --------------------------------------------------------------------------------------------------- |
+| Primary keys      | `UUID`, generated client-side (`uuid4`) with `gen_random_uuid()` server default                     |
+| Timestamps        | `TIMESTAMPTZ`, `created_at` / `updated_at` with `now()` defaults; `updated_at` is set on ORM update |
+| Tenant scoping    | Every business table has `organization_id` → `organizations.id` (`ON DELETE CASCADE`)               |
+| Enum-like columns | `VARCHAR(32)` + `CHECK (col IN (...))`; Python `StrEnum` in `affilio/core/enums.py`                 |
+| Constraint names  | Naming convention in `affilio/db/base.py` (`pk_`, `fk_`, `uq_`, `ck_`, `ix_`)                       |
+| Access pattern    | Synchronous SQLAlchemy 2 + psycopg 3 (`docs/decisions/0003-sync-database-access.md`)                |
 
 Native PostgreSQL enums are deliberately avoided: adding a value to a CHECK constraint is a
 drop-and-recreate that downgrades cleanly, whereas `ALTER TYPE ... ADD VALUE` cannot be rolled
@@ -395,14 +395,42 @@ media_owner_mappings
 The downgrade drops the index and the table; mappings only authorize future submissions, so
 no media attribution is lost (U4 records the owner on each upload session).
 
+## Editor upload sessions and asset attribution (migration `0015_media_uploads`)
+
+ADR 0012 (upload track U4). `media_assets` gains `ingest_source` (VARCHAR + CHECK `scan` |
+`upload`, default `scan`), `uploaded_by_user_id` (FK users RESTRICT) and
+`revision_of_asset_id` (FK media_assets SET NULL); all three are written once at registration
+and have no update path. New table:
+
+```
+media_uploads
+  id, organization_id FK CASCADE, uploaded_by_user_id FK users RESTRICT,
+  submitted_for_user_id FK users RESTRICT null, production_owner_category_id FK RESTRICT,
+  production_owner_name (snapshot), product_category_id FK RESTRICT, content_type_id FK RESTRICT,
+  batch_id null, replaces_asset_id FK media_assets RESTRICT null,
+  original_filename, safe_filename, expected_size, client_sha256 null, chunk_bytes,
+  committed_offset, last_chunk_offset, last_chunk_sha256, last_chunk_at,
+  staging_name UNIQUE (server-generated token), status created|uploading|uploaded|verifying|
+  finalizing|completed|duplicate|failed|aborted|expired,
+  verified_sha256, fingerprint, final_relative_path (intent record), media_asset_id FK SET NULL,
+  duplicate_of_asset_id FK SET NULL, failure_code, failure_detail, finalize_attempts,
+  lease_until, worker_id, uploaded_at, completed_at, expires_at, created_at, updated_at
+  INDEX(organization_id, uploaded_by_user_id, status); INDEX(status, updated_at);
+  UNIQUE(organization_id, verified_sha256) WHERE status IN ('finalizing','completed')
+```
+
+The partial unique index makes two simultaneous uploads of identical content converge on one
+asset. The downgrade drops the table (upload history) and the three asset columns; assets
+and files stay.
+
 ## Growth plan (not implemented)
 
-| Milestone | Tables (indicative)                                                              |
-| --------- | -------------------------------------------------------------------------------- |
-| M1 (later)| `media_tags`, `media_asset_tags` once tagging is prioritised                     |
-| M2 (later)| `product_price_history` when analytics needs price trends                        | `products`, `product_links`, `product_media`                                     |
-| M3B       | `account_credentials` (encrypted, separate from `social_accounts`), OAuth state, API-verified evidence columns |
-| M4        | `performance_imports`, `performance_metrics`, `commission_records`               |
-| M5        | `agent_runs`, `agent_tool_calls`, `approvals`                                    |
+| Milestone  | Tables (indicative)                                                                                            |
+| ---------- | -------------------------------------------------------------------------------------------------------------- |
+| M1 (later) | `media_tags`, `media_asset_tags` once tagging is prioritised                                                   |
+| M2 (later) | `product_price_history` when analytics needs price trends                                                      | `products`, `product_links`, `product_media` |
+| M3B        | `account_credentials` (encrypted, separate from `social_accounts`), OAuth state, API-verified evidence columns |
+| M4         | `performance_imports`, `performance_metrics`, `commission_records`                                             |
+| M5         | `agent_runs`, `agent_tool_calls`, `approvals`                                                                  |
 
 Each milestone adds only the tables it needs and documents them here.
