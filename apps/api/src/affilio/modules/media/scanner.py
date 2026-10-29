@@ -32,25 +32,24 @@ from sqlalchemy.orm import Session, aliased, selectinload
 
 from affilio.core.config import Settings
 from affilio.core.enums import (
-    HandoffStatus,
     MediaAssetKind,
     MediaAssetStatus,
     MediaRootKind,
     MediaVariantKind,
     MediaVariantStatus,
     ScanJobStatus,
-    ThumbnailStatus,
 )
 from affilio.core.redaction import Redactor
-from affilio.modules.media import classification, facets
+from affilio.modules.media import facets, ingest
 from affilio.modules.media.errors import (
     InvalidMediaPathError,
     ScanAbortedError,
     ScanConfigurationError,
 )
-from affilio.modules.media.fingerprint import full_hash, quick_fingerprint
+from affilio.modules.media.fingerprint import full_hash
+from affilio.modules.media.ingest import FileEntry, IngestContext
 from affilio.modules.media.models import MediaAsset, MediaFileVariant, MediaRoot, MediaScanJob
-from affilio.modules.media.probe import FFprobe, ProbeError, Prober, ProbeResult
+from affilio.modules.media.probe import FFprobe, ProbeError, Prober
 from affilio.modules.media.roots import SCANNABLE_KINDS, MediaRootRegistry, RootBinding
 
 log = structlog.get_logger(__name__)
@@ -125,12 +124,7 @@ class ScanStats:
         return asdict(self)
 
 
-@dataclass(slots=True)
-class _Entry:
-    relative_path: str
-    path: Path
-    size: int
-    mtime_ns: int
+_Entry = FileEntry  # file discovered by the walk (shared with media.ingest)
 
 
 @dataclass(slots=True)
@@ -143,10 +137,8 @@ class _ScanContext:
     errors: list[dict[str, str]] = field(default_factory=list)
     touched_assets: dict[uuid.UUID, MediaAsset] = field(default_factory=dict)
     pending_commit: int = 0
-    folder_rules: list | None = None  # loaded once per scan for FINAL roots (M3A.1)
     reclassified: int = 0
-    facet_context: facets.FacetContext | None = None  # loaded once per scan for FINAL roots
-    suggestions: facets.SuggestionCollector = field(default_factory=facets.SuggestionCollector)
+    ingest: IngestContext | None = None  # folder rules + facet tree loaded once per scan
     job: MediaScanJob | None = None
     fence: JobFence | None = None
     last_heartbeat_monotonic: float = 0.0
@@ -162,15 +154,6 @@ class _ScanContext:
     @property
     def asset_kind(self) -> MediaAssetKind:
         return MediaAssetKind.FINAL if self.is_final_root else MediaAssetKind.FOOTAGE
-
-
-def _mtime_from_ns(mtime_ns: int) -> datetime:
-    return datetime.fromtimestamp(mtime_ns / 1_000_000_000, tz=UTC)
-
-
-def _same_mtime(stored: datetime, mtime_ns: int) -> bool:
-    # Compare at microsecond resolution: PostgreSQL stores microseconds.
-    return abs(stored.timestamp() * 1_000_000 - mtime_ns / 1_000) < 1.0
 
 
 class MediaScanner:
@@ -218,11 +201,16 @@ class MediaScanner:
         ctx.last_heartbeat_monotonic = time.monotonic()
         log.info("media.scan.start", root=root.key, job_id=str(job.id))
 
-        if ctx.is_final_root:
-            ctx.folder_rules = classification.rules_for_root(
-                self.session, ctx.organization_id, root.id
-            )
-            ctx.facet_context = facets.FacetContext.load(self.session, ctx.organization_id)
+        ctx.ingest = IngestContext.load(
+            self.session,
+            binding=binding,
+            root=root,
+            organization_id=ctx.organization_id,
+            now=ctx.now,
+            prober=self.prober,
+            redactor=self.redactor,
+            on_error=lambda kind, path, message: self._record_error(ctx, kind, path, message),
+        )
         existing = self._load_existing(ctx)
         seen: set[str] = set()
         new_entries: list[_Entry] = []
@@ -247,13 +235,14 @@ class MediaScanner:
         self._detect_duplicates(ctx)
         self._link_proxies(ctx)
         self._queue_thumbnails(ctx)
-        if ctx.facet_context is not None and ctx.facet_context.enabled:
+        facet_context = ctx.ingest.facet_context
+        if facet_context is not None and facet_context.enabled:
             ctx.stats.suggestions = facets.record_suggestions(
                 self.session,
                 ctx.organization_id,
                 root,
-                ctx.suggestions,
-                tree=ctx.facet_context.tree,
+                ctx.ingest.suggestions,
+                tree=facet_context.tree,
                 now=ctx.now,
             )
 
@@ -359,7 +348,7 @@ class MediaScanner:
             ctx.stats.rediscovered += 1
             ctx.touched_assets[asset.id] = asset
 
-        unchanged = variant.file_size == entry.size and _same_mtime(
+        unchanged = variant.file_size == entry.size and ingest.same_mtime(
             variant.modified_at, entry.mtime_ns
         )
         if unchanged and not full_rescan:
@@ -369,21 +358,22 @@ class MediaScanner:
             self._classify(ctx, asset, entry.relative_path)
             return
 
-        fingerprint = self._fingerprint(ctx, entry)
+        fingerprint = ingest.fingerprint_entry(self._ingest(ctx), entry)
         if fingerprint is None:
             return
         if fingerprint == variant.fingerprint and not full_rescan:
             # Same bytes, new mtime (copied/touched). Keep metadata, record new stat.
             variant.file_size = entry.size
-            variant.modified_at = _mtime_from_ns(entry.mtime_ns)
+            variant.modified_at = ingest.mtime_from_ns(entry.mtime_ns)
             ctx.stats.unchanged += 1
             return
 
         variant.file_size = entry.size
-        variant.modified_at = _mtime_from_ns(entry.mtime_ns)
+        variant.modified_at = ingest.mtime_from_ns(entry.mtime_ns)
         variant.fingerprint = fingerprint
         variant.content_hash = None
-        self._probe_into(ctx, variant, entry.path, asset)
+        if not ingest.probe_into(self._ingest(ctx), variant, entry.path, asset):
+            ctx.stats.unsupported += 1
         asset.duplicate_of_id = None
         ctx.stats.updated += 1
         ctx.touched_assets[asset.id] = asset
@@ -402,17 +392,17 @@ class MediaScanner:
             missing_by_identity[(variant.file_size, variant.fingerprint)].append(variant)
 
         for entry in new_entries:
-            fingerprint = self._fingerprint(ctx, entry)
+            fingerprint = ingest.fingerprint_entry(self._ingest(ctx), entry)
             if fingerprint is None:
                 continue
             candidates = missing_by_identity.get((entry.size, fingerprint))
             if candidates:
                 variant = candidates.pop(0)
                 missing_variants.remove(variant)
-                self._apply_location(variant, entry)
+                ingest.apply_location(variant, entry)
                 variant.last_seen_at = ctx.now
                 variant.asset.last_seen_at = ctx.now
-                variant.asset.title = _title_from_name(entry.path.name)
+                variant.asset.title = ingest.title_from_name(entry.path.name)
                 ctx.stats.moved += 1
                 ctx.touched_assets[variant.asset.id] = variant.asset
                 self._classify(ctx, variant.asset, entry.relative_path)
@@ -421,37 +411,13 @@ class MediaScanner:
             self._maybe_commit(ctx, job)
 
     def _create_asset(self, ctx: _ScanContext, entry: _Entry, fingerprint: str) -> None:
-        asset = MediaAsset(
-            id=uuid.uuid4(),  # assigned eagerly: touched_assets is keyed by id before flush
-            organization_id=ctx.organization_id,
-            title=_title_from_name(entry.path.name),
-            status=MediaAssetStatus.ACTIVE,
-            asset_kind=ctx.asset_kind,
-            # Finals enter the human review gate; footage has no handoff state.
-            handoff_status=HandoffStatus.PENDING_REVIEW if ctx.is_final_root else None,
-            first_seen_at=ctx.now,
-            last_seen_at=ctx.now,
-            # Derived from the first ingestion time only; never rewritten by later scans.
-            production_period=facets.production_period_for(ctx.now),
-        )
-        variant = MediaFileVariant(
-            asset=asset,
-            media_root_id=ctx.root.id,
-            kind=ctx.main_kind,
-            status=MediaVariantStatus.PRESENT,
-            file_size=entry.size,
-            modified_at=_mtime_from_ns(entry.mtime_ns),
-            fingerprint=fingerprint,
-            last_seen_at=ctx.now,
-            relative_path=entry.relative_path,
-            file_name=entry.path.name,
-            extension=entry.path.suffix.lower(),
-        )
-        self.session.add(asset)
-        self._probe_into(ctx, variant, entry.path, asset)
+        registration = ingest.register_new(self._ingest(ctx), entry, fingerprint)
+        if not registration.probe_ok:
+            ctx.stats.unsupported += 1
         ctx.stats.added += 1
-        ctx.touched_assets[asset.id] = asset
-        self._classify(ctx, asset, entry.relative_path)
+        ctx.touched_assets[registration.asset.id] = registration.asset
+        if registration.classification_changed:
+            ctx.reclassified += 1
 
     def _mark_missing(self, ctx: _ScanContext, missing_variants: list[MediaFileVariant]) -> None:
         for variant in missing_variants:
@@ -546,7 +512,7 @@ class MediaScanner:
                     file_name=PurePosixPath(rel).name,
                     extension=PurePosixPath(rel).suffix.lower(),
                     file_size=info.st_size,
-                    modified_at=_mtime_from_ns(info.st_mtime_ns),
+                    modified_at=ingest.mtime_from_ns(info.st_mtime_ns),
                 )
                 self.session.add(existing)
                 changed = True
@@ -554,21 +520,21 @@ class MediaScanner:
                 changed = (
                     existing.relative_path != rel
                     or existing.file_size != info.st_size
-                    or not _same_mtime(existing.modified_at, info.st_mtime_ns)
+                    or not ingest.same_mtime(existing.modified_at, info.st_mtime_ns)
                     or existing.status != MediaVariantStatus.PRESENT
                 )
                 existing.relative_path = rel
                 existing.file_name = PurePosixPath(rel).name
                 existing.extension = PurePosixPath(rel).suffix.lower()
                 existing.file_size = info.st_size
-                existing.modified_at = _mtime_from_ns(info.st_mtime_ns)
+                existing.modified_at = ingest.mtime_from_ns(info.st_mtime_ns)
             existing.status = MediaVariantStatus.PRESENT
             existing.missing_since = None
             existing.last_seen_at = ctx.now
             if changed or existing.probed_at is None:
                 try:
                     result = self.prober.probe(proxies.resolve(rel))
-                    _apply_probe(existing, result, ctx.now)
+                    ingest.apply_probe(existing, result, ctx.now)
                 except ProbeError as exc:
                     existing.probe_error = self.redactor.message(f"{exc.kind}: {exc.message}")
                     existing.probed_at = ctx.now
@@ -635,86 +601,17 @@ class MediaScanner:
     # ------------------------------------------------------------------ helpers
     def _queue_thumbnails(self, ctx: _ScanContext) -> None:
         for asset in ctx.touched_assets.values():
-            if asset.status == MediaAssetStatus.UNSUPPORTED:
-                asset.thumbnail_status = ThumbnailStatus.SKIPPED
-            elif asset.status == MediaAssetStatus.ACTIVE and (
-                asset.thumbnail_status != ThumbnailStatus.READY or asset.id in ctx.touched_assets
-            ):
-                asset.thumbnail_status = ThumbnailStatus.PENDING
-                asset.thumbnail_attempts = 0
-                asset.thumbnail_error = None
+            ingest.queue_thumbnail(asset)
 
-    def _probe_into(
-        self, ctx: _ScanContext, variant: MediaFileVariant, path: Path, asset: MediaAsset
-    ) -> None:
-        try:
-            result = self.prober.probe(path)
-        except ProbeError as exc:
-            variant.probe_error = self.redactor.message(f"{exc.kind}: {exc.message}")
-            variant.probed_at = ctx.now
-            asset.probe_error = variant.probe_error
-            asset.status = MediaAssetStatus.UNSUPPORTED
-            ctx.stats.unsupported += 1
-            self._record_error(ctx, f"probe_{exc.kind}", variant.relative_path, exc.message)
-            return
-        _apply_probe(variant, result, ctx.now)
-        for key, value in result.columns().items():
-            setattr(asset, key, value)
-        asset.probe_error = None
-        asset.status = MediaAssetStatus.ACTIVE
-
-    def _fingerprint(self, ctx: _ScanContext, entry: _Entry) -> str | None:
-        try:
-            return quick_fingerprint(entry.path, entry.size)
-        except PermissionError as exc:
-            self._record_error(ctx, "permission_denied", entry.relative_path, str(exc))
-        except OSError as exc:
-            self._record_error(ctx, "read_error", entry.relative_path, str(exc))
-        return None
+    def _ingest(self, ctx: _ScanContext) -> IngestContext:
+        assert ctx.ingest is not None  # noqa: S101 - set at the start of run()
+        return ctx.ingest
 
     def _classify(self, ctx: _ScanContext, asset: MediaAsset, relative_path: str) -> None:
-        """Folder-derived category and path facets for FINAL roots. Never touches the file or
-        manual rows; unknown facet values of valid finals are collected as suggestions."""
-        if not ctx.is_final_root:
-            return
-        try:
-            facet_assignments = None
-            if ctx.facet_context is not None and ctx.facet_context.enabled:
-                path_result = ctx.facet_context.classify(relative_path)
-                facet_assignments = path_result.assignments
-                if path_result.unknown and facets.suggestion_is_valid_source(asset):
-                    for unknown in path_result.unknown:
-                        ctx.suggestions.add(unknown, relative_path)
-            changed = classification.apply_folder_classification(
-                self.session,
-                asset,
-                root=ctx.root,
-                relative_path=relative_path,
-                rules=ctx.folder_rules or [],
-                now=ctx.now,
-                facet_assignments=facet_assignments,
-            )
-        except Exception as exc:
-            self._record_error(ctx, "classification_error", relative_path, str(exc))
-            return
-        if changed:
-            # A classification change never alters the file: the asset is counted but not
-            # marked as touched, so a ready thumbnail is kept (only new, updated, moved or
-            # rediscovered files queue thumbnail work).
+        """Folder-derived category and path facets for FINAL roots (see `ingest.classify`).
+        A changed derived classification is counted but never marks the asset touched (U0)."""
+        if ingest.classify(self._ingest(ctx), asset, relative_path):
             ctx.reclassified += 1
-
-    def _apply_location(self, variant: MediaFileVariant, entry: _Entry) -> None:
-        variant.relative_path = entry.relative_path
-        variant.file_name = entry.path.name
-        variant.extension = entry.path.suffix.lower()
-        variant.file_size = entry.size
-        variant.modified_at = _mtime_from_ns(entry.mtime_ns)
-        variant.status = MediaVariantStatus.PRESENT
-        variant.missing_since = None
-        variant.asset.status = (
-            MediaAssetStatus.UNSUPPORTED if variant.probe_error else MediaAssetStatus.ACTIVE
-        )
-        variant.asset.missing_since = None
 
     def _db_root(self, ctx: _ScanContext, key: str) -> MediaRoot | None:
         return self.session.scalar(
@@ -768,16 +665,3 @@ class MediaScanner:
         self.session.commit()
         ctx.pending_commit = 0
         ctx.last_heartbeat_monotonic = time.monotonic()
-
-
-def _apply_probe(variant: MediaFileVariant, result: ProbeResult, now: datetime) -> None:
-    for key, value in result.columns().items():
-        setattr(variant, key, value)
-    variant.probe = result.raw
-    variant.probe_error = None
-    variant.probed_at = now
-
-
-def _title_from_name(name: str) -> str:
-    stem = PurePosixPath(name).stem.replace("_", " ").replace("-", " ").strip()
-    return (stem or name)[:255]

@@ -2,7 +2,8 @@
 
 - **Status:** U0 implemented locally (commit `d98b08a`); U1 design accepted (`ada5462`,
   ADR 0012, `docs/architecture/editor-uploads.md`); U2 implemented locally (migration 0014,
-  owner mappings API and members UI); U3–U7 planned. Nothing deployed.
+  owner mappings API and members UI); U3 implemented locally (`media/ingest.py`);
+  U4–U7 planned. Nothing deployed.
 - **Depends on:** M3A (sessions, roles), M3A.1 (taxonomy, folder rules), M3C.1 (finals,
   handoff review), Facets F1 (facet roots, path classification), Step 4 (75 directories).
 - **Goal:** editors submit finished videos through AFFILIO in bulk, resumably, attributed to a
@@ -37,7 +38,7 @@ pushed until U7 is approved separately.
 - Acceptance: an admin maps a user to one or more owners from the UI; `GET /uploads/options`
   logic (owners for the caller) is unit-tested here even though the route ships in U4.
 
-### U3 — Reusable media ingest service
+### U3 — Reusable media ingest service (done locally)
 
 - `media/ingest.py`: `register_file` (asset + main variant + probe + classification +
   handoff + period + thumbnail pending) and `find_duplicate` (content hash, then

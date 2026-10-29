@@ -250,14 +250,32 @@ logs (`media.upload.*` events with `upload_id`, never with paths outside the roo
 
 ## 7. Integration boundaries
 
-- **Ingest service (U3)**: `media/ingest.py` exposes `register_file(session, registry,
-root, relative_path, *, prober, now, attribution)` returning the asset; the scanner calls it
-  for new and moved files; the finalizer calls it with attribution. Both produce identical
-  identity (fingerprint, probe columns), classification (`FacetContext.classify` +
-  `apply_folder_classification`), `handoff_status = pending_review`, `production_period`
-  from first ingestion, and `thumbnail_status = pending`.
-- **Scanner**: unchanged behaviour; it keeps indexing hand-copied files. The dot-prefixed
-  staging folder is skipped by the existing name rule, and `.part` is already a temp marker.
+- **Ingest service (U3, implemented)**: `media/ingest.py` is the one place that turns a file
+  under a root into library rows, used by the scanner today and by the finalizer in U4.
+
+  | Function                                                                                                    | Purpose                                                                                                                                                                                                                                                                                                                                                                                                       |
+  | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `IngestContext.load(session, binding=, root=, organization_id=, now=, prober=, redactor=, on_error=)`       | Per-unit-of-work snapshot: for FINAL roots it loads the folder rules and the facet tree once. `on_error(kind, path, message)` receives recorded (not raised) problems.                                                                                                                                                                                                                                        |
+  | `register_file(ctx, relative_path, *, asset_fields=None) → Registration`                                    | Registers one completed file without a scan: new path → asset + final variant, probe, classification, `pending_review`, `production_period`, thumbnail pending; known path → reconciliation (unchanged content is a no-op, changed content re-fingerprints, re-probes and re-queues the thumbnail, a missing asset is rediscovered). Refuses symlinks, non-regular files and escapes. Flushes, never commits. |
+  | `candidate_duplicates(session, org, *, kind, size, fingerprint)`                                            | Hint only: present variants with the same size and 3 MiB sampled fingerprint.                                                                                                                                                                                                                                                                                                                                 |
+  | `find_duplicate(session, org, registry, *, kind, size, fingerprint, content_hash) → DuplicateMatch \| None` | Confirmed identity: an exact stored SHA-256 match, or a candidate whose file hashes to the same value (hash stored on it afterwards). Never returns an unconfirmed candidate; organization-scoped.                                                                                                                                                                                                            |
+  | `register_new`, `probe_into`, `classify`, `apply_location`, `queue_thumbnail`, `fingerprint_entry`          | Building blocks the scanner composes per file; counters and the touched set stay in the scanner.                                                                                                                                                                                                                                                                                                              |
+
+  `Registration` carries `asset`, `variant`, `created`, `changed` (thumbnail queued),
+  `probe_ok` and `classification_changed`.
+
+  Rules U4 must respect: call `register_file` only once the file is at its final path and
+  fully written; compute the full SHA-256 of the new file and use `find_duplicate` before
+  placing it (size + fingerprint is never proof); `asset_fields` may only name existing
+  `media_assets` columns (U4 adds `ingest_source`, `uploaded_by_user_id`,
+  `revision_of_asset_id` by migration before passing them); commit the upload-session state
+  and the registration in one transaction (place file → `register_file` → session
+  `completed` → `commit`), so a failure after placement leaves no half-registered asset and
+  the next attempt or scan registers the file again idempotently.
+
+- **Scanner**: unchanged behaviour; it composes the same building blocks per file and keeps
+  indexing hand-copied files. The dot-prefixed staging folder is skipped by the existing
+  name rule, and `.part` is already a temp marker.
 - **Thumbnails**: the worker picks up `pending` as today; uploads add no new path.
 - **Handoff review**: unchanged endpoints and UI; the asset page shows uploader, owner and
   revision link.

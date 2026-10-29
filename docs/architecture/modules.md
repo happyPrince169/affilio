@@ -52,6 +52,9 @@ modules/media/
 ├── fingerprint.py  quick_fingerprint (3 samples) / full_hash (streamed)
 ├── probe.py        FFprobe wrapper + parser (rotation, bit depth, frame rate)
 ├── scanner.py      incremental scan: unchanged / touched / changed / moved / new / missing
+├── ingest.py       shared registration of one file (scanner + upload finalizer, U3): probe,
+│                   classification, handoff, period, thumbnail; duplicate lookup by full hash
+├── owner_mappings.py  editor → production-owner mappings (U2)
 ├── thumbnails.py   ffmpeg thumbnail generation, proxy-first, atomic writes
 ├── export_profile.py publishing profile from ffprobe output, HDR detection (E1)
 ├── exports.py      publish-ready export recipe, job queue, ExportGenerator (E1)
