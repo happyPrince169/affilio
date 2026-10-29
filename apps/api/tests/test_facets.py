@@ -17,11 +17,16 @@ from sqlalchemy.orm import Session
 
 from affilio.app import create_app
 from affilio.core.config import get_settings
-from affilio.core.enums import CategoryFacet, CategorySuggestionStatus, MembershipRole
+from affilio.core.enums import (
+    CategoryFacet,
+    CategorySuggestionStatus,
+    MembershipRole,
+    ThumbnailStatus,
+)
 from affilio.db.session import dispose_engine
 from affilio.modules.identity.models import AuditEvent
 from affilio.modules.media import facets
-from affilio.modules.media.models import CategorySuggestion, MediaAsset
+from affilio.modules.media.models import CategorySuggestion, MediaAsset, MediaScanJob
 from affilio.modules.taxonomy import service as taxonomy_service
 from affilio.modules.taxonomy.schemas import CategoryCreate
 from affilio.modules.taxonomy.service import normalize_name
@@ -356,6 +361,76 @@ def test_legacy_behaviour_is_unchanged_while_facets_are_disabled(
         assert categories_of(asset) == {"uncategorized": ("folder", True)}
         assert asset.production_period is not None
     assert suggestions(db_session, organization) == {}
+
+
+def latest_scan_stats(session: Session, organization) -> dict[str, int]:
+    job = session.scalar(
+        select(MediaScanJob)
+        .where(MediaScanJob.organization_id == organization.id)
+        .order_by(MediaScanJob.created_at.desc())
+    )
+    assert job is not None and job.stats is not None
+    return job.stats
+
+
+@pytest.mark.database
+def test_classification_only_rescan_keeps_ready_thumbnails(
+    api: TestClient, db_session: Session, organization, media_dirs
+) -> None:
+    """U0: enabling facets (or editing rules) reclassifies finals on the next scan without
+    invalidating their thumbnails. New files and content changes still queue thumbnail work."""
+    legacy_rel = "Hang/T9/legacy.mp4"
+    structured_rel = "Hang/Mens-Fashion/Review/structured.mp4"
+    drop_final(media_dirs, legacy_rel, seed=31)
+    drop_final(media_dirs, structured_rel, seed=32)
+    scan_root(db_session, organization.id, media_dirs, "finals")
+    # asset_by_path expires the session, so look both up before pretending the thumbnail
+    # worker rendered them.
+    first = [asset_by_path(db_session, organization, r) for r in (legacy_rel, structured_rel)]
+    for asset in first:
+        assert asset.thumbnail_status == ThumbnailStatus.PENDING  # new assets render once
+        asset.thumbnail_status = ThumbnailStatus.READY
+        asset.thumbnail_attempts = 1
+    db_session.commit()
+
+    roots = enable_facets(api)
+    cat(api, "Hang", roots["production_owner"]["id"])
+    cat(api, "Men's Fashion", roots["product_category"]["id"], slug="mens-fashion")
+    cat(api, "Review", roots["content_type"]["id"])
+    scan_root(db_session, organization.id, media_dirs, "finals")
+    db_session.expire_all()
+
+    legacy = asset_by_path(db_session, organization, legacy_rel)
+    assert categories_of(legacy) == {"uncategorized": ("folder", True), "hang": ("path", False)}
+    structured = asset_by_path(db_session, organization, structured_rel)
+    assert categories_of(structured) == {
+        "mens-fashion": ("path", True),
+        "hang": ("path", False),
+        "review": ("path", False),
+    }
+    for asset in (legacy, structured):
+        assert asset.classification_changed_at is not None
+        assert asset.thumbnail_status == ThumbnailStatus.READY
+        assert asset.thumbnail_attempts == 1
+    stats = latest_scan_stats(db_session, organization)
+    assert stats["reclassified"] == 2 and stats["unchanged"] == 2 and stats["added"] == 0
+    assert suggestions(db_session, organization) == {}
+
+    # A real content change still invalidates the thumbnail of that file only.
+    path = media_dirs.finals / legacy_rel
+    write_bytes(path, 7_000, seed=33)
+    old = (datetime.now(UTC) - timedelta(hours=1)).timestamp()
+    os.utime(path, (old, old))
+    scan_root(db_session, organization.id, media_dirs, "finals")
+    db_session.expire_all()
+    assert asset_by_path(db_session, organization, legacy_rel).thumbnail_status == (
+        ThumbnailStatus.PENDING
+    )
+    assert asset_by_path(db_session, organization, structured_rel).thumbnail_status == (
+        ThumbnailStatus.READY
+    )
+    stats = latest_scan_stats(db_session, organization)
+    assert stats["updated"] == 1 and stats["reclassified"] == 0
 
 
 # ---------------------------------------------------------------- approval workflow

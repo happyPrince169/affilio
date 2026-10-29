@@ -698,8 +698,10 @@ class MediaScanner:
             self._record_error(ctx, "classification_error", relative_path, str(exc))
             return
         if changed:
+            # A classification change never alters the file: the asset is counted but not
+            # marked as touched, so a ready thumbnail is kept (only new, updated, moved or
+            # rediscovered files queue thumbnail work).
             ctx.reclassified += 1
-            ctx.touched_assets[asset.id] = asset
 
     def _apply_location(self, variant: MediaFileVariant, entry: _Entry) -> None:
         variant.relative_path = entry.relative_path
