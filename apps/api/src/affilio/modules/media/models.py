@@ -92,6 +92,14 @@ class MediaAsset(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     __tablename__ = "media_assets"
     __table_args__ = (
+        # Production reporting (U6): finals by period, and revision chains.
+        Index(
+            "ix_media_assets_organization_id_asset_kind_production_period",
+            "organization_id",
+            "asset_kind",
+            "production_period",
+        ),
+        Index("ix_media_assets_revision_of_asset_id", "revision_of_asset_id"),
         Index("ix_media_assets_organization_id_status", "organization_id", "status"),
         Index("ix_media_assets_organization_id_created_at", "organization_id", "created_at"),
         Index("ix_media_assets_thumbnail_status", "thumbnail_status"),

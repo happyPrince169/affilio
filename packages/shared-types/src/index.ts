@@ -9,6 +9,7 @@
 export * from "./api";
 export * from "./domain";
 export * from "./media";
+export * from "./analytics";
 export * from "./products";
 export * from "./procurement";
 export * from "./production";

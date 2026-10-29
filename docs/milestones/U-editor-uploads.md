@@ -5,7 +5,8 @@
   owner mappings API and members UI); U3 implemented locally (`media/ingest.py`);
   U4 implemented locally (migration 0015, upload API, staging store, worker finalizer);
   U5 implemented locally (`/uploads` page, queue, resume, My uploads, streaming proxy);
-  U6–U7 planned. Nothing deployed.
+  U6 implemented locally (production reporting API, `/reports/production`, migration 0016);
+  U7 planned. Nothing deployed.
 - **Depends on:** M3A (sessions, roles), M3A.1 (taxonomy, folder rules), M3C.1 (finals,
   handoff review), Facets F1 (facet roots, path classification), Step 4 (75 directories).
 - **Goal:** editors submit finished videos through AFFILIO in bulk, resumably, attributed to a
@@ -92,7 +93,7 @@ pushed until U7 is approved separately.
 - Acceptance: manual run against the local API with mock-mode settings; lint, typecheck,
   build, web tests green.
 
-### U6 — Production reporting
+### U6 — Production reporting (done locally)
 
 - Endpoint: per period × owner × uploader × product category × content type × status ×
   batch; metrics: submitted, pending, approved, rejected, corrected submissions, approval
@@ -135,6 +136,10 @@ rollback rehearsal. Nothing in U2–U6 writes to production.
   with a probe file before the first real upload.
 
 ## Known limits
+
+- U5 resume identity verifies file metadata plus the last committed chunk only; a
+  whole-file identity check (full hash before completion, or server-side comparison of the
+  reselected file's chunk digests) is required before production rollout (U7 prerequisite).
 
 - Every browser requires re-selecting files after a reload in U5; the Chromium persistent
   file-handle optimisation is a follow-up. Reselected files are verified against the

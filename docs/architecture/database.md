@@ -423,6 +423,13 @@ The partial unique index makes two simultaneous uploads of identical content con
 asset. The downgrade drops the table (upload history) and the three asset columns; assets
 and files stay.
 
+## Production reporting indexes (migration `0016_reporting_indexes`)
+
+Upload track U6. Two indexes on `media_assets`: `(organization_id, asset_kind,
+production_period)` for period reports and `(revision_of_asset_id)` for revision chains. No
+new table: reporting reads finals, completed uploads and users
+(`docs/architecture/production-reporting.md`). The downgrade drops both indexes.
+
 ## Growth plan (not implemented)
 
 | Milestone  | Tables (indicative)                                                                                            |
