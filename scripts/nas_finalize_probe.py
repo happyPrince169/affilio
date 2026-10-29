@@ -45,6 +45,7 @@ def main() -> int:
     ap.add_argument("--expect-placed-unlink", choices=["allowed", "denied"], default="allowed")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--simulate", action="store_true", help="local dry rehearsal only: skip the service-identity guard")
+    ap.add_argument("--simulate-leftover", action="store_true", help="local rehearsal only: leave the staging file behind to exercise host cleanup")
     args = ap.parse_args()
 
     final = os.path.realpath(args.final)
@@ -73,6 +74,8 @@ def main() -> int:
     }, indent=1))
     if not args.apply:
         print("dry run: add --apply to execute"); return 0
+    if args.simulate_leftover and not args.simulate:
+        print("ERROR: --simulate-leftover requires --simulate"); return 2
     if os.getgroups() and not args.simulate:
         print("FAIL identity has supplementary groups; not the service identity"); return 1
 
@@ -86,13 +89,14 @@ def main() -> int:
         failed = failed or not ok
 
     def expect_denied(name: str, fn) -> None:
+        """Permission-denied tests accept only EACCES or EPERM. Any other errno is a FAIL too:
+        it means the operation was refused for the wrong reason (missing file, wrong path)."""
         try:
             fn()
         except OSError as exc:
-            check(name, exc.errno in DENIED or exc.errno == errno.EEXIST,
-                  f"refused with {errno.errorcode.get(exc.errno, exc.errno)}")
+            check(name, exc.errno in DENIED, f"refused with {errno.errorcode.get(exc.errno, exc.errno)}")
             return
-        check(name, False, "UNEXPECTEDLY SUCCEEDED")
+        check(name, False, "UNEXPECTEDLY SUCCEEDED (counts as FAIL even if reversed)")
 
     payload = f"affilio-b2b-probe {token}\n".encode()
     try:
@@ -138,6 +142,8 @@ def main() -> int:
         else:
             check("T4h protected file unchanged", False, "protected file is GONE")
         # T5
+        if args.simulate_leftover:
+            raise RuntimeError("simulated crash before the staging unlink")
         os.unlink(src)
         c = os.lstat(placed)
         with open(placed, "rb") as h:
@@ -167,7 +173,9 @@ def main() -> int:
         if os.path.lexists(placed):
             leftovers.append(f"{placed} (expected when the service identity may not delete in the type dir)")
         print("T7 host-side cleanup needed for:", leftovers or "nothing")
-        print("summary:", json.dumps({"passed": [n for n, ok, _ in results if ok], "failed": [n for n, ok, _ in results if not ok], "leftovers": leftovers}))
+        print("summary:", json.dumps({"token": token, "verdict": "FAIL" if failed else "PASS",
+                                      "passed": [n for n, ok, _ in results if ok],
+                                      "failed": [n for n, ok, _ in results if not ok], "leftovers": leftovers}))
     return 1 if failed else 0
 
 

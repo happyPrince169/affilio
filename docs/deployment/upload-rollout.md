@@ -65,18 +65,20 @@ the image) and `chattr +i` needs CAP_LINUX_IMMUTABLE. The guarantee is therefore
 delete right on placed files once the staging split is in, no write or delete right ever on
 legacy files, and code that never opens a placed file for writing (tests assert this).
 
-Commands, in order; every step is reviewed before the next.
+Commands, in order; every step is reviewed before the next. The host script prints
+`PASS <step>` or `BLOCKED`/`FAIL` and exits non-zero on anything unexpected; it never deletes
+an ACL entry it cannot identify uniquely and prints manual recovery instructions instead.
 
 | Step                    | Where                     | Command                                                                                                                                                             | sudo?                                                                          |
 | ----------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | A preflight (read-only) | NAS, admin                | `bash scripts/nas-b2b-host.sh preflight`                                                                                                                            | no                                                                             |
 | B baseline              | NAS, admin                | `bash scripts/nas-b2b-host.sh capture` then `export B2B_DIR=…` as printed                                                                                           | no                                                                             |
-| C ACL change            | NAS, admin                | `bash scripts/nas-b2b-host.sh apply-acl` (adds the one entry, verifies only it differs)                                                                             | no, unless `synoacltool -add` is refused for a folder the account does not own |
+| C ACL change            | NAS, admin                | `bash scripts/nas-b2b-host.sh apply-acl` (PASS only when the ACL equals baseline + exactly our entry)                                                               | no, unless `synoacltool -add` is refused for a folder the account does not own |
 | D protected file        | NAS, admin                | `bash scripts/nas-b2b-host.sh prepare-protected` (dot-prefixed file in the type dir, ACL copied from one legacy file, which is only read) then `export PROTECTED=…` | no                                                                             |
-| E probe                 | NAS, root for Docker only | see below                                                                                                                                                           | yes: the Docker socket is root-only                                            |
-| F cleanup               | NAS, admin                | `bash scripts/nas-b2b-host.sh cleanup` (removes the protected file, the placed probe file and any probe dir)                                                        | no                                                                             |
-| G restore               | NAS, admin                | `bash scripts/nas-b2b-host.sh restore-acl` (removes exactly our entry, found by content, diffs against baseline)                                                    | no                                                                             |
-| H verify                | NAS, admin                | `bash scripts/nas-b2b-host.sh verify` (listing and ACL diffs against the baseline; only the type dir's ctime may differ)                                            | no                                                                             |
+| E probe                 | NAS, root for Docker only | see below; note the `"token"` in the summary line                                                                                                                   | yes: the Docker socket is root-only                                            |
+| F cleanup               | NAS, admin                | `bash scripts/nas-b2b-host.sh cleanup <token>` (exact names only, directories only when empty, never recursive)                                                     | no                                                                             |
+| G restore               | NAS, admin                | `bash scripts/nas-b2b-host.sh restore-acl` (unique fixed-string match; PASS only when the full ACL equals the baseline again)                                       | no                                                                             |
+| H verify                | NAS, admin                | `bash scripts/nas-b2b-host.sh verify` (PASS or BLOCKED)                                                                                                             | no                                                                             |
 
 Step E, after copying `scripts/nas_finalize_probe.py` to `/tmp/affilio-b2b/`:
 
@@ -91,16 +93,38 @@ sudo docker run --rm --name affilio-b2b-probe-$(date -u +%H%M%S) --network none 
 echo "probe exit=$?"
 ```
 
-The container exits with the probe's code (0 only when every expectation holds). It prints
-the identity, each test with the errno observed, the host-side cleanup list and a JSON
-summary. The one read-write mount is FINAL as a whole, because hard links cannot cross
-mounts; the ACL is the only guard, exactly as it will be for the worker. The probe derives
-every path from its arguments plus a unique token, never opens legacy media, and leaves the
-placed probe file for host cleanup when the identity may not delete it.
+The container exits with the probe's code (0 only when every expectation holds, including
+the negative ones; an unexpectedly successful destructive test is a FAIL even when the probe
+reverses it). It prints the identity, each test with the errno observed, the host-side
+cleanup list and a JSON summary with the run token. The one read-write mount is FINAL as a
+whole, because hard links cannot cross mounts; the ACL is the only guard, exactly as it will
+be for the worker. The probe derives every path from its arguments plus the token, never
+opens legacy media, and leaves the placed probe file for host cleanup when the identity may
+not delete it.
 
-Negative tests on the protected file: open for write, open read-write, unlink, rename, hard
-link to a new name, utime, plus mkdir in the type dir; each must be refused with EACCES or
-EPERM, and the file's inode, size, mtime and ctime must be unchanged afterwards.
+Negative tests on the protected file: open for write, open read-write, utime, hard link to a
+new name, rename, unlink, plus mkdir in the type dir; each must be refused with EACCES or
+EPERM (any other errno is also a failure), and the file's inode, size, mtime and ctime must be
+unchanged afterwards.
+
+Expected versus unexpected changes during B2B:
+
+- Expected: the type directory's own listing line changes (mtime and ctime move when the ACL
+  entry is added and when the protected or probe files are created and removed); while the
+  entry is applied, the type directory's ACL block differs from the baseline by exactly that
+  entry. `verify` accepts these and nothing else.
+- Unexpected, and `verify` reports BLOCKED: any other directory or file whose inode, link
+  count, size, mtime or ctime changed, and any ACL line added or removed anywhere else,
+  including on legacy files.
+
+What B2B does and does not establish: a PASS proves the service identity can place a file by
+hard link into one folder with a create-only entry, cannot overwrite an existing name, and
+cannot modify, link, rename or delete a file carrying the legacy ACL. It does **not**
+establish production readiness. With the current staging ACL the placed file still carries a
+delete right for the service identity (T6 measures this). The staging ACL split and a second
+probe expecting `--expect-placed-unlink denied`, the ACL entries on the other 75 folders, and
+the compose and environment changes are separate, separately approved steps before any
+deployment.
 
 ## Phase C — deployment sequence (needs approval)
 
