@@ -44,12 +44,14 @@ from affilio.core.enums import (
     MediaRootKind,
     MediaVariantKind,
     MediaVariantStatus,
+    OwnerMappingStatus,
     ScanJobStatus,
     ScanTrigger,
     ThumbnailStatus,
 )
 from affilio.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from affilio.db.types import str_enum
+from affilio.modules.identity.models import User
 from affilio.modules.taxonomy import service as taxonomy_service
 from affilio.modules.taxonomy.models import ContentCategory
 
@@ -558,5 +560,52 @@ class CategorySuggestion(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         return f"<CategorySuggestion facet={self.facet} name={self.name!r} status={self.status}>"
 
 
+class MediaOwnerMapping(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Authorizes a member to submit finals for one production owner (upload track U2).
+    Several active rows per member are allowed; revoked rows are kept for attribution
+    history and reactivated instead of duplicated."""
+
+    __tablename__ = "media_owner_mappings"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "user_id",
+            "production_owner_category_id",
+            name="uq_media_owner_mappings_org_user_category",
+        ),
+        Index("ix_media_owner_mappings_organization_id_user_id", "organization_id", "user_id"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    production_owner_category_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("content_categories.id", ondelete="RESTRICT"), nullable=False
+    )
+    status: Mapped[OwnerMappingStatus] = mapped_column(
+        str_enum(OwnerMappingStatus, "owner_mapping_status"),
+        nullable=False,
+        default=OwnerMappingStatus.ACTIVE,
+        server_default=text("'active'"),
+    )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
+    category: Mapped[ContentCategory] = relationship()
+
+    def __repr__(self) -> str:
+        return f"<MediaOwnerMapping user={self.user_id} owner={self.production_owner_category_id}>"
+
+
 taxonomy_service.register_reference("media_content_categories", "category_id")
 taxonomy_service.register_reference("folder_category_rules", "category_id")
+taxonomy_service.register_reference("media_owner_mappings", "production_owner_category_id")

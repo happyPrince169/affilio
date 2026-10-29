@@ -18,6 +18,9 @@ import type {
   FolderRule,
   FolderRuleCreate,
   FolderRuleUpdate,
+  OwnerCategoryRef,
+  OwnerMapping,
+  OwnerMappingCreate,
   SuggestionApprove,
   SuggestionDecision,
   SuggestionReject,
@@ -219,5 +222,34 @@ export const classificationQueries = {
       queryKey: [...classificationQueries.all(), "suggestions", status ?? "all"] as const,
       queryFn: () => fetchCategorySuggestions(status),
       staleTime: 5_000,
+    }),
+};
+
+// ---------------------------------------------------------------- owner mappings (upload track U2)
+
+export const fetchOwnerMappings = (params: { userId?: string; includeRevoked?: boolean } = {}) => {
+  const search = new URLSearchParams();
+  if (params.userId) search.set("user_id", params.userId);
+  if (params.includeRevoked) search.set("include_revoked", "true");
+  const query = search.toString();
+  return apiFetch<OwnerMapping[]>(`${MEDIA}/owner-mappings${query ? `?${query}` : ""}`);
+};
+export const fetchMyOwners = () => apiFetch<OwnerCategoryRef[]>(`${MEDIA}/owner-mappings/me`);
+export const createOwnerMapping = (body: OwnerMappingCreate) =>
+  sendMedia<OwnerMapping>(`${MEDIA}/owner-mappings`, body);
+export const revokeOwnerMapping = (id: string) =>
+  apiFetch<void>(`${MEDIA}/owner-mappings/${encodeURIComponent(id)}`, { method: "DELETE" });
+
+export const ownerMappingQueries = {
+  all: () => [...mediaQueries.all(), "owner-mappings"] as const,
+  list: (params: { userId?: string; includeRevoked?: boolean } = {}) =>
+    queryOptions({
+      queryKey: [...ownerMappingQueries.all(), "list", params] as const,
+      queryFn: () => fetchOwnerMappings(params),
+    }),
+  mine: () =>
+    queryOptions({
+      queryKey: [...ownerMappingQueries.all(), "mine"] as const,
+      queryFn: fetchMyOwners,
     }),
 };

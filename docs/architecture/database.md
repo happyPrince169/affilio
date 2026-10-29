@@ -376,6 +376,25 @@ category_suggestions
 The downgrade deletes `path` assignments, drops the table, the period column, the index and
 the facet column.
 
+## Editor → production-owner mappings (migration `0014_owner_mappings`)
+
+ADR 0012 (upload track U2). Authorizes a member to submit finished videos for a production
+owner (a value under the `production_owner` facet root). Several active rows per member;
+revoked rows are kept and reactivated instead of duplicated; the owner category is
+protected from deletion by the taxonomy reference registry. New table:
+
+```
+media_owner_mappings
+  id, organization_id FK CASCADE, user_id FK users CASCADE,
+  production_owner_category_id FK content_categories RESTRICT, status active|revoked,
+  created_by_user_id FK users SET NULL, revoked_at, revoked_by_user_id FK users SET NULL,
+  created_at, updated_at
+  UNIQUE(organization_id, user_id, production_owner_category_id); INDEX(organization_id, user_id)
+```
+
+The downgrade drops the index and the table; mappings only authorize future submissions, so
+no media attribution is lost (U4 records the owner on each upload session).
+
 ## Growth plan (not implemented)
 
 | Milestone | Tables (indicative)                                                              |

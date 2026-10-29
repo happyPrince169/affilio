@@ -79,3 +79,17 @@ class InvalidFolderPathError(AppError):
 class SuggestionNameMismatchError(AppError):
     status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
     code = "suggestion_name_mismatch"
+
+
+class OwnerMappingInvalidCategoryError(AppError):
+    """The category is not an active value under the production-owner facet root."""
+
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "owner_mapping_invalid_category"
+
+
+class OwnerMappingConflictError(AppError):
+    """The member already holds an active mapping to that production owner."""
+
+    status_code = status.HTTP_409_CONFLICT
+    code = "owner_mapping_conflict"

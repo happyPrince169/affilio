@@ -21,6 +21,10 @@ export type UserStatus = (typeof USER_STATUSES)[number];
 export const MEMBERSHIP_ROLES = ["owner", "admin", "editor", "viewer"] as const;
 export type MembershipRole = (typeof MEMBERSHIP_ROLES)[number];
 
+/** Editor → production-owner mapping (upload track U2). Revoked rows are kept. */
+export const OWNER_MAPPING_STATUSES = ["active", "revoked"] as const;
+export type OwnerMappingStatus = (typeof OWNER_MAPPING_STATUSES)[number];
+
 // ---------------------------------------------------------------- M3A additions
 
 export const SOCIAL_ACCOUNT_TYPES = ["page", "profile", "group", "channel", "shop"] as const;

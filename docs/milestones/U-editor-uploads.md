@@ -1,7 +1,8 @@
 # U — Editor video uploads and production submission
 
-- **Status:** U0 implemented locally (commit `d98b08a`, not deployed); U1 design accepted for
-  review (this document, ADR 0012, `docs/architecture/editor-uploads.md`); U2–U7 planned.
+- **Status:** U0 implemented locally (commit `d98b08a`); U1 design accepted (`ada5462`,
+  ADR 0012, `docs/architecture/editor-uploads.md`); U2 implemented locally (migration 0014,
+  owner mappings API and members UI); U3–U7 planned. Nothing deployed.
 - **Depends on:** M3A (sessions, roles), M3A.1 (taxonomy, folder rules), M3C.1 (finals,
   handoff review), Facets F1 (facet roots, path classification), Step 4 (75 directories).
 - **Goal:** editors submit finished videos through AFFILIO in bulk, resumably, attributed to a
@@ -25,7 +26,7 @@ pushed until U7 is approved separately.
   proposed schema, production change list, unresolved decisions.
 - No code.
 
-### U2 — Editor to owner mapping
+### U2 — Editor to owner mapping (done locally)
 
 - Migration 0014: `media_owner_mappings` with constraints and downgrade; `register_reference`
   so a mapped owner category cannot be deleted.

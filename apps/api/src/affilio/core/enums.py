@@ -345,6 +345,13 @@ class CategorySuggestionStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class OwnerMappingStatus(StrEnum):
+    """Editor → production-owner mapping (upload track U2). Revoked rows are kept."""
+
+    ACTIVE = "active"
+    REVOKED = "revoked"
+
+
 class ChannelMatchPolicy(StrEnum):
     ALLOW = "allow"
     PREFER = "prefer"

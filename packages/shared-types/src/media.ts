@@ -1,4 +1,10 @@
-import type { CategoryAssignmentSource, CategoryFacet, CategorySuggestionStatus } from "./domain";
+import type {
+  CategoryAssignmentSource,
+  CategoryFacet,
+  CategoryStatus,
+  CategorySuggestionStatus,
+  OwnerMappingStatus,
+} from "./domain";
 
 /**
  * Media library contracts (M1). Mirrors `apps/api/src/affilio/modules/media/schemas.py`.
@@ -370,4 +376,33 @@ export interface FolderReportEntry {
 export interface CategoryCount {
   category_id: string;
   primary_count: number;
+}
+
+// ---------------------------------------------------------------- owner mappings (upload track U2)
+
+export interface OwnerMappingCreate {
+  user_id: string;
+  production_owner_category_id: string;
+}
+
+/** The production owner a mapping points at; `status` flags archived owners. */
+export interface OwnerCategoryRef {
+  id: string;
+  slug: string;
+  name: string;
+  status: CategoryStatus;
+}
+
+export interface OwnerMapping {
+  id: string;
+  user_id: string;
+  user_email: string;
+  user_display_name: string | null;
+  production_owner: OwnerCategoryRef;
+  status: OwnerMappingStatus;
+  created_at: string;
+  updated_at: string;
+  revoked_at: string | null;
+  created_by_user_id: string | null;
+  revoked_by_user_id: string | null;
 }

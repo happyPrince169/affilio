@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from affilio.core.enums import (
     CategoryAssignmentSource,
     CategoryFacet,
+    CategoryStatus,
     CategorySuggestionStatus,
     ExportJobStatus,
     ExportTrigger,
@@ -21,6 +22,7 @@ from affilio.core.enums import (
     MediaRootKind,
     MediaVariantKind,
     MediaVariantStatus,
+    OwnerMappingStatus,
     ScanJobStatus,
     ScanTrigger,
     ThumbnailStatus,
@@ -371,3 +373,40 @@ class SuggestionDecisionResponse(MediaModel):
     suggestion: CategorySuggestionResponse
     category_id: uuid.UUID | None
     reclassified_assets: int
+
+
+# ---------------------------------------------------------------- owner mappings (upload track U2)
+
+
+class OwnerMappingCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: uuid.UUID
+    production_owner_category_id: uuid.UUID
+
+
+class OwnerCategoryRef(BaseModel):
+    """The production owner a mapping points at; `status` tells the UI about archived owners."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    slug: str
+    name: str
+    status: CategoryStatus
+
+
+class OwnerMappingResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    user_id: uuid.UUID
+    user_email: str
+    user_display_name: str | None
+    production_owner: OwnerCategoryRef
+    status: OwnerMappingStatus
+    created_at: datetime
+    updated_at: datetime
+    revoked_at: datetime | None
+    created_by_user_id: uuid.UUID | None
+    revoked_by_user_id: uuid.UUID | None

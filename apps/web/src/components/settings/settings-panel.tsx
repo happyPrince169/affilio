@@ -8,6 +8,7 @@ import { toast } from "sonner";
 
 import { useAuth } from "@/components/auth/auth-provider";
 import { PageHeader } from "@/components/layout/page-header";
+import { MemberOwnerMappings } from "@/components/settings/owner-mappings";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -190,6 +191,7 @@ function MembersCard() {
                   <p className="truncate text-xs text-muted-foreground">
                     {m.email} · last sign-in {formatDateTime(m.last_login_at)}
                   </p>
+                  <MemberOwnerMappings userId={m.user_id} canManage={can("manage_members")} />
                 </div>
                 {can("manage_members") &&
                 m.user_id !== user.id &&

@@ -31,7 +31,7 @@ from affilio.core.enums import (
     MediaAssetStatus,
     ScanTrigger,
 )
-from affilio.modules.media import classification, facets, service
+from affilio.modules.media import classification, facets, owner_mappings, service
 from affilio.modules.media import exports as exports_module
 from affilio.modules.media.models import CategorySuggestion, FolderCategoryRule
 from affilio.modules.media.schemas import (
@@ -51,6 +51,9 @@ from affilio.modules.media.schemas import (
     MediaRootStatus,
     MediaStats,
     Orientation,
+    OwnerCategoryRef,
+    OwnerMappingCreate,
+    OwnerMappingResponse,
     PaginatedAssets,
     ScanJobResponse,
     ScanStatusResponse,
@@ -680,3 +683,119 @@ def reject_category_suggestion(
     )
     session.commit()
     return _suggestion_response(facets.get_suggestion(session, identity.organization.id, row.id))
+
+
+# ---------------------------------------------------------------- owner mappings (upload track U2)
+
+
+def _owner_mapping_response(m) -> OwnerMappingResponse:
+    return OwnerMappingResponse(
+        id=m.id,
+        user_id=m.user_id,
+        user_email=m.user.email,
+        user_display_name=m.user.display_name,
+        production_owner=OwnerCategoryRef.model_validate(m.category),
+        status=m.status,
+        created_at=m.created_at,
+        updated_at=m.updated_at,
+        revoked_at=m.revoked_at,
+        created_by_user_id=m.created_by_user_id,
+        revoked_by_user_id=m.revoked_by_user_id,
+    )
+
+
+@router.get(
+    "/owner-mappings",
+    response_model=list[OwnerMappingResponse],
+    summary="Production-owner mappings of the organization's members (admin)",
+)
+def list_owner_mappings(
+    session: DbSession,
+    identity: RequireAdmin,
+    user_id: uuid.UUID | None = None,
+    include_revoked: Annotated[bool, Query()] = False,
+) -> list[OwnerMappingResponse]:
+    rows = owner_mappings.list_mappings(
+        session, identity.organization.id, user_id=user_id, include_revoked=include_revoked
+    )
+    return [_owner_mapping_response(m) for m in rows]
+
+
+@router.get(
+    "/owner-mappings/me",
+    response_model=list[OwnerCategoryRef],
+    summary="Production owners the current user may submit videos for",
+)
+def my_submittable_owners(session: DbSession, identity: CurrentIdentity) -> list[OwnerCategoryRef]:
+    if identity.user is None:
+        return []
+    owners = owner_mappings.submittable_owners(session, identity.organization.id, identity.user.id)
+    return [OwnerCategoryRef.model_validate(c) for c in owners]
+
+
+@router.post(
+    "/owner-mappings",
+    response_model=OwnerMappingResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Allow a member to submit videos for a production owner (admin)",
+)
+def create_owner_mapping(
+    body: OwnerMappingCreate, session: DbSession, identity: RequireAdmin
+) -> OwnerMappingResponse:
+    actor_id = identity.user.id if identity.user is not None else None
+    change = owner_mappings.create_mapping(
+        session,
+        identity.organization.id,
+        user_id=body.user_id,
+        category_id=body.production_owner_category_id,
+        actor_user_id=actor_id,
+    )
+    record_audit(
+        session,
+        organization_id=identity.organization.id,
+        identity=identity,
+        action="owner_mapping.created",
+        entity_type="media_owner_mapping",
+        entity_id=change.mapping.id,
+        data={
+            "user_id": str(body.user_id),
+            "production_owner_category_id": str(change.mapping.production_owner_category_id),
+            "production_owner_slug": change.mapping.category.slug,
+            "reactivated": change.reactivated,
+        },
+    )
+    session.commit()
+    return _owner_mapping_response(
+        owner_mappings.get_mapping(session, identity.organization.id, change.mapping.id)
+    )
+
+
+@router.delete(
+    "/owner-mappings/{mapping_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Revoke a production-owner mapping; the row is kept for history (admin)",
+)
+def revoke_owner_mapping(
+    mapping_id: uuid.UUID, session: DbSession, identity: RequireAdmin, response: Response
+) -> Response:
+    actor_id = identity.user.id if identity.user is not None else None
+    mapping, changed = owner_mappings.revoke_mapping(
+        session, identity.organization.id, mapping_id, actor_user_id=actor_id
+    )
+    if changed:
+        record_audit(
+            session,
+            organization_id=identity.organization.id,
+            identity=identity,
+            action="owner_mapping.revoked",
+            entity_type="media_owner_mapping",
+            entity_id=mapping.id,
+            data={
+                "user_id": str(mapping.user_id),
+                "production_owner_category_id": str(mapping.production_owner_category_id),
+                "production_owner_slug": mapping.category.slug,
+            },
+        )
+    session.commit()
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response
