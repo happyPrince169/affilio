@@ -162,11 +162,15 @@ lastModified, taxonomy}` only; the session cookie is HttpOnly and nothing secret
   browser keeps only `{upload id, filename, size, last-modified, batch defaults}` in
   localStorage; no bytes, cookies or paths. On load the page lists the server's active
   sessions and shows them as "needs file". A reselected file must match by name, size and
-  last-modified, and the client hashes it over `[last_chunk_offset, committed_offset)` and
-  compares with the server's `last_chunk_sha256` before any byte is sent, so a different file
-  with the same name is refused. Firefox and Safari cannot keep file handles across reloads
-  and always need reselection; the Chromium persistent-handle optimisation is not
-  implemented in U5.
+  last-modified; then the client fetches the session's chunk manifest
+  (`GET /uploads/{id}/manifest`, the SHA-256 of every committed chunk, kept in
+  `media_uploads.chunk_manifest` from migration 0017) and hashes the reselected file chunk by
+  chunk over the whole committed prefix, one chunk in memory at a time. Every digest must
+  match before any byte is sent, so a file that differs anywhere in the uploaded part is
+  refused even when its last chunk matches (U7 hardening). With nothing committed there is
+  nothing to prove: every byte then comes from the selected file and is verified per chunk.
+  Firefox and Safari cannot keep file handles across reloads and always need reselection; the
+  Chromium persistent-handle optimisation is not implemented.
 - Duplicate privacy: editors receive `duplicate_of_asset_id: null` and a generic "identical
   content is already in the library" message; only admins see the referenced asset id.
 - Proxy (`app/api/[...path]/route.ts`): request bodies are streamed to the API with

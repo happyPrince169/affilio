@@ -519,3 +519,15 @@ class UploadOptionsResponse(BaseModel):
     content_types: list[UploadTaxonomyRef]
     allowed_extensions: list[str]
     limits: UploadLimitsResponse
+
+
+class UploadManifestResponse(BaseModel):
+    """Digests of every committed chunk, for resume identity checks (U7). The client hashes
+    its reselected file chunk by chunk and must reproduce each digest."""
+
+    id: uuid.UUID
+    status: UploadStatus
+    chunk_bytes: int
+    expected_size: int
+    committed_offset: int
+    digests: list[str]

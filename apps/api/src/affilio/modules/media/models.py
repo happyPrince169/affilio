@@ -692,6 +692,11 @@ class MediaUpload(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     last_chunk_offset: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     last_chunk_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_chunk_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # SHA-256 of every committed chunk, indexed by offset // chunk_bytes (resume identity, U7):
+    # a reselected file must reproduce every digest before more bytes are accepted.
+    chunk_manifest: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
     staging_name: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
     status: Mapped[UploadStatus] = mapped_column(
         str_enum(UploadStatus, "upload_status"),

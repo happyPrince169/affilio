@@ -321,6 +321,7 @@ def test_create_validations_and_authorization(
     # editor2 (no mappings) cannot touch editor's sessions; other organization sees nothing
     login(api, world["editor2"])
     assert api.get(f"{BASE}/{ids[1]}").status_code == 403
+    assert api.get(f"{BASE}/{ids[1]}/manifest").status_code == 403
     assert send_chunk(api, ids[1], 0, b"x").status_code == 403
     assert api.post(f"{BASE}/{ids[1]}/complete").status_code == 403
     assert api.delete(f"{BASE}/{ids[1]}").status_code == 403
@@ -419,6 +420,10 @@ def test_chunk_protocol_resume_replay_and_errors(
     assert state["committed_offset"] == CHUNK
     assert state["last_chunk_offset"] == 0 and state["last_chunk_sha256"] == sha(data[:CHUNK])
     assert path.stat().st_size == CHUNK
+    # The manifest holds exactly the committed chunks (rejected and replayed chunks add nothing).
+    manifest = api.get(f"{BASE}/{upload['id']}/manifest").json()
+    assert manifest["digests"] == [sha(data[:CHUNK])] and manifest["committed_offset"] == CHUNK
+    assert manifest["chunk_bytes"] == CHUNK and manifest["expected_size"] == len(data)
     # too early to complete
     early = api.post(f"{BASE}/{upload['id']}/complete")
     assert early.status_code == 409 and early.json()["error"]["code"] == "upload_incomplete"
@@ -429,6 +434,8 @@ def test_chunk_protocol_resume_replay_and_errors(
         assert send_chunk(api, upload["id"], offset, piece).status_code == 200
         offset += len(piece)
     assert path.read_bytes() == data
+    digests = api.get(f"{BASE}/{upload['id']}/manifest").json()["digests"]
+    assert digests == [sha(data[i : i + CHUNK]) for i in range(0, len(data), CHUNK)]
     beyond = send_chunk(api, upload["id"], len(data), b"z")
     assert beyond.status_code == 413
     done = api.post(f"{BASE}/{upload['id']}/complete")

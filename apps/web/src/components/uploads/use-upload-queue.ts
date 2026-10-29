@@ -9,6 +9,7 @@ import {
   completeUpload,
   createUpload,
   fetchUpload,
+  fetchUploadManifest,
   fetchUploads,
   uploadChunk,
   uploadQueries,
@@ -336,12 +337,11 @@ export function useUploadQueue(options: UploadOptions | undefined): UseUploadQue
               }),
           );
           if (candidate) {
-            const session = sessionsRef.current.get(candidate.uploadId as string);
             const localId = candidate.localId;
             pendingVerifications.push(
               (async () => {
-                const current = session ?? (await fetchUpload(candidate.uploadId as string));
-                const identity = await verifyResumeIdentity(file, current);
+                const manifest = await fetchUploadManifest(candidate.uploadId as string);
+                const identity = await verifyResumeIdentity(file, manifest);
                 if (identity.ok) {
                   resumed += 1;
                   patch(localId, {
@@ -357,7 +357,9 @@ export function useUploadQueue(options: UploadOptions | undefined): UseUploadQue
                     error:
                       identity.reason === "chunk_mismatch"
                         ? "This is not the same file as the interrupted upload; select the original file"
-                        : "File size differs from the interrupted upload",
+                        : identity.reason === "size_mismatch"
+                          ? "File size differs from the interrupted upload"
+                          : "The server's record of this upload is incomplete; cancel it and upload again",
                   });
                 }
               })(),

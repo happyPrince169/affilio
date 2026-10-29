@@ -137,12 +137,11 @@ rollback rehearsal. Nothing in U2–U6 writes to production.
 
 ## Known limits
 
-- U5 resume identity verifies file metadata plus the last committed chunk only; a
-  whole-file identity check (full hash before completion, or server-side comparison of the
-  reselected file's chunk digests) is required before production rollout (U7 prerequisite).
+- Resume identity (hardened in U7 Phase A, migration 0017): a reselected file is verified
+  against the SHA-256 of every committed chunk before any byte is appended. Bytes beyond the
+  committed offset are verified chunk by chunk as they arrive.
 
-- Every browser requires re-selecting files after a reload in U5; the Chromium persistent
-  file-handle optimisation is a follow-up. Reselected files are verified against the
-  uploaded bytes before resuming.
+- Every browser requires re-selecting files after a reload; the Chromium persistent
+  file-handle optimisation is a follow-up.
 - The proxy streams chunk bodies; the one-chunk buffer limit no longer applies.
 - No bulk re-assignment of categories after upload beyond the existing manual override.

@@ -498,3 +498,13 @@ export interface UploadOptions {
   allowed_extensions: string[];
   limits: UploadLimits;
 }
+
+/** GET /media/uploads/{id}/manifest: digests of the committed chunks (resume identity, U7). */
+export interface UploadManifest {
+  id: string;
+  status: UploadStatus;
+  chunk_bytes: number;
+  expected_size: number;
+  committed_offset: number;
+  digests: string[];
+}

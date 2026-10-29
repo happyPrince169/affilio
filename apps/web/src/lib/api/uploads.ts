@@ -1,6 +1,7 @@
 import type {
   UploadChunkResponse,
   UploadCreate,
+  UploadManifest,
   UploadOptions,
   UploadSession,
   UploadStatus,
@@ -52,6 +53,9 @@ export const fetchUploads = (filters: UploadListFilters = {}) => {
   const query = search.toString();
   return apiFetch<UploadSession[]>(`${UPLOADS}${query ? `?${query}` : ""}`);
 };
+
+export const fetchUploadManifest = (id: string) =>
+  apiFetch<UploadManifest>(`${UPLOADS}/${encodeURIComponent(id)}/manifest`);
 
 export const completeUpload = (id: string) =>
   apiFetch<UploadSession>(`${UPLOADS}/${encodeURIComponent(id)}/complete`, { method: "POST" });

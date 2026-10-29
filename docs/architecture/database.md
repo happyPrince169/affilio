@@ -430,6 +430,13 @@ production_period)` for period reports and `(revision_of_asset_id)` for revision
 new table: reporting reads finals, completed uploads and users
 (`docs/architecture/production-reporting.md`). The downgrade drops both indexes.
 
+## Upload chunk manifest (migration `0017_upload_chunk_manifest`)
+
+U7 Phase A hardening. `media_uploads.chunk_manifest` (JSONB, default `[]`) holds the SHA-256
+of every committed chunk, indexed by `offset // chunk_bytes`, so a reselected file can be
+verified over the whole committed prefix before an interrupted upload resumes. At most 1024
+entries for an 8 GiB file. The downgrade drops the column.
+
 ## Growth plan (not implemented)
 
 | Milestone  | Tables (indicative)                                                                                            |

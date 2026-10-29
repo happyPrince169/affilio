@@ -1,4 +1,3 @@
-import type { UploadSession } from "@affilio/shared-types";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/uploads/sha256", () => ({
@@ -8,13 +7,15 @@ vi.mock("@/lib/uploads/sha256", () => ({
 import { matchesSession, verifyResumeIdentity } from "@/lib/uploads/file-identity";
 import { STORAGE_KEY, forgetSession, loadStored, saveStored } from "@/lib/uploads/persistence";
 
-const session = {
-  id: "s1",
+const CHUNK = 2;
+const digest = (bytes: number[]) => `sha-${bytes.join("")}`;
+/** Manifest of a 6-byte file [1,2,3,4,5,6] with 4 bytes committed in 2-byte chunks. */
+const manifest = {
+  chunk_bytes: CHUNK,
   expected_size: 6,
   committed_offset: 4,
-  last_chunk_offset: 2,
-  last_chunk_sha256: "sha-34",
-} as unknown as UploadSession;
+  digests: [digest([1, 2]), digest([3, 4])],
+};
 
 describe("reselected file identity", () => {
   it("matches by name, size and last-modified when known", () => {
@@ -36,26 +37,55 @@ describe("reselected file identity", () => {
     );
   });
 
-  it("accepts the original file by hashing the last committed chunk, refuses another file", async () => {
+  it("accepts the original file after hashing every committed chunk", async () => {
     const original = new File([new Uint8Array([1, 2, 3, 4, 5, 6])], "a.mp4");
-    expect(await verifyResumeIdentity(original, session)).toEqual({ ok: true, offset: 4 });
-    const impostor = new File([new Uint8Array([1, 2, 9, 9, 5, 6])], "a.mp4"); // same name and size
-    expect(await verifyResumeIdentity(impostor, session)).toEqual({
+    const seen: number[] = [];
+    expect(await verifyResumeIdentity(original, manifest, (n) => seen.push(n))).toEqual({
+      ok: true,
+      offset: 4,
+      verifiedChunks: 2,
+    });
+    expect(seen).toEqual([2, 4]);
+  });
+
+  it("refuses a same-metadata file that differs in an early chunk even when the last chunk matches", async () => {
+    // Bytes 0-1 differ, bytes 2-3 (the last committed chunk) are identical: the U5 check
+    // would have accepted this file; the whole-prefix check refuses it.
+    const impostor = new File([new Uint8Array([9, 9, 3, 4, 5, 6])], "a.mp4");
+    expect(await verifyResumeIdentity(impostor, manifest)).toEqual({
       ok: false,
       reason: "chunk_mismatch",
     });
-    const shorter = new File([new Uint8Array(5)], "a.mp4");
-    expect(await verifyResumeIdentity(shorter, session)).toEqual({
+    const lastDiffers = new File([new Uint8Array([1, 2, 3, 9, 5, 6])], "a.mp4");
+    expect(await verifyResumeIdentity(lastDiffers, manifest)).toEqual({
+      ok: false,
+      reason: "chunk_mismatch",
+    });
+    // A file that differs only beyond the committed offset is the same committed prefix: the
+    // remaining bytes come from it and are verified chunk by chunk on upload.
+    const tailDiffers = new File([new Uint8Array([1, 2, 3, 4, 8, 8])], "a.mp4");
+    expect((await verifyResumeIdentity(tailDiffers, manifest)).ok).toBe(true);
+  });
+
+  it("handles size mismatch, empty sessions and incomplete manifests", async () => {
+    const original = new File([new Uint8Array([1, 2, 3, 4, 5, 6])], "a.mp4");
+    expect(await verifyResumeIdentity(new File([new Uint8Array(5)], "a.mp4"), manifest)).toEqual({
       ok: false,
       reason: "size_mismatch",
     });
-    const fresh = {
-      ...session,
-      committed_offset: 0,
-      last_chunk_offset: null,
-      last_chunk_sha256: null,
-    } as UploadSession;
-    expect(await verifyResumeIdentity(original, fresh)).toEqual({ ok: true, offset: 0 });
+    expect(
+      await verifyResumeIdentity(original, { ...manifest, committed_offset: 0, digests: [] }),
+    ).toEqual({
+      ok: true,
+      offset: 0,
+      verifiedChunks: 0,
+    });
+    expect(
+      await verifyResumeIdentity(original, { ...manifest, digests: [digest([1, 2])] }),
+    ).toEqual({
+      ok: false,
+      reason: "manifest_incomplete",
+    });
   });
 });
 

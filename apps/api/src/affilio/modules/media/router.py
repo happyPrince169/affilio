@@ -71,6 +71,7 @@ from affilio.modules.media.schemas import (
     UploadChunkResponse,
     UploadCreate,
     UploadLimitsResponse,
+    UploadManifestResponse,
     UploadOptionsResponse,
     UploadResponse,
     UploadReview,
@@ -975,6 +976,26 @@ def read_upload(
     upload = uploads.get_upload(session, identity.organization.id, upload_id)
     uploads.authorize_access(identity, upload)
     return _upload_response(upload, identity, settings.api_v1_prefix)
+
+
+@router.get(
+    "/uploads/{upload_id}/manifest",
+    response_model=UploadManifestResponse,
+    summary="Digests of the committed chunks (resume identity check)",
+)
+def read_upload_manifest(
+    upload_id: uuid.UUID, session: DbSession, identity: RequireEditor
+) -> UploadManifestResponse:
+    upload = uploads.get_upload(session, identity.organization.id, upload_id)
+    uploads.authorize_access(identity, upload)
+    return UploadManifestResponse(
+        id=upload.id,
+        status=upload.status,
+        chunk_bytes=upload.chunk_bytes,
+        expected_size=upload.expected_size,
+        committed_offset=upload.committed_offset,
+        digests=list(upload.chunk_manifest or []),
+    )
 
 
 @router.patch(

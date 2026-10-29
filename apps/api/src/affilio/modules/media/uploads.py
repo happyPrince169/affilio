@@ -478,6 +478,15 @@ async def write_chunk(
         os.fdatasync(fd)
     finally:
         os.close(fd)
+    index = offset // upload.chunk_bytes
+    manifest = list(upload.chunk_manifest or [])
+    if len(manifest) < index:
+        manifest.extend([""] * (index - len(manifest)))  # defensive: offsets are sequential
+    if len(manifest) == index:
+        manifest.append(sha256.lower())
+    else:
+        manifest[index] = sha256.lower()
+    upload.chunk_manifest = manifest[: index + 1]  # new list so the JSONB change is tracked
     upload.committed_offset = offset + length
     upload.last_chunk_offset = offset
     upload.last_chunk_sha256 = sha256.lower()

@@ -90,5 +90,5 @@ Editors do not see the page's data (admin permission `approve`); their own work 
 3. Enforce reviewer accountability on the review action itself (two-person rule, reasons
    required on rejection are already enforced).
 4. Freeze periods: approvals after a cut-off should not move units between months.
-5. Resume identity (U5) verifies only metadata plus the last committed chunk; a whole-file
-   identity check is required before production rollout.
+5. Resume identity is verified over the whole committed prefix since U7 Phase A (chunk
+   manifest); keep it that way.
