@@ -13,6 +13,7 @@
 #
 # Dry run by default: prints the plan. `--apply` executes. Every path must be under the
 # staging directory or the explicitly named owner directory; anything else is refused.
+# Inside the isolated probe container the staging directory is bind-mounted at /staging.
 set -Eeuo pipefail
 
 STAGING=""
@@ -27,10 +28,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$STAGING" ]] || { echo "ERROR: --staging is required" >&2; exit 2; }
-case "$STAGING" in */.affilio-incoming) ;; *) echo "ERROR: --staging must end with /.affilio-incoming" >&2; exit 2 ;; esac
-[[ -d "$STAGING" ]] || { echo "ERROR: staging directory does not exist (create it in Phase B first)" >&2; exit 3; }
-FINAL_ROOT="${STAGING%/.affilio-incoming}"
+# Accepted staging paths: the hidden directory inside FINAL (host or worker view), or the
+# bare container mount point used by the isolated probe container (`-v …/.affilio-incoming:/staging`).
+case "$STAGING" in
+  */.affilio-incoming) FINAL_ROOT="${STAGING%/.affilio-incoming}" ;;
+  /staging|/data/incoming) FINAL_ROOT="" ;;
+  *) echo "ERROR: --staging must be <FINAL>/.affilio-incoming, /staging or /data/incoming" >&2; exit 2 ;;
+esac
+[[ -d "$STAGING" && ! -L "$STAGING" ]] || { echo "ERROR: staging directory missing or a symlink (create it in Phase B first)" >&2; exit 3; }
 if [[ -n "$OWNER_DIR" ]]; then
+  [[ -n "$FINAL_ROOT" ]] || { echo "ERROR: --owner-dir needs the full <FINAL>/.affilio-incoming staging path" >&2; exit 2; }
   case "$OWNER_DIR" in "$FINAL_ROOT"/*/*/*) ;; *) echo "ERROR: --owner-dir must be <FINAL>/<Owner>/<Category>/<Type>" >&2; exit 2 ;; esac
   [[ -d "$OWNER_DIR" && ! -L "$OWNER_DIR" ]] || { echo "ERROR: owner dir missing or a symlink" >&2; exit 3; }
 fi

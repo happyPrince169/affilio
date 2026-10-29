@@ -21,32 +21,86 @@ need explicit approval. Design: `docs/architecture/editor-uploads.md`, ADR 0012.
 - 11 TB free; 166 assets, 92 finals, 407 variants; publishing flag false; health and tunnel
   green.
 
-## Phase B — probe (needs approval)
+## Phase B1 — staging probe (done, passed)
 
-1. Create `FINAL/.affilio-incoming` (owner 1026, group users, mode 0770) and grant the ACL
-   below. Nothing else changes.
-2. Run `scripts/nas-upload-probe.sh --staging /volume1/ContentFactory/fashion/FINAL/.affilio-incoming`
-   as the service identity. First from the host with `sudo -u hoangtuhanhphuc`, which still
-   carries the administrators group, then the meaningful run **inside a container** once the
-   api mount exists: `sudo docker exec affilio-api bash /app/scripts/nas-upload-probe.sh …`
-   (the worker container for the owner-dir step). Dry run first, then `--apply`.
-3. Optional step 5 with `--owner-dir "<FINAL>/Hang/Mens-Fashion/Review"` links one
-   dot-prefixed probe file into a real folder and removes it (scanner ignores dot files).
-   Approve separately.
-4. Failure handling: the script cleans up on exit; if a step fails, the only possible
-   leftovers are `probe-<ts>/` under staging or `.affilio-probe-<ts>.tmp` in the owner
-   folder, both listed by the script, both safe to delete. A failed step means the ACL or
-   filesystem assumption is wrong: stop, do not deploy.
+Isolated container (`affilio-api:latest`, uid 1026 gid 100 without groups, no network, no
+capabilities, read-only root, staging bind only) proved exclusive create and write, hard link
+with the same inode (nlink 2), EEXIST on an existing name, unlink persistence and clean
+cleanup. `FINAL/.affilio-incoming` exists (0770, owner 1026, one full-rights entry for the
+service user).
 
-## ACL grant (NAS admin, DSM File Station → Permissions or `synoacltool`)
+## Phase B2B — finalization probe on ONE destination directory (prepared, not executed)
 
-| Path                      | Entry for `hoangtuhanhphuc` (uid 1026)                                                                                                 |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `FINAL/.affilio-incoming` | allow read, write, execute, append, delete, delete subfolders/files, read/write attributes, inherit to files and folders               |
-| `FINAL` (tree)            | allow read, write (create files), execute, append, read/write attributes, read permissions; **no delete**; inherit to **folders only** |
+Scope: `FINAL/Hang/Mens-Fashion/Try-On` only. No entry is added to FINAL, owner roots,
+category folders, other type folders or T9 folders; the service user's existing read and
+traverse entries cover the ancestors, and inside the container the bind mount starts at
+FINAL anyway. Scripts: `scripts/nas-b2b-host.sh` (host side, administrator identity) and
+`scripts/nas_finalize_probe.py` (container side, service identity).
 
-Verify with `synoacltool -get` on FINAL, an owner folder, a category folder and a legacy file:
-the legacy files must show no new write entry.
+ACL entry under test, Synology syntax, create-file only, this folder only (no inheritance):
+
+```
+user:hoangtuhanhphuc:allow:-w-----------:----
+```
+
+`w` is "write data / create file" on a directory; `p` (create subfolder), `d`, `D`, `A`,
+`C` and `o` are deliberately absent. The worker needs `p` only to create a missing folder,
+which the single-directory probe does not exercise.
+
+Why the staging ACL matters and why it is not changed yet: a hard link shares the inode and
+the inode carries the ACL, so a placed final keeps the staging file's ACL. Today staging
+files inherit the service user's full entry including delete, so the service identity could
+unlink a placed name from the type folder through the file's own `d` right. The probe's T6
+measures exactly that with the current ACL (`--expect-placed-unlink allowed`). The intended
+fix, applied only after this measurement and a second approval, splits the staging ACL into a
+directory entry (`rwxpdDaARWc--:d---`, so the API can create and unlink staging names) and a
+file entry without delete (`rw----aARWc--:fi--`), plus the four human entries so uploaded
+finals are visible to editors like legacy files. A second probe run then expects
+`--expect-placed-unlink denied`.
+
+Immutability of a placed final for the service user: not achievable without more privilege.
+The service user needs `w` on staging files to write chunks, the placed name is the same
+inode, Synology ACLs cannot be edited from the worker (no `C` right, no `synoacltool` in
+the image) and `chattr +i` needs CAP_LINUX_IMMUTABLE. The guarantee is therefore: no
+delete right on placed files once the staging split is in, no write or delete right ever on
+legacy files, and code that never opens a placed file for writing (tests assert this).
+
+Commands, in order; every step is reviewed before the next.
+
+| Step                    | Where                     | Command                                                                                                                                                             | sudo?                                                                          |
+| ----------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| A preflight (read-only) | NAS, admin                | `bash scripts/nas-b2b-host.sh preflight`                                                                                                                            | no                                                                             |
+| B baseline              | NAS, admin                | `bash scripts/nas-b2b-host.sh capture` then `export B2B_DIR=…` as printed                                                                                           | no                                                                             |
+| C ACL change            | NAS, admin                | `bash scripts/nas-b2b-host.sh apply-acl` (adds the one entry, verifies only it differs)                                                                             | no, unless `synoacltool -add` is refused for a folder the account does not own |
+| D protected file        | NAS, admin                | `bash scripts/nas-b2b-host.sh prepare-protected` (dot-prefixed file in the type dir, ACL copied from one legacy file, which is only read) then `export PROTECTED=…` | no                                                                             |
+| E probe                 | NAS, root for Docker only | see below                                                                                                                                                           | yes: the Docker socket is root-only                                            |
+| F cleanup               | NAS, admin                | `bash scripts/nas-b2b-host.sh cleanup` (removes the protected file, the placed probe file and any probe dir)                                                        | no                                                                             |
+| G restore               | NAS, admin                | `bash scripts/nas-b2b-host.sh restore-acl` (removes exactly our entry, found by content, diffs against baseline)                                                    | no                                                                             |
+| H verify                | NAS, admin                | `bash scripts/nas-b2b-host.sh verify` (listing and ACL diffs against the baseline; only the type dir's ctime may differ)                                            | no                                                                             |
+
+Step E, after copying `scripts/nas_finalize_probe.py` to `/tmp/affilio-b2b/`:
+
+```
+sudo docker run --rm --name affilio-b2b-probe-$(date -u +%H%M%S) --network none --user 1026:100 \
+  --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,size=16m \
+  -v /volume1/ContentFactory/fashion/FINAL:/final:rw \
+  -v /tmp/affilio-b2b/nas_finalize_probe.py:/probe.py:ro \
+  --entrypoint python3 affilio-api:latest \
+  -I /probe.py --final /final --type-dir Hang/Mens-Fashion/Try-On --protected "$PROTECTED" \
+  --expect-placed-unlink allowed --apply
+echo "probe exit=$?"
+```
+
+The container exits with the probe's code (0 only when every expectation holds). It prints
+the identity, each test with the errno observed, the host-side cleanup list and a JSON
+summary. The one read-write mount is FINAL as a whole, because hard links cannot cross
+mounts; the ACL is the only guard, exactly as it will be for the worker. The probe derives
+every path from its arguments plus a unique token, never opens legacy media, and leaves the
+placed probe file for host cleanup when the identity may not delete it.
+
+Negative tests on the protected file: open for write, open read-write, unlink, rename, hard
+link to a new name, utime, plus mkdir in the type dir; each must be refused with EACCES or
+EPERM, and the file's inode, size, mtime and ctime must be unchanged afterwards.
 
 ## Phase C — deployment sequence (needs approval)
 
