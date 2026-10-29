@@ -454,12 +454,17 @@ export interface UploadSession {
   uploaded_by_user_id: string;
   submitted_for_user_id: string | null;
   media_asset_id: string | null;
-  /** Only for `duplicate`; never carries the other asset's filename, path or owner. */
+  /** Only for `duplicate` and only for admins; editors always get null (duplicate privacy). */
   duplicate_of_asset_id: string | null;
   failure_code: string | null;
   failure_detail: string | null;
   finalize_attempts: number;
   review: UploadReview | null;
+  /** Resume identity: hash the local file over [last_chunk_offset, committed_offset) and compare. */
+  last_chunk_offset: number | null;
+  last_chunk_sha256: string | null;
+  asset_title: string | null;
+  thumbnail_url: string | null;
   created_at: string;
   updated_at: string;
   uploaded_at: string | null;

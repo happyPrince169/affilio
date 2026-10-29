@@ -19,6 +19,7 @@ from affilio.api.deps import (
     CurrentIdentity,
     CurrentOrganization,
     DbSession,
+    Identity,
     MediaRegistry,
     RequireAdmin,
     RequireEditor,
@@ -31,7 +32,9 @@ from affilio.core.enums import (
     HandoffStatus,
     MediaAssetKind,
     MediaAssetStatus,
+    MembershipRole,
     ScanTrigger,
+    ThumbnailStatus,
     UploadStatus,
 )
 from affilio.modules.media import classification, facets, owner_mappings, service, uploads
@@ -817,8 +820,16 @@ def revoke_owner_mapping(
 # Contract: docs/architecture/editor-uploads.md section 2. Progress is server-authoritative.
 
 
-def _upload_response(upload: MediaUpload) -> UploadResponse:
+def _upload_response(
+    upload: MediaUpload, identity: Identity, api_prefix: str = "/api/v1"
+) -> UploadResponse:
     asset = upload.media_asset
+    is_admin = identity.has_role(MembershipRole.ADMIN)
+    thumbnail_url = (
+        f"{api_prefix}/media/assets/{asset.id}/thumbnail"
+        if asset is not None and asset.thumbnail_status == ThumbnailStatus.READY
+        else None
+    )
     review = (
         UploadReview(
             handoff_status=asset.handoff_status,
@@ -845,11 +856,15 @@ def _upload_response(upload: MediaUpload) -> UploadResponse:
         uploaded_by_user_id=upload.uploaded_by_user_id,
         submitted_for_user_id=upload.submitted_for_user_id,
         media_asset_id=upload.media_asset_id,
-        duplicate_of_asset_id=upload.duplicate_of_asset_id,
+        duplicate_of_asset_id=upload.duplicate_of_asset_id if is_admin else None,
         failure_code=upload.failure_code,
         failure_detail=upload.failure_detail,
         finalize_attempts=upload.finalize_attempts,
         review=review,
+        last_chunk_offset=upload.last_chunk_offset,
+        last_chunk_sha256=upload.last_chunk_sha256,
+        asset_title=asset.title if asset is not None else None,
+        thumbnail_url=thumbnail_url,
         created_at=upload.created_at,
         updated_at=upload.updated_at,
         uploaded_at=upload.uploaded_at,
@@ -926,7 +941,11 @@ def create_upload(
         },
     )
     session.commit()
-    return _upload_response(uploads.get_upload(session, identity.organization.id, upload.id))
+    return _upload_response(
+        uploads.get_upload(session, identity.organization.id, upload.id),
+        identity,
+        settings.api_v1_prefix,
+    )
 
 
 @router.get(
@@ -937,6 +956,7 @@ def create_upload(
 def list_uploads(
     session: DbSession,
     identity: RequireEditor,
+    settings: SettingsDep,
     status_filter: Annotated[UploadStatus | None, Query(alias="status")] = None,
     user_id: uuid.UUID | None = None,
     batch_id: uuid.UUID | None = None,
@@ -945,16 +965,16 @@ def list_uploads(
     rows = uploads.list_uploads(
         session, identity, status=status_filter, user_id=user_id, batch_id=batch_id, limit=limit
     )
-    return [_upload_response(u) for u in rows]
+    return [_upload_response(u, identity, settings.api_v1_prefix) for u in rows]
 
 
 @router.get("/uploads/{upload_id}", response_model=UploadResponse, summary="Upload session state")
 def read_upload(
-    upload_id: uuid.UUID, session: DbSession, identity: RequireEditor
+    upload_id: uuid.UUID, session: DbSession, identity: RequireEditor, settings: SettingsDep
 ) -> UploadResponse:
     upload = uploads.get_upload(session, identity.organization.id, upload_id)
     uploads.authorize_access(identity, upload)
-    return _upload_response(upload)
+    return _upload_response(upload, identity, settings.api_v1_prefix)
 
 
 @router.patch(
@@ -1028,7 +1048,7 @@ async def upload_chunk(
     summary="Hand a fully received upload to the worker for verification and placement",
 )
 def complete_upload(
-    upload_id: uuid.UUID, session: DbSession, identity: RequireEditor
+    upload_id: uuid.UUID, session: DbSession, identity: RequireEditor, settings: SettingsDep
 ) -> UploadResponse:
     org_id = identity.organization.id
     uploads.authorize_access(identity, uploads.get_upload(session, org_id, upload_id))
@@ -1044,7 +1064,9 @@ def complete_upload(
             data={"size": upload.expected_size},
         )
     session.commit()
-    return _upload_response(uploads.get_upload(session, org_id, upload_id))
+    return _upload_response(
+        uploads.get_upload(session, org_id, upload_id), identity, settings.api_v1_prefix
+    )
 
 
 @router.delete(

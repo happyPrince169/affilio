@@ -143,6 +143,38 @@ lastModified, taxonomy}` only; the session cookie is HttpOnly and nothing secret
   handles across reloads: the user re-selects. A cancelled or expired server session is
   shown as such and dropped from the local list.
 
+### 2.4a Implemented client (U5)
+
+- Page `/uploads` (`components/uploads/upload-videos.tsx`): tabs "Upload videos" and "My
+  uploads". Batch settings (owner from the caller's mappings, product category, content
+  type, admin-only "submitted for", parallel uploads 1–4, default 2), drop zone with file and
+  folder pickers, queue with per-file overrides, progress, pause, resume, cancel, retry and
+  remove, overall progress and a completion summary. Nothing starts until owner, product
+  category and content type are known.
+- Transfer (`lib/uploads/runner.ts`): one runner per file; create or resume, chunks at the
+  server's committed offset with their SHA-256, 409 re-syncs the offset, 423/5xx/network
+  errors back off and retry at most three times per chunk, then the file is marked failed
+  for a manual retry. Pause and cancel abort the in-flight chunk; the server keeps the
+  committed offset. `complete` moves the row to "processing"; the page polls the session
+  every 3 s (bounded) until the worker reports completed, duplicate or failed. Only
+  "completed" is shown as success and links to the library asset.
+- Reload recovery (`lib/uploads/persistence.ts`, `lib/uploads/file-identity.ts`): the
+  browser keeps only `{upload id, filename, size, last-modified, batch defaults}` in
+  localStorage; no bytes, cookies or paths. On load the page lists the server's active
+  sessions and shows them as "needs file". A reselected file must match by name, size and
+  last-modified, and the client hashes it over `[last_chunk_offset, committed_offset)` and
+  compares with the server's `last_chunk_sha256` before any byte is sent, so a different file
+  with the same name is refused. Firefox and Safari cannot keep file handles across reloads
+  and always need reselection; the Chromium persistent-handle optimisation is not
+  implemented in U5.
+- Duplicate privacy: editors receive `duplicate_of_asset_id: null` and a generic "identical
+  content is already in the library" message; only admins see the referenced asset id.
+- Proxy (`app/api/[...path]/route.ts`): request bodies are streamed to the API with
+  `duplex: "half"`, `Upload-Offset`, `X-Upload-Chunk-Sha256` and `Content-Length` are
+  forwarded, and a client disconnect aborts the upstream request (499). Memory per chunk is
+  bounded by the stream's buffer, not the chunk size; 8 MiB chunks stay far below the
+  tunnel's 100 MB request limit.
+
 ### 2.5 Duplicate detection
 
 - Identity is the full-file SHA-256 computed by the worker at verification plus the scanner's

@@ -474,12 +474,20 @@ class UploadResponse(BaseModel):
     uploaded_by_user_id: uuid.UUID
     submitted_for_user_id: uuid.UUID | None
     media_asset_id: uuid.UUID | None
-    # Set only for `duplicate`; never carries the other asset's filename, path or owner.
+    # Set only for `duplicate` and only for admins; editors get a generic duplicate outcome
+    # without any reference to the existing asset (duplicate privacy, U5).
     duplicate_of_asset_id: uuid.UUID | None
     failure_code: str | None
     failure_detail: str | None
     finalize_attempts: int
     review: UploadReview | None
+    # Resume identity (U5): the client hashes its local file over
+    # [last_chunk_offset, committed_offset) and compares before sending more bytes.
+    last_chunk_offset: int | None
+    last_chunk_sha256: str | None
+    # Library preview for the registered asset (thumbnail once rendered, library title).
+    asset_title: str | None
+    thumbnail_url: str | None
     created_at: datetime
     updated_at: datetime
     uploaded_at: datetime | None

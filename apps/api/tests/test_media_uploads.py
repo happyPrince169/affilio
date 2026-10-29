@@ -415,7 +415,9 @@ def test_chunk_protocol_resume_replay_and_errors(
         },
     )
     assert short.status_code in (400, 422)
-    assert api.get(f"{BASE}/{upload['id']}").json()["committed_offset"] == CHUNK
+    state = api.get(f"{BASE}/{upload['id']}").json()
+    assert state["committed_offset"] == CHUNK
+    assert state["last_chunk_offset"] == 0 and state["last_chunk_sha256"] == sha(data[:CHUNK])
     assert path.stat().st_size == CHUNK
     # too early to complete
     early = api.post(f"{BASE}/{upload['id']}/complete")
@@ -496,6 +498,12 @@ def test_finalize_places_registers_and_attributes(
     shown = api.get(f"{BASE}/{upload['id']}").json()
     assert shown["status"] == "completed" and shown["media_asset_id"] == str(asset.id)
     assert shown["review"]["handoff_status"] == "pending_review"
+    assert shown["asset_title"] == "My Final (v2)" and shown["thumbnail_url"] is None
+    asset.thumbnail_status = ThumbnailStatus.READY
+    db_session.commit()
+    assert api.get(f"{BASE}/{upload['id']}").json()["thumbnail_url"] == (
+        f"/api/v1/media/assets/{asset.id}/thumbnail"
+    )
     assert [u["id"] for u in api.get(BASE, params={"status": "completed"}).json()] == [upload["id"]]
     assert audit_actions(db_session, organization) == [
         "upload.created",
@@ -546,8 +554,13 @@ def test_duplicate_content_is_rejected_and_concurrent_duplicates_converge(
     outcome = finalizer(db_session, media_dirs).run_next()
     assert outcome.status == UploadStatus.DUPLICATE and outcome.media_asset_id == asset_id
     shown = api.get(f"{BASE}/{second['id']}").json()
-    assert shown["status"] == "duplicate" and shown["duplicate_of_asset_id"] == str(asset_id)
+    # Duplicate privacy: the editor learns only that the content exists, never which asset.
+    assert shown["status"] == "duplicate" and shown["duplicate_of_asset_id"] is None
     assert shown["media_asset_id"] is None and "first" not in str(shown)
+    assert shown["thumbnail_url"] is None and shown["asset_title"] is None
+    login(api, world["admin"])
+    assert api.get(f"{BASE}/{second['id']}").json()["duplicate_of_asset_id"] == str(asset_id)
+    login(api, world["editor"])
     assert not staging_path(incoming, organization, second).exists()
     assert not (media_dirs.finals / "Hang/Men's Fashion/Review/renamed copy.mp4").exists()
 

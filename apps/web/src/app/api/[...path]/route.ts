@@ -7,6 +7,12 @@
  * Security (M3A): the proxy is identity-neutral. It forwards the browser's session cookie and
  * origin headers unchanged and never attaches a service token, so an unauthenticated browser
  * request stays unauthenticated at the API. `Set-Cookie` from login/logout is passed back as is.
+ *
+ * Streaming (upload track U5): request bodies are piped to the API as they arrive
+ * (`duplex: "half"`), so an 8 MiB upload chunk never sits in this process's memory as a
+ * whole, and a client that disconnects aborts the upstream request through `request.signal`.
+ * Response bodies were already streamed. Node's fetch applies backpressure between the two
+ * streams, so memory stays bounded by the stream's internal high-water mark.
  */
 
 const API_INTERNAL_URL = (process.env.API_INTERNAL_URL ?? "http://localhost:8000").replace(
@@ -55,16 +61,26 @@ async function proxy(request: Request, ctx: Context): Promise<Response> {
   if (forwardedFor) headers.set("x-forwarded-for", forwardedFor);
 
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  for (const name of ["upload-offset", "x-upload-chunk-sha256", "content-length"]) {
+    const value = request.headers.get(name);
+    if (value) headers.set(name, value);
+  }
   let upstream: Response;
   try {
     upstream = await fetch(target, {
       method: request.method,
       headers,
-      body: hasBody ? await request.arrayBuffer() : undefined,
+      body: hasBody ? request.body : undefined,
+      // Required by Node's fetch to send a streaming request body.
+      duplex: "half",
+      signal: request.signal,
       cache: "no-store",
       redirect: "manual",
-    });
-  } catch {
+    } as RequestInit & { duplex: "half" });
+  } catch (error) {
+    if (request.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+      return new Response(null, { status: 499 });
+    }
     return Response.json(
       {
         error: {

@@ -9,6 +9,7 @@ import {
   Send,
   Settings,
   ShoppingCart,
+  Upload,
   Users,
 } from "lucide-react";
 
@@ -40,6 +41,14 @@ export const mainNavigation: NavItem[] = [
     icon: FolderOpen,
     description: "Centralized media library indexed from the Synology NAS.",
     milestone: "M1",
+    available: true,
+  },
+  {
+    title: "Uploads",
+    href: "/uploads",
+    icon: Upload,
+    description: "Submit finished videos for review; resumable, many files at once.",
+    milestone: "M3",
     available: true,
   },
   {
