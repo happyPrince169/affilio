@@ -12,9 +12,18 @@ Proves, with disposable files only, what the worker will do and what it must not
      open for write, unlink, rename, hard-link to a new name, utime → every one refused;
      mkdir in the type directory → refused (no create-subfolder right granted)
   T5 unlink of the staging name keeps the placed file readable (nlink back to 1)
-  T6 unlink of the placed name from the type directory: reported against --expect-placed-unlink
-     (allowed with the current staging ACL that inherits delete into files; denied once the
-     staging ACL is split into a directory entry and a file entry without delete)
+  T6 unlink of the placed name from the type directory, checked against the explicit
+     --expect-placed-unlink contract, then the placed file's state is re-checked against the
+     same contract (denied: still present, nlink 1, readable; allowed: gone):
+       denied   verified contract for the production NAS (Synology DSM, btrfs, synoacl
+                mount; B2B run 20261030T100545Z-89a005e1): a hard link into the type
+                directory re-inherits that directory's ACL onto the inode, the service user
+                keeps read and execute only, and the type directory grants no delete-child
+       allowed  for a configuration where the inode keeps the staging ACL (ordinary POSIX
+                semantics, or any NAS where the B2B observation does not reproduce)
+     There is no default: the operator states the contract for the configuration under test
+     and any other outcome is a FAIL. The original B2B run used `allowed` and exited 1 on
+     exactly this mismatch while every security check passed.
   T7 cleanup of the probe directory; the placed file is left for host-side cleanup when the
      service identity may not delete it
 
@@ -42,10 +51,19 @@ def main() -> int:
     ap.add_argument("--final", required=True, help="container path of the FINAL bind mount")
     ap.add_argument("--type-dir", required=True, help="relative Owner/Category/Type directory")
     ap.add_argument("--protected", required=True, help="name of the protected test file in type-dir")
-    ap.add_argument("--expect-placed-unlink", choices=["allowed", "denied"], default="allowed")
+    ap.add_argument(
+        "--expect-placed-unlink", choices=["allowed", "denied"], required=True,
+        help="T6 contract: 'denied' is the verified Synology btrfs/synoacl outcome; "
+             "'allowed' for configurations where the inode keeps the staging ACL",
+    )
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--simulate", action="store_true", help="local dry rehearsal only: skip the service-identity guard")
     ap.add_argument("--simulate-leftover", action="store_true", help="local rehearsal only: leave the staging file behind to exercise host cleanup")
+    ap.add_argument(
+        "--simulate-placed-unlink", choices=["allowed", "denied"], default=None,
+        help="local rehearsal only: 'denied' makes the type directory read-only just before "
+             "T6 so the kernel refuses the unlink (restored afterwards); 'allowed' leaves it",
+    )
     args = ap.parse_args()
 
     final = os.path.realpath(args.final)
@@ -75,8 +93,8 @@ def main() -> int:
     }, indent=1))
     if not args.apply:
         print("dry run: add --apply to execute"); return 0
-    if args.simulate_leftover and not args.simulate:
-        print("ERROR: --simulate-leftover requires --simulate"); return 2
+    if (args.simulate_leftover or args.simulate_placed_unlink) and not args.simulate:
+        print("ERROR: --simulate-leftover and --simulate-placed-unlink require --simulate"); return 2
     # Docker lists the primary gid itself in the supplementary set ([100] for uid 1026:100);
     # only groups beyond the primary gid mean the identity is not the service identity.
     extra_groups = sorted(g for g in set(os.getgroups()) if g != os.getgid())
@@ -103,6 +121,7 @@ def main() -> int:
         check(name, False, "UNEXPECTEDLY SUCCEEDED (counts as FAIL even if reversed)")
 
     payload = f"affilio-b2b-probe {token}\n".encode()
+    type_dir_mode: int | None = None
     try:
         # T1
         os.mkdir(probe_dir, 0o750)
@@ -154,13 +173,33 @@ def main() -> int:
             still = h.read() == payload
         check("T5 staging unlink keeps placed file", c.st_nlink == 1 and still, f"nlink={c.st_nlink} readable={still}")
         # T6
+        if args.simulate_placed_unlink == "denied":
+            type_dir_mode = stat.S_IMODE(os.lstat(type_dir).st_mode)
+            os.chmod(type_dir, 0o555)  # rehearsal: a real EACCES from the kernel, restored below
         try:
             os.unlink(placed)
             outcome = "allowed"
         except OSError as exc:
             outcome = "denied" if exc.errno in DENIED else f"error {errno.errorcode.get(exc.errno, exc.errno)}"
         check(f"T6 unlink of placed name is {args.expect_placed_unlink}", outcome == args.expect_placed_unlink, f"observed: {outcome}")
+        # T6b: the placed file's state must agree with the contract, whatever T6 reported.
+        if args.expect_placed_unlink == "denied":
+            try:
+                d = os.lstat(placed)
+                with open(placed, "rb") as h:
+                    intact = h.read() == payload
+                check("T6b placed file intact after refused unlink",
+                      stat.S_ISREG(d.st_mode) and d.st_nlink == 1 and d.st_size == len(payload) and intact,
+                      f"ino={d.st_ino} nlink={d.st_nlink} size={d.st_size} readable={intact}")
+            except OSError as exc:
+                check("T6b placed file intact after refused unlink", False,
+                      f"placed file missing or unreadable ({errno.errorcode.get(exc.errno, exc.errno)})")
+        else:
+            check("T6b placed name gone after allowed unlink", not os.path.lexists(placed),
+                  "absent" if not os.path.lexists(placed) else "STILL PRESENT")
     finally:
+        if type_dir_mode is not None:
+            os.chmod(type_dir, type_dir_mode)
         # T7 cleanup of everything this identity may remove; report the rest.
         leftovers = []
         for p in (src, os.path.join(probe_dir, "stolen")):

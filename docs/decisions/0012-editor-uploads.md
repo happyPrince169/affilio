@@ -1,6 +1,7 @@
 # ADR 0012 — Editor video uploads: split write path, staged finalization, direct registration
 
-- **Status:** Proposed (U1, 2026-10-29; documentation only, nothing implemented or deployed)
+- **Status:** Proposed (U1, 2026-10-29); implemented locally U2–U7 Phase A; amended
+  2026-10-30 after the U7 Phase B2B probe (see "Amendment" below). Not deployed.
 - **Context:** Finished videos reach AFFILIO today by editors copying files onto the NAS share
   under `FINAL/{Owner}/{ProductCategory}/{ContentType}/` and an admin running a finals scan.
   Editors must know the folder convention, the scan is whole-root and admin-only, and nothing
@@ -94,7 +95,8 @@
 - Two production changes need separate approval before U7: a Synology ACL grant for the
   AFFILIO service user on FINAL (create and traverse on folders, full rights on the staging
   directory only, no delete on the tree) and the compose mount changes above. The
-  verification steps are listed in the design document.
+  verification steps are listed in the design document. Amendment 2026-10-30: the grant is
+  one create-only entry per type folder, not inherited; see below.
 - The worker's scan code keeps running in a process that can write FINAL. The scanner has no
   write path and tests assert that; the finalizer's write calls are confined to one module.
 - Uploads add one `uploaded` → `completed` hop of up to one worker poll interval (5 s) plus
@@ -102,3 +104,57 @@
 - Staging consumes disk until finalization or expiry; quotas and cleanup are part of U4.
 - The 92 legacy finals and the existing scan path are unchanged. Files still copied onto the
   share by hand remain supported and are still indexed by scans.
+
+## Amendment 2026-10-30 — U7 Phase B2B findings on the production NAS
+
+Source: `docs/deployment/upload-rollout.md`, "Phase B2B". One directory
+(`FINAL/Hang/Mens-Fashion/Try-On`), one disposable placed file, one disposable protected
+file, everything removed and the ACL restored to its baseline afterwards; the 92 legacy
+finals were never opened and are byte-for-byte and ACL-for-ACL unchanged.
+
+**Observed on the tested NAS** (DS923+, DSM 7.3.2, btrfs volume with `synoacl`):
+
+- With a single create-only entry (`-w-----------`, no inheritance) on the type folder, the
+  service identity (uid 1026, gid 100, no supplementary groups, no capabilities) created a
+  staging file, hard-linked it into the folder (same inode), was refused `EEXIST` on the
+  existing name, and was refused every write, utime, link, rename, unlink and mkdir attempt
+  against a file carrying the legacy ACL. After placement the staging name could be
+  unlinked and the placed name could not.
+- The placed file carried the destination folder's inherited entries (service user read and
+  execute only; administrators and the three editors full rights), not the staging
+  directory's entry. On this configuration a hard link re-inherits the destination's ACL
+  onto the inode.
+- The probe exited 1 only because its T6 expectation (`allowed`) encoded the pre-probe
+  hypothesis; the probe now requires the contract to be stated explicitly and `denied` is
+  the verified value for this NAS.
+
+**Assumptions not yet independently verified:** whether the service user, as the owner of
+a placed file, can still open it for writing, change its times or mode, or rewrite its
+ACL (owner-implicit rights; the negatives ran against a file owned by another user); whether
+the behaviour holds on other DSM releases, other volume types or after the worker creates a
+folder itself; whether the inode's stored ACL changes at link time or permissions are
+evaluated by path (irrelevant to the worker, which never writes after linking).
+
+**Security properties required for production:** the service identity must be unable to
+modify, rename, link or delete any legacy final (verified); unable to overwrite an existing
+name (verified); able to create files only in authorized type folders (verified for one
+folder); unable to delete a placed final (verified on this NAS); unable to modify a placed
+final (**not yet verified**, owner-rights probe required); the worker container must run
+without capabilities (to confirm after deployment).
+
+**Decisions amended:**
+
+1. The ACL grant in "Consequences" becomes: one explicit, non-inherited create-only entry on
+   each of the 72 bootstrapped type folders; nothing on FINAL, owner roots, category folders
+   or T9; the staging directory keeps its single full-rights entry. The worker does not
+   receive the create-subfolder right; new categories are bootstrapped by an administrator
+   and uploads to a missing folder fail with `destination_unavailable`.
+2. The staging ACL split (directory entry plus a file entry without delete, plus human
+   entries) is **modified**: it is no longer a prerequisite, because the placed file does
+   not keep the staging entry on this NAS and inherits the editors' entries from the
+   destination. It stays documented as the mandatory response if any future probe observes
+   that the service identity can unlink a placed file (`T6 observed: allowed`), for example
+   after a DSM update or a volume migration. The human-entries part is dropped.
+3. Phase C is blocked until Phase B3 (owner-rights probe on the placed file, then the
+   72-folder ACL rollout with full-tree verification) passes. The worker implementation is
+   unchanged by this amendment.

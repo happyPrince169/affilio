@@ -335,6 +335,8 @@ def test_probe_summary_carries_token_and_verdict(tree: Path) -> None:
     result = probe(tree, protected.name, "--expect-placed-unlink", "denied")
     assert result.returncode == 1
     assert "FAIL T6 unlink of placed name is denied: observed: allowed" in result.stdout
+    # the post-condition is checked against the contract too, not against T6's outcome
+    assert "FAIL T6b placed file intact after refused unlink: placed file missing" in result.stdout
     summary = next(line for line in result.stdout.splitlines() if line.startswith("summary:"))
     assert '"token"' in summary and '"verdict": "FAIL"' in summary
     assert "T5 staging unlink keeps placed file" in summary
@@ -362,6 +364,8 @@ def test_probe_leftovers_are_reported_and_host_cleanup_removes_them_by_token(wor
             "--apply",
             "--simulate",
             "--simulate-leftover",
+            "--expect-placed-unlink",
+            "allowed",
         ],
         capture_output=True,
         text=True,
@@ -398,15 +402,17 @@ def test_probe_refuses_bad_arguments(tree: Path) -> None:
             ".p",
             "--apply",
             "--simulate",
+            "--expect-placed-unlink",
+            "denied",
         ],
         capture_output=True,
         text=True,
         check=False,
     )
     assert escape.returncode == 2 and "escapes FINAL" in escape.stdout
-    notdot = probe(tree, "visible.tmp")
-    assert notdot.returncode == 2
-    missing = probe(tree, ".absent.tmp")
+    notdot = probe(tree, "visible.tmp", "--expect-placed-unlink", "denied")
+    assert notdot.returncode == 2 and "dot-prefixed" in notdot.stdout
+    missing = probe(tree, ".absent.tmp", "--expect-placed-unlink", "denied")
     assert missing.returncode == 3
     dry = subprocess.run(  # noqa: S603 - scripts under test, fixed argv
         [
@@ -419,6 +425,8 @@ def test_probe_refuses_bad_arguments(tree: Path) -> None:
             "Hang/Mens-Fashion/Try-On",
             "--protected",
             ".affilio-protected-sim.tmp",
+            "--expect-placed-unlink",
+            "denied",
         ],
         capture_output=True,
         text=True,
@@ -426,6 +434,105 @@ def test_probe_refuses_bad_arguments(tree: Path) -> None:
     )
     assert dry.returncode == 0 and "dry run" in dry.stdout
     assert list((tree / ".affilio-incoming").iterdir()) == []
+
+
+def test_probe_requires_an_explicit_t6_contract(tree: Path) -> None:
+    """There is no default for --expect-placed-unlink: the operator states the contract for
+    the configuration under test (B2B 2026-10-30 verified `denied` on the Synology NAS)."""
+    typedir = tree / "Hang" / "Mens-Fashion" / "Try-On"
+    (typedir / ".affilio-protected-sim.tmp").write_bytes(b"x")
+    result = probe(tree, ".affilio-protected-sim.tmp")
+    assert result.returncode == 2 and "--expect-placed-unlink" in result.stderr
+    assert sorted(p.name for p in typedir.iterdir()) == [".affilio-protected-sim.tmp"]
+    assert list((tree / ".affilio-incoming").iterdir()) == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory modes; no real EACCES")
+def test_probe_t6_denied_contract_passes_when_the_kernel_refuses_the_unlink(tree: Path) -> None:
+    """The verified Synology outcome, rehearsed with a real EACCES: the type directory is
+    made read-only just before T6. T6 and T6b pass, the placed file stays for host cleanup
+    and the directory mode is restored. (The run still exits 1: POSIX lets the file owner
+    perform the T4 negatives, which the probe correctly reports as FAIL.)"""
+    typedir = tree / "Hang" / "Mens-Fashion" / "Try-On"
+    typedir.chmod(0o750)
+    protected = typedir / ".affilio-protected-sim.tmp"
+    protected.write_bytes(b"x")
+    protected.chmod(0o444)
+    result = probe(
+        tree,
+        protected.name,
+        "--expect-placed-unlink",
+        "denied",
+        "--simulate-placed-unlink",
+        "denied",
+    )
+    out = result.stdout
+    assert "ok   T5 staging unlink keeps placed file" in out
+    assert "ok   T6 unlink of placed name is denied: observed: denied" in out
+    assert "ok   T6b placed file intact after refused unlink" in out
+    assert "FAIL T6" not in out
+    summary = next(line for line in out.splitlines() if line.startswith("summary:"))
+    token = summary.split('"token": "')[1].split('"')[0]
+    placed = typedir / f".affilio-probe-{token}.mp4"
+    assert placed.exists() and placed.stat().st_nlink == 1 and str(placed) in summary
+    assert (typedir.stat().st_mode & 0o777) == 0o750  # restored for host-side cleanup
+    assert list((tree / ".affilio-incoming").iterdir()) == []  # probe dir removed
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory modes; no real EACCES")
+def test_probe_t6_unexpected_denial_fails_strictly(tree: Path) -> None:
+    """Regression for the B2B run of 2026-10-30: contract `allowed`, kernel refuses the
+    unlink. T6 and T6b both FAIL, the verdict is FAIL, exit 1, and the placed file is
+    reported for host cleanup. Nothing is retried or silently accepted."""
+    typedir = tree / "Hang" / "Mens-Fashion" / "Try-On"
+    protected = typedir / ".affilio-protected-sim.tmp"
+    protected.write_bytes(b"x")
+    protected.chmod(0o444)
+    result = probe(
+        tree,
+        protected.name,
+        "--expect-placed-unlink",
+        "allowed",
+        "--simulate-placed-unlink",
+        "denied",
+    )
+    out = result.stdout
+    assert result.returncode == 1
+    assert "FAIL T6 unlink of placed name is allowed: observed: denied" in out
+    assert "FAIL T6b placed name gone after allowed unlink: STILL PRESENT" in out
+    summary = next(line for line in out.splitlines() if line.startswith("summary:"))
+    assert '"verdict": "FAIL"' in summary
+    assert "T6 unlink of placed name is allowed" in summary.split('"failed"')[1]
+    token = summary.split('"token": "')[1].split('"')[0]
+    assert (typedir / f".affilio-probe-{token}.mp4").exists()
+
+
+def test_probe_simulation_flags_require_simulate(tree: Path) -> None:
+    typedir = tree / "Hang" / "Mens-Fashion" / "Try-On"
+    (typedir / ".affilio-protected-sim.tmp").write_bytes(b"x")
+    result = subprocess.run(  # noqa: S603 - scripts under test, fixed argv
+        [
+            PYTHON,
+            "-I",
+            str(PROBE),
+            "--final",
+            str(tree),
+            "--type-dir",
+            "Hang/Mens-Fashion/Try-On",
+            "--protected",
+            ".affilio-protected-sim.tmp",
+            "--apply",
+            "--expect-placed-unlink",
+            "denied",
+            "--simulate-placed-unlink",
+            "denied",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2 and "require --simulate" in result.stdout
+    assert not list(typedir.glob(".affilio-probe-*"))
 
 
 def test_probe_identity_guard_ignores_the_primary_gid_but_not_extra_groups(tree: Path) -> None:

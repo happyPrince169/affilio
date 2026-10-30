@@ -102,12 +102,15 @@ pushed until U7 is approved separately.
 - Reports page with period and status filters.
 - Tests for aggregation and CSV shape.
 
-### U7 — Production rollout (not approved)
+### U7 — Production rollout (in progress; each phase separately approved)
 
-Requires separate explicit approval and covers: ACL review and grant with a probe directory,
-compose mount and environment changes, backup, migrations and deployment, one real editor
-pilot upload, verification of classification, thumbnail, review, audit and reporting, and a
-rollback rehearsal. Nothing in U2–U6 writes to production.
+Phase A (readiness audit and resume hardening), B1 (staging probe) and B2B (single-folder
+finalization probe, cleanup and ACL restoration) are done; B2C (this documentation and
+design review) records the findings. Remaining: B3 (owner-rights probe, 72-folder ACL
+rollout), then C (compose mount and environment changes, backup, migrations, deployment,
+one real editor pilot upload, verification of classification, thumbnail, review, audit and
+reporting, rollback rehearsal). Record: `docs/deployment/upload-rollout.md`. Nothing in
+U2–U6 writes to production.
 
 ## Acceptance criteria (whole track)
 
@@ -132,8 +135,10 @@ rollback rehearsal. Nothing in U2–U6 writes to production.
 - `failed` sessions keep their staging copy until the TTL for inspection; `duplicate`,
   `aborted`, `expired` and `completed` sessions lose it immediately or at the next hourly
   maintenance run.
-- Hard links on the production share (btrfs) have not been exercised yet; U7 verifies them
-  with a probe file before the first real upload.
+- Hard links on the production share (btrfs, `synoacl`) were exercised in U7 Phase B1 and
+  B2B with disposable files: placement by link works, the placed file inherits the
+  destination folder's ACL, and the service identity cannot delete it. The owner-rights
+  probe on a placed file and the 72-folder ACL rollout (Phase B3) precede any deployment.
 
 ## Known limits
 

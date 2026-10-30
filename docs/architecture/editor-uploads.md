@@ -235,6 +235,36 @@ O_NOFOLLOW`; a symlink or non-directory anywhere on the way aborts. Staging file
   sessions' staging removed; `*.part` files in staging with no session row and an mtime older
   than the TTL removed. Nothing outside `.affilio-incoming` is ever deleted.
 
+### 3a. Verified filesystem behaviour on the production NAS (U7 Phase B2B, 2026-10-30)
+
+Full record: `docs/deployment/upload-rollout.md`. What the design may rely on, and what it
+may not, on the tested NAS only (DS923+, DSM 7.3.2, btrfs with `synoacl`):
+
+- **Observed.** A hard link from `.affilio-incoming/…` into a type folder that carries one
+  non-inherited create-only entry for the service user succeeds (same inode); the placed
+  file then carries the destination folder's inherited entries (service user `r-x`,
+  administrators and editors full rights) and none of the staging directory's. The service
+  user could unlink the staging name (staging directory's delete-child right) and could
+  not unlink the placed name, nor write, utime, link, rename, unlink or mkdir against a file
+  with the legacy ACL. Linking onto an existing name fails `EEXIST`.
+- **Not verified.** Owner-implicit rights of the service user on the file it placed (open
+  for write, `utime`, `chmod`, `setxattr` of the ACL): the negatives ran against a file
+  owned by another user. Behaviour on other DSM releases or volume types. Whether the
+  inode's ACL is rewritten at link time or evaluated by path (no effect on the worker, which
+  hashes before linking and only reads afterwards).
+- **Required for production.** No write, rename, link or delete on legacy files; no
+  overwrite; create only in authorized type folders; no delete and no modification of a
+  placed final by the service identity; no capabilities in the worker container.
+- **Consequences for this design.** Placement stays `link` + `unlink`; the fallback
+  `O_EXCL` + `rename` path is not needed on this NAS. The staging ACL split described in the
+  rollout document is a conditional hardening, re-activated only if a probe ever observes
+  the service identity unlinking a placed file. The worker never opens a placed file for
+  writing, and the crash-recovery rows below hold under either ACL hypothesis because every
+  post-link step is a read, a link or an unlink of the staging name. A missing type folder
+  is not created in production: `mkdir` is refused without the create-subfolder right and
+  the session fails with `destination_unavailable` until an administrator bootstraps the
+  folder.
+
 ## 4. State machine
 
 | From                     | Event                                         | To           | Side effects                                                                |
@@ -403,7 +433,7 @@ enums, `organization_id` everywhere, working downgrades.
 | Area        | Change                                                                                                                                                                                                                                                                                                                                           |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | NAS dirs    | Create `FINAL/.affilio-incoming` (owner uid 1026, group users, mode 0770). Nothing else.                                                                                                                                                                                                                                                         |
-| NAS ACL     | On `FINAL`: allow `hoangtuhanhphuc` (uid 1026) read, write (create), execute, append, read/write attributes, read permissions, **no delete**, inherit to folders only (so legacy and future files gain no write entry). On `.affilio-incoming`: full rights for the same user, inherited. Validate with a probe directory before the real grant. |
+| NAS ACL     | Amended 2026-10-30 (B2B): one explicit, non-inherited create-only entry `user:hoangtuhanhphuc:allow:-w-----------:----` on each of the 72 bootstrapped type folders; nothing on `FINAL`, owner roots, category folders or T9 folders (the existing inherited read and traverse entries cover them); `.affilio-incoming` keeps its single full-rights entry. Validated on one folder with a container probe; the 72-folder rollout and the owner-rights probe are Phase B3. |
 | Compose     | api: add bind `${AFFILIO_FINALS_HOST_PATH}/.affilio-incoming` → `/data/incoming` rw. worker: `/media/finals` `read_only: false`. No change to publisher, exporter, originals, proxies.                                                                                                                                                           |
 | Environment | api: `MEDIA_INCOMING_PATH=/data/incoming`, `UPLOAD_CHUNK_BYTES`, `UPLOAD_MAX_FILE_BYTES`, `UPLOAD_SESSION_TTL_HOURS`, `UPLOAD_MAX_ACTIVE_SESSIONS_PER_USER`, `UPLOAD_STAGING_MAX_BYTES`. worker: `MEDIA_FINALS_WRITABLE=true`, `UPLOAD_FINALIZE_MAX_ATTEMPTS`. `META_LIVE_PUBLISHING_ENABLED` stays `false`.                                     |
 | Database    | 0014 owner mappings (U2); 0015 upload sessions + asset attribution columns (U4). Backup before each deployment as in the runbook; downgrades tested by `test_migrations.py`.                                                                                                                                                                     |
