@@ -280,19 +280,15 @@ the NAS. Those are Phase B3.
 
 Smallest safe step between B2B and deployment. Two parts, the second only after the first.
 
-**B3.1 Owner-rights probe, same single directory.** Extend the container probe with T8,
-negatives against the file the probe itself placed (owned by the service user): open for
-write, open read-write, `utime`, `chmod`, `os.link` to a new name, `rename`,
-`os.setxattr("system.synoacl")`, each expected `EACCES` or `EPERM`, then the inode, size,
-mtime, ctime and content re-checked. Rehearse locally first (POSIX lets the owner do most of
-these, so the local rehearsal asserts the FAIL reporting). Then on the NAS, exactly the B2B
-recipe A–H on `Hang/Mens-Fashion/Try-On` with `--expect-placed-unlink denied`: capture a fresh
-baseline, apply the create-only entry, prepare the protected file (owner `dangtung` under
-sudo as in step 5A), run the probe, clean up by token, restore, verify. Success means exit 0
-from the probe and PASS from cleanup, restore and verify. If any T8 negative succeeds, stop:
-P6 then needs a different mechanism (for example placement by a separate identity that does
-not own the file, or an administrator-side `chown` step) and Phase C is not reachable from
-this design without a new ADR amendment.
+**B3.1 Owner-rights probe, same single directory.** Split into B3.1A (local development
+and rehearsal, done 2026-10-30, see "Phase B3.1A" below) and B3.1B (execution on the NAS,
+needs approval). The container probe now carries T8, negatives against the file the probe
+itself placed and owns, and the host script an `inspect <token>` subcommand that records
+the placed file's stat, SHA-256 and ACL before cleanup. Success on the NAS means exit 0
+from the probe (no FAIL, nothing UNVERIFIED) and PASS from cleanup, restore and verify. If
+any T8 negative succeeds, stop: P6 then needs a different mechanism (for example placement
+by a separate identity that does not own the file, or an administrator-side `chown` step)
+and Phase C is not reachable from this design without a new ADR amendment.
 
 **B3.2 ACL rollout to the 72 type folders.** Only after B3.1 passes. A new host-script
 subcommand pair, `apply-acl-list <file>` and `restore-acl-list <file>`, driven by an
@@ -331,6 +327,111 @@ Exact prerequisites for Phase C, all of which must hold at the same time:
 8. Post-deploy checks defined and ready: `/proc/<worker pid>/status` `CapEff` all zeros,
    finals still `ro` in publisher and exporter, worker log `worker.started`, migration
    `0017_upload_chunk_manifest`.
+
+### Phase B3.1A — owner-rights probe development (local only, done 2026-10-30)
+
+Nothing in this phase touched the NAS. Everything below marked *simulated* comes from a
+local run of the probe with the operating-system calls wrapped by a mock that refuses
+selected operations with `EACCES` and lists a fake ACL attribute; local Linux permissions
+do **not** reproduce Synology ACL semantics (a POSIX owner may write, chmod, utime, link,
+rename and unlink its own file), so a plain local run reports almost every T8 line as FAIL,
+which is the correct report for that platform and no evidence either way about the NAS.
+The probe prints `"evidence": "simulated"` whenever `--simulate` is set and `"nas"`
+otherwise; only the latter counts.
+
+**Required production contract for a placed final, as the service identity:**
+
+1. not modifiable: open for write, open read-write, truncate, utime, user extended
+   attribute each refused;
+2. not deletable or renameable: unlink and rename refused;
+3. no permission or ACL escalation: chmod refused, ACL rewrite refused, no second hard
+   link (neither in the type folder nor into staging, where a re-inherited staging ACL would
+   grant write through the new name);
+4. any unexpected success is a FAIL and the probe exits 1, even when the probe reverses
+   it; an operation that could not be exercised is UNVERIFIED and the probe exits 4, never 0.
+
+**T8 matrix** (runs after T5, before T6, on the placed file; non-destructive first; each
+attempt independent and guarded; inode, link count, size, SHA-256, mode, uid, mtime, ctime
+and extended-attribute digests captured before and after; the protected file and legacy media
+are not involved):
+
+| Test | Operation on the placed file                                                              | Expected on the NAS | Reversal when it succeeds           | Simulated rehearsal |
+| ---- | ----------------------------------------------------------------------------------------- | ------------------- | ----------------------------------- | ------------------- |
+| T8a  | `open(O_WRONLY\|O_NOFOLLOW)`                                                              | `EACCES`/`EPERM`    | descriptor closed, nothing written  | ok under deny-all; FAIL when allowed |
+| T8b  | `open(O_RDWR\|O_NOFOLLOW)`                                                                | refused             | same                                | same                |
+| T8c  | `truncate` to the current size                                                            | refused             | size unchanged by construction      | ok / FAIL           |
+| T8d  | `futimens` to the current times (fd opened read-only, `O_NOFOLLOW`)                       | refused             | times unchanged by construction     | ok / FAIL           |
+| T8e  | `fchmod` to the current mode                                                              | refused             | mode unchanged by construction      | ok / FAIL           |
+| T8f  | `setxattr(<acl attr>, <its own current bytes>, XATTR_REPLACE)`                            | refused             | bytes unchanged by construction     | ok; UNVERIFIED when the attribute is not listed |
+| T8g  | `setxattr("user.affilio-probe", …, XATTR_CREATE)`                                         | refused             | `removexattr`                       | ok / FAIL           |
+| T8h  | `link` to `.affilio-probe-<token>-link.mp4` in the type folder                            | refused             | `unlink` of the new name (may itself be refused → host cleanup) | ok / FAIL |
+| T8i  | `link` to `.affilio-incoming/probe-<token>/relinked`                                      | refused             | `unlink` of the new name            | ok / FAIL           |
+| T8i2 | only if T8i created the name: `open(O_WRONLY)` through it (escalation measurement)        | refused             | descriptor closed                   | FAIL when writes through the relinked name succeed |
+| T8j  | `rename` to `.affilio-probe-<token>-renamed.mp4`                                          | refused             | renamed back                        | ok / FAIL           |
+| T8k  | integrity: snapshot after equals snapshot before, link count 1                            | identical           | —                                   | identical; a reversed rename may move ctime, reported as a change |
+| T6   | `unlink` (contract `denied`)                                                              | refused             | —                                   | ok / FAIL           |
+| T7   | cleanup: only the placed file may remain, and only under the `denied` contract            | —                   | —                                   | FAIL on any other leftover |
+
+T8f and privileges: the ACL is reached only through the extended-attribute interface the
+container already has; the attribute's current bytes are written back with `XATTR_REPLACE`,
+so a refusal proves the ACL cannot be changed and a success changes nothing. If the
+attribute cannot be listed or read as the service identity (the name on this DSM release is
+not confirmed; `system.synoacl` is the default and `--acl-xattr` overrides it), T8f is
+UNVERIFIED and the run exits 4: no capability, supplementary group or privileged container
+is added to make it testable, and the host-side `inspect` listing with `synoacltool -get`
+remains the authoritative ACL record. T8e (`chmod`) needs no privilege: the question is
+precisely whether the unprivileged owner can do it. On Synology a successful `chmod` may
+also rewrite the ACL from mode bits; the file is disposable and `inspect` shows the result.
+
+**Local rehearsal results (simulated, 26 tests in `apps/api/tests/test_nas_b2b_scripts.py`,
+run 2026-10-30, three consecutive runs green):**
+
+| Scenario (mock policy)                                         | Result                                                                                     |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| every operation refused, ACL attribute listed and readable     | all T8 lines ok, T6 denied, T6b intact, exit 0, verdict PASS, placed file the only leftover |
+| same, ACL attribute not listed                                 | T8f UNVERIFIED, verdict PASS_WITH_UNVERIFIED, exit 4                                       |
+| writes allowed                                                 | T8a and T8b FAIL, later tests still run, T8k identical, exit 1                             |
+| chmod allowed                                                  | T8e FAIL only, exit 1                                                                      |
+| rename and unlink allowed                                      | T8j FAIL and reversed, T6 FAIL (observed allowed), T6b FAIL (file gone), exit 1            |
+| links allowed, writes refused                                  | T8h FAIL and reversed, T8i FAIL, T8i2 FAIL (write through the staging name), link removed, exit 1 |
+| cleanup partially refused (`rmdir`)                            | "T7 cleanup complete" FAIL, exit 1, host `cleanup <token>` then removes the remainder      |
+| plain POSIX, no mock                                           | T4 and T8 mostly FAIL (owner rights), T8k identical, exit 1: correct for Linux, not NAS evidence |
+| host `inspect <token>`                                         | read-only listing of every artefact's stat, SHA-256 and ACL; inodes and mtimes unchanged   |
+| host `cleanup <token>`                                         | removes the placed, `-link`, `-renamed` and `relinked` names by exact token, other tokens untouched |
+
+**Worker review (no change made):** after `link_into` the worker only reads the placed
+file (SHA-256 on resume, ffprobe, thumbnail source) and unlinks the staging name; there is
+no `chmod`, `utime`, `rename`, `replace`, `truncate` or open-for-write on any path under a
+type folder (`os.replace` exists only in exports and thumbnails, on their own roots). One
+hardening is proposed for a later milestone, not required by the probe: the API's
+`StagingStore.open_for_write` checks that the staging file is a regular file owned by the
+service uid but not that its link count is 1. The status guard (chunks only while
+`uploading`) and the row lock already prevent a write after the worker has linked the
+inode, so this is defence in depth: refuse to open a staging file with `st_nlink != 1`, and
+refuse `ftruncate` on the same condition, so that no code path can reach a placed final
+through its staging name.
+
+**B3.1B procedure (NAS, needs approval; exactly the B2B recipe with the corrected contract):**
+
+1. Sync `scripts/nas-b2b-host.sh` and `scripts/nas_finalize_probe.py` from the approved
+   commit to `/tmp/affilio-b2b/`, record both SHA-256 values, and update the sudo wrapper's
+   expected probe checksum and its argument list (`--expect-placed-unlink denied`).
+2. `preflight`, then `capture` and `export B2B_DIR=…` (fresh baseline; the B2B baseline is
+   kept untouched).
+3. `apply-acl` (PASS only when the ACL equals the new baseline plus exactly the entry).
+4. `prepare-protected`, then the step 5A ownership change to `dangtung` under sudo and its
+   read-only verification.
+5. The approved `docker run` through the sudo wrapper, same options as B2B (`--user 1026:100
+   --cap-drop ALL --security-opt no-new-privileges --read-only --network none`, one rw bind
+   of FINAL), `--expect-placed-unlink denied --apply`. Note the token. Expected: exit 0. Exit 4
+   with only T8f unverified: run `inspect <token>`, read the attribute name from the host
+   listing, and decide whether a second run with `--acl-xattr <name>` is authorized; do not
+   retry automatically.
+6. `inspect <token>` before anything is removed: it is the record of the placed file's ACL,
+   owner and stat after T8.
+7. `cleanup <token>`, `restore-acl`, `verify`; legacy 92 comparison as in B2B steps 7–9.
+8. Report: probe exit code, every T8 line with its errno, the `inspect` listing, cleanup and
+   restore results, verify result, B3.1 verdict.
 
 ## Phase C — deployment sequence (needs approval; BLOCKED until Phase B3 passes)
 

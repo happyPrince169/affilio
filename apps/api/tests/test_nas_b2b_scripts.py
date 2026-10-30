@@ -6,6 +6,7 @@ unexpectedly successful destructive tests. No NAS path is ever used."""
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -533,6 +534,322 @@ def test_probe_simulation_flags_require_simulate(tree: Path) -> None:
     )
     assert result.returncode == 2 and "require --simulate" in result.stdout
     assert not list(typedir.glob(".affilio-probe-*"))
+
+
+# ------------------------------------------------- T8 owner-rights (mocked Synology ACL)
+#
+# Local Linux lets a file's owner write, chmod, utime, link, rename and unlink it, so POSIX
+# cannot rehearse the Synology outcome. The shim below runs the probe with os.* wrapped by a
+# policy that refuses selected operations on the probe's own placed file and on the protected
+# file with EACCES, and lists a fake ACL attribute on the placed file. Every result from it is
+# "evidence": "simulated"; only a run on the NAS is Synology evidence.
+
+SHIM = r"""
+import errno, os, runpy, sys
+POLICY = __POLICY__          # op -> "deny" | "allow"
+ACL_XATTR = __ACL__          # attribute name the mock lists on the placed file, or None
+def base(p): return os.path.basename(os.fspath(p)) if not isinstance(p, int) else ""
+def placed(p): return base(p).startswith(".affilio-probe-") and base(p).endswith(".mp4")
+def protected(p): return base(p).startswith(".affilio-protected-")
+def deny(): raise PermissionError(errno.EACCES, "mock synoacl: denied")
+def denies(op): return POLICY.get(op) == "deny"
+OPS = ("open", "close", "truncate", "utime", "fchmod", "link", "rename", "unlink", "mkdir",
+       "rmdir", "listxattr", "getxattr", "setxattr")
+real = {n: getattr(os, n) for n in OPS}
+placed_fds = set()
+def m_open(path, flags, mode=0o777, *, dir_fd=None):
+    writing = flags & (os.O_WRONLY | os.O_RDWR)
+    if writing and (placed(path) and denies("open") or protected(path) and denies("protected")):
+        deny()
+    fd = real["open"](path, flags, mode, dir_fd=dir_fd)
+    if placed(path): placed_fds.add(fd)
+    return fd
+def m_close(fd):
+    placed_fds.discard(fd); real["close"](fd)
+def m_truncate(path, length):
+    if placed(path) and denies("truncate"): deny()
+    real["truncate"](path, length)
+def m_utime(path, times=None, *, ns=None, dir_fd=None, follow_symlinks=True):
+    on_placed = isinstance(path, int) and path in placed_fds
+    if (on_placed and denies("utime")) or (protected(path) and denies("protected")): deny()
+    real["utime"](path, times, ns=ns, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+def m_fchmod(fd, mode):
+    if fd in placed_fds and denies("chmod"): deny()
+    real["fchmod"](fd, mode)
+def m_link(src, dst, *, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True):
+    if (placed(src) and denies("link")) or (protected(src) and denies("protected")): deny()
+    real["link"](src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd,
+                 follow_symlinks=follow_symlinks)
+def m_rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+    if (placed(src) and denies("rename")) or (protected(src) and denies("protected")): deny()
+    real["rename"](src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+def m_unlink(path, *, dir_fd=None):
+    if placed(path) and not base(path).endswith("-link.mp4") and denies("unlink"): deny()
+    if protected(path) and denies("protected"): deny()
+    real["unlink"](path, dir_fd=dir_fd)
+def m_mkdir(path, mode=0o777, *, dir_fd=None):
+    if base(path).startswith(".affilio-dir-") and denies("protected"): deny()
+    real["mkdir"](path, mode, dir_fd=dir_fd)
+def m_rmdir(path, *, dir_fd=None):
+    if base(path).startswith("probe-") and denies("rmdir"): deny()
+    real["rmdir"](path, dir_fd=dir_fd)
+def m_listxattr(path=None, *, follow_symlinks=True):
+    names = real["listxattr"](path, follow_symlinks=follow_symlinks)
+    return names + [ACL_XATTR] if (placed(path) and ACL_XATTR) else names
+def m_getxattr(path, attribute, *, follow_symlinks=True):
+    if placed(path) and attribute == ACL_XATTR: return b"mock-synoacl-bytes"
+    return real["getxattr"](path, attribute, follow_symlinks=follow_symlinks)
+def m_setxattr(path, attribute, value, flags=0, *, follow_symlinks=True):
+    if placed(path) and attribute == ACL_XATTR:
+        if denies("setxattr"): deny()
+        return None
+    if placed(path) and attribute.startswith("user.") and denies("user_xattr"): deny()
+    real["setxattr"](path, attribute, value, flags, follow_symlinks=follow_symlinks)
+for name, fn in (("open", m_open), ("close", m_close), ("truncate", m_truncate), ("utime", m_utime),
+                 ("fchmod", m_fchmod), ("link", m_link), ("rename", m_rename), ("unlink", m_unlink),
+                 ("mkdir", m_mkdir), ("rmdir", m_rmdir), ("listxattr", m_listxattr),
+                 ("getxattr", m_getxattr), ("setxattr", m_setxattr)):
+    setattr(os, name, fn)
+sys.argv = __ARGV__
+runpy.run_path(__PROBE__, run_name="__main__")
+"""
+
+DENY_ALL = {
+    op: "deny"
+    for op in (
+        "open",
+        "truncate",
+        "utime",
+        "chmod",
+        "setxattr",
+        "user_xattr",
+        "link",
+        "rename",
+        "unlink",
+        "protected",
+    )
+}
+
+
+def mocked_probe(
+    final: Path,
+    policy: dict[str, str],
+    *,
+    acl: str | None = "system.synoacl",
+    expect: str = "denied",
+) -> subprocess.CompletedProcess:
+    typedir = final / "Hang" / "Mens-Fashion" / "Try-On"
+    protected = typedir / ".affilio-protected-sim.tmp"
+    if not protected.exists():
+        protected.write_bytes(b"x")
+        protected.chmod(0o444)
+    argv = [
+        "probe",
+        "--final",
+        str(final),
+        "--type-dir",
+        "Hang/Mens-Fashion/Try-On",
+        "--protected",
+        protected.name,
+        "--apply",
+        "--simulate",
+        "--expect-placed-unlink",
+        expect,
+    ]
+    shim = final.parent / "acl-shim.py"
+    shim.write_text(
+        SHIM.replace("__POLICY__", repr(policy))
+        .replace("__ACL__", repr(acl))
+        .replace("__ARGV__", repr(argv))
+        .replace("__PROBE__", repr(str(PROBE)))
+    )
+    return subprocess.run(  # noqa: S603 - scripts under test, fixed argv
+        [PYTHON, str(shim)], capture_output=True, text=True, check=False
+    )
+
+
+def summary_of(result: subprocess.CompletedProcess) -> dict:
+    line = next(line for line in result.stdout.splitlines() if line.startswith("summary:"))
+    return json.loads(line[len("summary:") :])
+
+
+def test_t8_all_denied_under_the_mock_is_a_full_pass(tree: Path) -> None:
+    """Simulated contract: every owner-rights attempt refused, ACL attribute readable and its
+    rewrite refused. Exit 0, verdict PASS, evidence marked simulated, the placed file is the
+    only (expected) leftover."""
+    result = mocked_probe(tree, DENY_ALL)
+    out = result.stdout
+    assert result.returncode == 0, out + result.stderr
+    for name in (
+        "T8a placed: open for write",
+        "T8b placed: open read-write",
+        "T8c placed: truncate to the same size",
+        "T8d placed: utime to the same times",
+        "T8e placed: chmod to the same mode",
+        "T8f placed: ACL rewrite with its own bytes",
+        "T8g placed: create a user xattr",
+        "T8h placed: hard link to a new name in the type dir",
+        "T8i placed: hard link into staging",
+        "T8j placed: rename within the type dir",
+    ):
+        assert f"ok   {name}: refused with EACCES" in out, name
+    assert "ok   T8k placed file unchanged after owner-rights tests: identical" in out
+    assert "ok   T6 unlink of placed name is denied: observed: denied" in out
+    assert "FAIL" not in out and "UNVERIFIED" not in out
+    summary = summary_of(result)
+    assert summary["verdict"] == "PASS" and summary["evidence"] == "simulated"
+    assert summary["failed"] == [] and summary["unverified"] == []
+    typedir = tree / "Hang" / "Mens-Fashion" / "Try-On"
+    placed = typedir / f".affilio-probe-{summary['token']}.mp4"
+    assert (
+        placed.exists()
+        and len(summary["leftovers"]) == 1
+        and str(placed) in summary["leftovers"][0]
+    )
+    assert list((tree / ".affilio-incoming").iterdir()) == []
+    assert "T8 placed file before:" in out and "T8 placed file after:" in out
+
+
+def test_t8_acl_attribute_not_listed_is_unverified_exit_4(tree: Path) -> None:
+    result = mocked_probe(tree, DENY_ALL, acl=None)
+    assert result.returncode == 4, result.stdout + result.stderr
+    assert "UNVERIFIED T8f placed: ACL rewrite: system.synoacl not listed" in result.stdout
+    summary = summary_of(result)
+    assert summary["verdict"] == "PASS_WITH_UNVERIFIED" and summary["failed"] == []
+    assert summary["unverified"] == ["T8f placed: ACL rewrite"]
+
+
+def test_t8_unexpected_write_is_a_fail(tree: Path) -> None:
+    result = mocked_probe(tree, {**DENY_ALL, "open": "allow"})
+    out = result.stdout
+    assert result.returncode == 1
+    assert "FAIL T8a placed: open for write: UNEXPECTEDLY SUCCEEDED" in out
+    assert "FAIL T8b placed: open read-write: UNEXPECTEDLY SUCCEEDED" in out
+    assert "ok   T8c placed: truncate to the same size" in out  # later tests still ran
+    assert "ok   T8k placed file unchanged after owner-rights tests: identical" in out
+    summary = summary_of(result)
+    assert summary["verdict"] == "FAIL"
+    assert summary["failed"] == ["T8a placed: open for write", "T8b placed: open read-write"]
+
+
+def test_t8_unexpected_chmod_is_a_fail(tree: Path) -> None:
+    result = mocked_probe(tree, {**DENY_ALL, "chmod": "allow"})
+    assert result.returncode == 1
+    assert "FAIL T8e placed: chmod to the same mode: UNEXPECTEDLY SUCCEEDED" in result.stdout
+    summary = summary_of(result)
+    assert summary["failed"] == ["T8e placed: chmod to the same mode"]
+    assert "T8k placed file unchanged after owner-rights tests" in summary["passed"]
+
+
+def test_t8_unexpected_rename_and_unlink_are_fails(tree: Path) -> None:
+    result = mocked_probe(tree, {**DENY_ALL, "rename": "allow", "unlink": "allow"})
+    out = result.stdout
+    assert result.returncode == 1
+    assert "FAIL T8j placed: rename within the type dir: UNEXPECTEDLY SUCCEEDED" in out
+    assert "(T8j placed: rename within the type dir: unexpected success reversed)" in out
+    # the reversed rename may still move the inode's ctime; T8k must report exactly that or nothing
+    t8k = next(line for line in out.splitlines() if "T8k placed file unchanged" in line)
+    assert t8k.endswith(": identical") or t8k.endswith(": changed: ['ctime_ns']"), t8k
+    assert "FAIL T6 unlink of placed name is denied: observed: allowed" in out
+    assert "FAIL T6b placed file intact after refused unlink: placed file missing" in out
+    summary = summary_of(result)
+    failed = [f for f in summary["failed"] if not f.startswith("T8k")]
+    assert failed == [
+        "T8j placed: rename within the type dir",
+        "T6 unlink of placed name is denied",
+        "T6b placed file intact after refused unlink",
+    ]
+    typedir = tree / "Hang" / "Mens-Fashion" / "Try-On"
+    assert not list(typedir.glob(".affilio-probe-*"))
+
+
+def test_t8_relink_into_staging_reports_escalation(tree: Path) -> None:
+    """Links allowed, writes refused through the placed name: the probe creates the second
+    name, measures that a write through it succeeds (the escalation path), removes the
+    link and reports every step as FAIL."""
+    result = mocked_probe(tree, {**DENY_ALL, "link": "allow"})
+    out = result.stdout
+    assert result.returncode == 1
+    assert "FAIL T8h placed: hard link to a new name in the type dir: UNEXPECTEDLY SUCCEEDED" in out
+    assert (
+        "(T8h placed: hard link to a new name in the type dir: unexpected success reversed)" in out
+    )
+    assert "FAIL T8i placed: hard link into staging: UNEXPECTEDLY SUCCEEDED" in out
+    assert (
+        "FAIL T8i2 placed: write through the staging-linked name (escalation): "
+        "UNEXPECTEDLY SUCCEEDED" in out
+    )
+    assert "(T8i: staging link removed)" in out
+    summary = summary_of(result)
+    assert summary["failed"] == [
+        "T8h placed: hard link to a new name in the type dir",
+        "T8i placed: hard link into staging",
+        "T8i2 placed: write through the staging-linked name (escalation)",
+    ]
+    typedir = tree / "Hang" / "Mens-Fashion" / "Try-On"
+    assert sorted(p.name for p in typedir.glob(".affilio-probe-*")) == [
+        f".affilio-probe-{summary['token']}.mp4"
+    ]
+    assert list((tree / ".affilio-incoming").iterdir()) == []
+
+
+def test_t8_partial_cleanup_failure_fails_and_host_cleanup_finishes(world) -> None:
+    host(world, "capture")
+    result = mocked_probe(world["final"], {**DENY_ALL, "rmdir": "deny"})
+    out = result.stdout
+    assert result.returncode == 1
+    assert "FAIL T7 cleanup complete: could not remove:" in out
+    summary = summary_of(result)
+    assert summary["verdict"] == "FAIL" and summary["failed"] == ["T7 cleanup complete"]
+    token = summary["token"]
+    probe_dir = world["staging"] / f"probe-{token}"
+    assert probe_dir.is_dir() and any(str(probe_dir) in left for left in summary["leftovers"])
+    (world["typedir"] / ".affilio-protected-sim.tmp").unlink()  # the manifest names another file
+    cleaned = host(world, "cleanup", token)
+    assert cleaned.returncode == 0, cleaned.stdout + cleaned.stderr
+    assert not probe_dir.exists() and not list(world["typedir"].glob(".affilio-probe-*"))
+
+
+def test_host_inspect_is_read_only_and_lists_token_artefacts(world) -> None:
+    token = "20261030T120000Z-abcd1234"
+    placed = world["typedir"] / f".affilio-probe-{token}.mp4"
+    placed.write_bytes(b"placed")
+    probe_dir = world["staging"] / f"probe-{token}"
+    probe_dir.mkdir()
+    (probe_dir / "src.part").write_bytes(b"src")
+    world["seed"](placed, [e.replace("fd--", "----") for e in DIR_ENTRIES])
+    before = {p: (p.stat().st_ino, p.stat().st_mtime_ns) for p in (placed, probe_dir / "src.part")}
+    result = host(world, "inspect", token)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"== {placed}" in result.stdout and f"== {probe_dir / 'src.part'}" in result.stdout
+    assert (
+        "sha256=" in result.stdout
+        and "user:hoangtuhanhphuc:allow:r-x---a-R-c--:---- (level:4)" in result.stdout
+    )
+    assert "== " + str(world["typedir"]) + " (type dir entries)" in result.stdout
+    assert {p: (p.stat().st_ino, p.stat().st_mtime_ns) for p in before} == before
+    assert host(world, "inspect").returncode == 2
+    assert host(world, "inspect", "../x").returncode == 2
+
+
+def test_host_cleanup_removes_the_t8_names_by_exact_token(world) -> None:
+    host(world, "capture")
+    token = "20261030T120000Z-abcd1234"
+    names = [
+        world["typedir"] / f".affilio-probe-{token}.mp4",
+        world["typedir"] / f".affilio-probe-{token}-link.mp4",
+        world["typedir"] / f".affilio-probe-{token}-renamed.mp4",
+        world["staging"] / f"probe-{token}" / "relinked",
+    ]
+    (world["staging"] / f"probe-{token}").mkdir()
+    for n in names:
+        n.write_bytes(b"x")
+    other = world["typedir"] / ".affilio-probe-othertoken.mp4"
+    other.write_bytes(b"keep")
+    cleaned = host(world, "cleanup", token)
+    assert cleaned.returncode == 1  # the other token's file remains and is reported
+    assert all(not n.exists() for n in names) and not (world["staging"] / f"probe-{token}").exists()
+    assert other.exists() and "remaining probe artefacts: 1 in type dir" in cleaned.stdout
 
 
 def test_probe_identity_guard_ignores_the_primary_gid_but_not_extra_groups(tree: Path) -> None:

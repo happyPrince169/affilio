@@ -11,6 +11,9 @@
 #                             current ACL equals the baseline plus exactly that entry
 #   prepare-protected         disposable protected file in the type dir with a legacy file's ACL
 #                             copied onto it (the legacy file is only read); recorded in the manifest
+#   inspect <probe-token>     read-only: stat, SHA-256 and ACL of every artefact of that token
+#                             (run BEFORE cleanup: it is the authoritative ACL record of the
+#                             placed file for the B3.1 owner-rights probe)
 #   cleanup <probe-token>     remove the probe artefacts of that token and the manifest's protected
 #                             file by exact name; directories only when empty; never recursive
 #   restore-acl               remove exactly the entry this run added (unique fixed-string match);
@@ -111,6 +114,20 @@ case "${1:-}" in
     fi
     echo "protected=$name" >> "$B/manifest"; echo "export PROTECTED=$name"
     ;;
+  inspect)
+    token="${2:-}"; [ -n "$token" ] || die "usage: $0 inspect <probe-token>" 2
+    case "$token" in *[!A-Za-z0-9T-]*) die "token must be the probe token (letters, digits, T, -)" 2 ;; esac
+    for f in "$D/.affilio-probe-$token.mp4" "$D/.affilio-probe-$token-link.mp4" "$D/.affilio-probe-$token-renamed.mp4" \
+             "$S/probe-$token/src.part" "$S/probe-$token/stolen" "$S/probe-$token/relinked" "$S/probe-$token"; do
+      if [ -e "$f" ] || [ -L "$f" ]; then
+        echo "== $f"
+        stat -c 'type=%F owner=%U:%G mode=%a inode=%i nlink=%h size=%s mtime=%Y ctime=%Z' -- "$f"
+        if [ -f "$f" ] && [ ! -L "$f" ]; then echo "sha256=$(sha256sum -- "$f" | cut -c1-64)"; fi
+        "$T" -get "$f" || echo "(ACL not readable: $T exit $?)"
+      fi
+    done
+    echo "== $D (type dir entries)"; acl_entries "$D"
+    ;;
   cleanup)
     need_baseline
     token="${2:-}"
@@ -122,8 +139,9 @@ case "${1:-}" in
     if [ -n "$token" ]; then
       case "$token" in *[!A-Za-z0-9T-]*) die "token must be the probe token (letters, digits, T, -)" 2 ;; esac
       remove_file "$D/.affilio-probe-$token.mp4"
+      remove_file "$D/.affilio-probe-$token-link.mp4"; remove_file "$D/.affilio-probe-$token-renamed.mp4"
       remove_empty_dir "$D/.affilio-dir-$token"
-      remove_file "$S/probe-$token/src.part"; remove_file "$S/probe-$token/stolen"
+      remove_file "$S/probe-$token/src.part"; remove_file "$S/probe-$token/stolen"; remove_file "$S/probe-$token/relinked"
       remove_empty_dir "$S/probe-$token"
     else
       echo "no probe token given: only the manifest's protected file was handled"
@@ -163,5 +181,5 @@ case "${1:-}" in
     if [ -n "$other" ]; then echo "BLOCKED: unexpected ACL changes:"; echo "$other"; status=1; else echo "ok acl: nothing changed outside our entry"; fi
     [ "$status" -eq 0 ] && echo "PASS verify" || exit 1
     ;;
-  *) echo "usage: $0 preflight|capture|apply-acl|prepare-protected|cleanup <probe-token>|restore-acl|verify" >&2; exit 2 ;;
+  *) echo "usage: $0 preflight|capture|apply-acl|prepare-protected|inspect <probe-token>|cleanup <probe-token>|restore-acl|verify" >&2; exit 2 ;;
 esac

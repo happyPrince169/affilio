@@ -249,9 +249,13 @@ may not, on the tested NAS only (DS923+, DSM 7.3.2, btrfs with `synoacl`):
   with the legacy ACL. Linking onto an existing name fails `EEXIST`.
 - **Not verified.** Owner-implicit rights of the service user on the file it placed (open
   for write, `utime`, `chmod`, `setxattr` of the ACL): the negatives ran against a file
-  owned by another user. Behaviour on other DSM releases or volume types. Whether the
+  owned by another user. The probe's T8 block (B3.1A, local only so far) tests exactly
+  these on the NAS in B3.1B. Behaviour on other DSM releases or volume types. Whether the
   inode's ACL is rewritten at link time or evaluated by path (no effect on the worker, which
   hashes before linking and only reads afterwards).
+- **Proposed hardening (not implemented).** `StagingStore.open_for_write` and `truncate`
+  should refuse a staging file whose link count is not 1, so that no API code path can
+  reach a placed final through its staging name even if the status guard were bypassed.
 - **Required for production.** No write, rename, link or delete on legacy files; no
   overwrite; create only in authorized type folders; no delete and no modification of a
   placed final by the service identity; no capabilities in the worker container.
