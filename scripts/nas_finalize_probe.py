@@ -68,7 +68,8 @@ def main() -> int:
     placed_name = f".affilio-probe-{token}.mp4"
     placed = os.path.join(type_dir, placed_name)
     print(json.dumps({
-        "identity": {"uid": os.getuid(), "gid": os.getgid(), "groups": os.getgroups()},
+        "identity": {"uid": os.getuid(), "gid": os.getgid(), "groups": os.getgroups(),
+                     "extra_groups": sorted(g for g in set(os.getgroups()) if g != os.getgid())},
         "probe_dir": probe_dir, "placed": placed, "protected": protected,
         "expect_placed_unlink": args.expect_placed_unlink, "mode": "apply" if args.apply else "dry-run",
     }, indent=1))
@@ -76,8 +77,11 @@ def main() -> int:
         print("dry run: add --apply to execute"); return 0
     if args.simulate_leftover and not args.simulate:
         print("ERROR: --simulate-leftover requires --simulate"); return 2
-    if os.getgroups() and not args.simulate:
-        print("FAIL identity has supplementary groups; not the service identity"); return 1
+    # Docker lists the primary gid itself in the supplementary set ([100] for uid 1026:100);
+    # only groups beyond the primary gid mean the identity is not the service identity.
+    extra_groups = sorted(g for g in set(os.getgroups()) if g != os.getgid())
+    if extra_groups and not args.simulate:
+        print(f"FAIL identity has supplementary groups {extra_groups}; not the service identity"); return 1
 
     results: list[tuple[str, bool, str]] = []
     failed = False

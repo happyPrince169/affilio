@@ -426,3 +426,34 @@ def test_probe_refuses_bad_arguments(tree: Path) -> None:
     )
     assert dry.returncode == 0 and "dry run" in dry.stdout
     assert list((tree / ".affilio-incoming").iterdir()) == []
+
+
+def test_probe_identity_guard_ignores_the_primary_gid_but_not_extra_groups(tree: Path) -> None:
+    """Inside the container os.getgroups() returns [primary gid]; that is the service identity.
+    Any other group must still be refused. Rehearsed by shadowing os.getgroups/os.getgid."""
+    typedir = tree / "Hang" / "Mens-Fashion" / "Try-On"
+    (typedir / ".affilio-protected-sim.tmp").write_bytes(b"x")
+    shim = tree / "shim.py"
+
+    def run(groups: list[int], gid: int) -> subprocess.CompletedProcess:
+        shim.write_text(
+            "import os, runpy, sys\n"
+            f"os.getgroups = lambda: {groups!r}\n"
+            f"os.getgid = lambda: {gid}\n"
+            f"sys.argv = ['probe', '--final', {str(tree)!r},"
+            " '--type-dir', 'Hang/Mens-Fashion/Try-On',"
+            " '--protected', '.affilio-protected-sim.tmp',"
+            " '--apply', '--expect-placed-unlink', 'allowed']\n"
+            f"runpy.run_path({str(PROBE)!r}, run_name='__main__')\n"
+        )
+        return subprocess.run(  # noqa: S603 - scripts under test, fixed argv
+            [PYTHON, str(shim)], capture_output=True, text=True, check=False
+        )
+
+    refused = run([100, 101], 100)
+    assert refused.returncode == 1 and "supplementary groups [101]" in refused.stdout
+    assert not list(typedir.glob(".affilio-probe-*"))  # refused before any write
+    accepted = run([100], 100)
+    assert "FAIL identity" not in accepted.stdout and "ok   T1" in accepted.stdout
+    empty = run([], 100)
+    assert "FAIL identity" not in empty.stdout
