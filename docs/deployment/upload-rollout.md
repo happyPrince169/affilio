@@ -656,9 +656,22 @@ ffmpeg -nostdin -hide_banner -f lavfi -i testsrc=duration=3:size=540x960:rate=30
 sha256sum smoke-affilio.mp4
 ```
 
-1. A mapped editor signs in on the public hostname, opens `/uploads`, picks owner / product
-   category / content type, uploads `smoke-affilio.mp4`; expect `processing` → `completed`
-   within one worker poll plus hashing.
+Driver: `scripts/smoke_upload.py` runs steps 1 and 3–6 through the public API exactly as the
+browser does (chunked upload with per-chunk SHA-256, polling, provenance, thumbnail, Range and
+full-stream hash, library filters, duplicate, reject, revision, reclassify, approve, export
+state) and prints one `ok`/`FAIL` line per check; passwords are read with `getpass`. Rehearsed
+on 2026-11-04 against a local API + worker on the test database (all checks green, strategy
+`renameat2`). Run it from the workstation:
+
+```
+uv run --project apps/api python scripts/smoke_upload.py --base https://<public hostname> \
+  --file smoke-affilio.mp4 --corrected smoke-affilio-corrected.mp4 \
+  --editor-email <mapped editor> --admin-email <admin> --legacy-finals 92
+```
+
+Manual equivalent of step 1: a mapped editor signs in on the public hostname, opens `/uploads`,
+picks owner / product category / content type, uploads `smoke-affilio.mp4`; expect
+`processing` → `completed` within one worker poll plus hashing.
 2. Checks (read-only, on the NAS): the file is at `AFFILIO_UPLOADS/ready/<org>/<YYYY>/<MM>/<upload id>.mp4`
    with the same SHA-256; `staging/` is empty again; nothing new under FINAL:
 
