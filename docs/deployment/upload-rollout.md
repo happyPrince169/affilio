@@ -531,61 +531,121 @@ The sequence that used to stand here (API bind of `FINAL/.affilio-incoming`, wor
 FINAL read-write, 72 ACL entries) is withdrawn with ADR 0012 amendment 2. It is replaced by
 Phase D below. The B3.2 ACL rollout is not performed.
 
-## Phase D — smallest safe NAS deployment of the two-root design (needs approval; nothing applied)
+## Phase D — smallest safe NAS deployment of the two-root design (runbook; needs approval, nothing applied)
 
-Preconditions: Phase F0 finished (`verify` PASS, ACL back to baseline, no probe leftovers);
-local checks green at the approved commit; database backup by the deploy script.
+Reviewed 2026-11-04 (F3). Every repository-side change is in one patch,
+`docs/deployment/phase-d-uploads-root.patch` (compose, Synology `.env.example`, deploy-script
+checks and their test); it was rendered with `docker compose config` and its deploy-script test
+passed before it was saved. It is **not applied** to the compose file in the repository until
+Phase D is approved. No ACL command, hard link or probe is part of this plan.
 
-1. **One new directory tree, by an administrator (approval 1).** Outside `FINAL`, on the same
-   volume so no legacy path changes:
+### D.0 Prerequisites (all true before anything is changed)
 
-   ```
-   sudo mkdir -p /volume1/ContentFactory/fashion/AFFILIO_UPLOADS/{staging,ready}
-   sudo chown -R 1026:100 /volume1/ContentFactory/fashion/AFFILIO_UPLOADS
-   sudo chmod 750 /volume1/ContentFactory/fashion/AFFILIO_UPLOADS /volume1/ContentFactory/fashion/AFFILIO_UPLOADS/{staging,ready}
-   ```
+- F0 closed (done): no probe artefacts under FINAL, type dir ACL at baseline.
+- Local HEAD at the approved commit with `pnpm lint`, `pnpm typecheck`, `pnpm build` and the
+  backend suite green in the session that reports it.
+- `META_LIVE_PUBLISHING_ENABLED=false` in the NAS `.env` (the deploy check refuses otherwise).
+- At least one editor mapped to a production owner (Settings → Members) for the smoke test.
 
-   Nothing under `FINAL` is created, changed or removed; `.affilio-incoming` stays as it is
-   until its own removal is approved. No ACL command is run anywhere.
+### D.1 Storage (administrator, approval 1) — the only filesystem mutation
 
-2. **Compose and environment (approval 2, reviewed as a diff).** Source of truth stays
-   `infrastructure/docker/synology/docker-compose.yml`; the change is deliberately small:
-   - `.env`: `AFFILIO_UPLOADS_HOST_PATH=/volume1/ContentFactory/fashion/AFFILIO_UPLOADS`.
-   - shared media mounts (api, worker): add the bind `${AFFILIO_UPLOADS_HOST_PATH}` →
-     `/data/uploads` **read-only**; api additionally binds
-     `${AFFILIO_UPLOADS_HOST_PATH}/staging` → `/data/uploads/staging` read-write (nested
-     bind: the API can write chunks and nothing else); worker instead binds the whole root
-     read-write. Publisher and exporter: `/data/uploads` read-only.
-   - shared env: `MEDIA_UPLOADS_PATH=/data/uploads`; worker only:
-     `MEDIA_UPLOADS_WRITABLE=true`. `MEDIA_FINALS_PATH` stays `/media/finals`, read-only in
-     every service. `META_LIVE_PUBLISHING_ENABLED=false` stays.
-   - Simpler acceptable variant: api binds the whole root read-write and skips the nested
-     bind. Documented tradeoff: the internet-facing process could then write `ready/`.
-     Recommended: the nested bind.
-   - Optional hardening carried over from B2B: `cap_drop: [ALL]` on the worker.
+Outside `FINAL`, same volume (so legacy paths are untouched and nothing crosses a volume):
 
-3. **Deploy.** `pnpm nas:sync`, `pnpm nas:deploy check`, `pnpm nas:deploy deploy` (migrations
-   0014–0018 run on API start). Rollback: `pnpm nas:deploy rollback` to the previous images
-   and `alembic downgrade 0013_facet_classification` (0018's downgrade is lossless for
-   assets; 0015/0014 drop upload sessions and mappings as before).
+```
+U=/volume1/ContentFactory/fashion/AFFILIO_UPLOADS
+sudo mkdir -p "$U/staging" "$U/ready"
+sudo chown -R 1026:100 "$U"
+sudo chmod 750 "$U" "$U/staging" "$U/ready"
+stat -c '%n %U:%G %a' "$U" "$U/staging" "$U/ready"      # expect hoangtuhanhphuc:users 750 ×3
+```
 
-4. **Post-deploy checks (read-only).** `/api/v1/health`; `alembic_version = 0018_upload_root`;
-   `GET /api/v1/media/roots` lists `uploads` configured, exists, readable and writable only
-   on the worker's view (the API reports `writable: false` for the root itself); `finals`
-   still read-only in every container (`/proc/<pid>/mountinfo`); worker log `worker.started`
-   with `uploads: true`; `GET /media/uploads/options` answers 200 for a mapped editor.
+Nothing under `FINAL` is created, changed or removed. `.affilio-incoming` stays until its own
+removal is approved. No `synoacltool` call anywhere. Directory semantics: plain ownership and
+mode bits are enough, because the service uid owns the tree; a DSM shared-folder ACL, if the
+volume applies one, inherits from the parent and is not edited.
 
-5. **Pilot (approval 3).** One short synthetic clip uploaded by a mapped editor through the
-   public hostname: expect `processing` → `completed`; the asset in the library with owner,
-   product category and content type from the form (`upload` assignments), pending review,
-   preview playing in the browser, thumbnail rendered, `upload.completed` audit event with the
-   SHA-256, the file at `AFFILIO_UPLOADS/ready/<org>/<YYYY>/<MM>/<upload id>.mp4`, nothing
-   new under `FINAL`. Then: the same file again → `duplicate`, no file; a rejection and a
-   corrected submission → revision link in the report; an admin reclassification → database
-   change only, file untouched. Decide beforehand whether the pilot asset stays.
+### D.2 Repository change (approval 2, reviewed as the patch)
 
-6. **Later, separately approved.** `rmdir FINAL/.affilio-incoming` (empty, hidden); migration
-   of legacy finals into the new root is out of scope.
+`git apply docs/deployment/phase-d-uploads-root.patch`, then run the deploy-script test and
+`docker compose config`, commit locally. What the patch does:
+
+| Service   | `/media/finals` | `/data/uploads`                                  | env |
+| --------- | --------------- | ------------------------------------------------ | --- |
+| api       | ro (unchanged)  | ro, plus nested rw bind of `…/staging` only      | `MEDIA_UPLOADS_PATH=/data/uploads` |
+| worker    | ro (unchanged)  | rw (whole root; the only finalizer)              | `MEDIA_UPLOADS_PATH`, `MEDIA_UPLOADS_WRITABLE=true` |
+| publisher | ro (unchanged)  | ro                                               | `MEDIA_UPLOADS_PATH` |
+| exporter  | ro (unchanged)  | ro                                               | `MEDIA_UPLOADS_PATH` |
+| web       | –               | –                                                | – |
+
+Plus `AFFILIO_UPLOADS_HOST_PATH` in the Synology `.env.example`, and `nas-deploy-remote.sh
+check` now requires that variable, requires the root and both subfolders to exist and not be
+symlinks, and refuses a path inside `FINAL`. Originals, proxies and legacy finals keep their
+read-only mounts in every service; nothing else in compose changes.
+
+### D.3 NAS `.env` (administrator, with approval 2)
+
+Add one line to `infrastructure/docker/synology/.env` on the NAS (mode 600, never synced):
+`AFFILIO_UPLOADS_HOST_PATH=/volume1/ContentFactory/fashion/AFFILIO_UPLOADS`. Upload limits
+keep their defaults (8 MiB chunks, 8 GiB per file, 48 h session TTL, 100 GiB staging cap).
+`META_LIVE_PUBLISHING_ENABLED=false` stays.
+
+### D.4 Deploy (approval 3)
+
+```
+pnpm nas:sync                       # source only; never builds or restarts
+pnpm nas:deploy check               # .env, folders (incl. uploads/staging/ready), compose config
+pnpm nas:deploy deploy              # backup, build, migrations 0014→0018 on api start, restart
+```
+
+The deploy script takes `backups/pre-deploy-<timestamp>.dump` first and keeps the previous
+two. Migration sequence applied by the api container on start: `0014_owner_mappings`,
+`0015_media_uploads`, `0016_reporting_indexes`, `0017_upload_chunk_manifest`,
+`0018_upload_root`. 0018 only widens two CHECK constraints and is lossless on downgrade.
+Expected downtime: the usual image swap.
+
+### D.5 Health verification (read-only)
+
+| Check | Expect |
+| --- | --- |
+| `GET /api/v1/health`, `GET /api/v1/system/info` on `http://<LAN IP>:3080` | `status: ok`, database `ok`, `environment: production` |
+| `alembic_version` (read-only psql, see the container-inspection notes) | `0018_upload_root` |
+| `GET /api/v1/media/roots` as an admin | `uploads` configured, exists, readable; `writable: false` from the api (its root bind is ro); `finals` read-only |
+| `/proc/<pid>/mountinfo` of api, worker, publisher, exporter | `/media/finals … ro`; `/data/uploads` ro in api, publisher, exporter; rw in worker; `/data/uploads/staging` rw in api |
+| worker log | `worker.started` with `uploads: true` |
+| `GET /api/v1/media/uploads/options` as a mapped editor | 200 with the editor's owners |
+| `.env` | `META_LIVE_PUBLISHING_ENABLED=false` |
+
+### D.6 One-editor smoke test (approval 4; decide beforehand whether the asset stays)
+
+1. A mapped editor uploads one short synthetic clip (ffmpeg test source, ~2 s, H.264/AAC)
+   through `/uploads` on the public hostname; expect `processing` → `completed` within one
+   worker poll plus hashing.
+2. Library: the asset appears as a final, `ingest_source: upload`, `root_key: uploads`, owner,
+   product category and content type from the form (`upload` assignments), pending review;
+   the preview plays; the thumbnail renders within a poll; `upload.completed` audit event with
+   `root_key` and the SHA-256; the file at
+   `AFFILIO_UPLOADS/ready/<org>/<YYYY>/<MM>/<upload id>.mp4`; `find FINAL -newer …` shows
+   nothing new under FINAL and the 92 legacy files unchanged.
+3. The same file again → `duplicate`, no new file, no new asset.
+4. Admin rejects it, the editor submits a corrected version → revision link, both in the
+   production report.
+5. Admin reclassifies the owner → database change only; the file's inode and mtime unchanged.
+6. Admin approves the corrected final → the publishing media check resolves it from the
+   `uploads` root (no live publish: the flag stays false).
+
+### D.7 Rollback
+
+| Layer | Action |
+| --- | --- |
+| Code | `pnpm nas:deploy rollback` to the previous images |
+| Database | `alembic downgrade 0017_upload_chunk_manifest` keeps every asset and file row (0018 folds `upload` → `final`/`path`, `override` → `manual`); `0013_facet_classification` drops upload sessions and mappings as before; or restore `pre-deploy-<ts>.dump` |
+| Mounts / env | revert the patch and `up -d`; without `MEDIA_UPLOADS_PATH` uploads answer 503 and the finalizer is inert |
+| Filesystem | files under `AFFILIO_UPLOADS/ready` are registered finals: leave them. `FINAL` was never written. Nothing to restore on ACLs |
+
+### D.8 Deferred, separately approved
+
+`rmdir FINAL/.affilio-incoming` (empty, hidden); migration of legacy finals into the new root
+(out of scope); `cap_drop: [ALL]` on the worker (optional hardening, not in the patch).
 
 ## What happens if placement succeeds but the database transaction fails
 
