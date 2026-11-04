@@ -549,20 +549,38 @@ or deployed until Phase D is approved. No ACL command, hard link or probe is par
 
 ### D.1 Storage (administrator, approval 1) — the only filesystem mutation
 
-Outside `FINAL`, same volume (so legacy paths are untouched and nothing crosses a volume):
+Checked read-only on 2026-11-04: `/volume1/ContentFactory/fashion/AFFILIO_UPLOADS` does not
+exist; the parent `fashion` is a DSM shared-folder directory in ACL mode (`is_inherit`,
+service user `r-x` only, administrators and the three editors full rights, inherited by every
+new child). The AFFILIO runtime directories under `/volume1/docker/affilio` (thumbnails,
+exports, data) are plain "Linux mode" directories owned by 1026:100 and the worker has been
+writing them since 2026-10-27, so plain ownership plus mode bits is the proven mechanism for
+container writes on this volume. On the probe file, `chmod` by the owner converted an
+ACL-mode entry to Linux mode; the same is expected for a new directory but is verified by
+the gate below, never assumed.
 
 ```
 U=/volume1/ContentFactory/fashion/AFFILIO_UPLOADS
-sudo mkdir -p "$U/staging" "$U/ready"
-sudo chown -R 1026:100 "$U"
-sudo chmod 750 "$U" "$U/staging" "$U/ready"
-stat -c '%n %U:%G %a' "$U" "$U/staging" "$U/ready"      # expect hoangtuhanhphuc:users 750 ×3
+sudo /usr/syno/bin/synoacltool -get /volume1/ContentFactory/fashion > /tmp/fashion-acl-before.txt
+sudo mkdir "$U" "$U/staging" "$U/ready"                       # three new directories, nothing else
+sudo chown 1026:100 "$U" "$U/staging" "$U/ready"              # explicit paths, never -R
+sudo chmod 750 "$U" "$U/staging" "$U/ready"                   # explicit paths, never -R
+# Gate (read-only): all three must be owned 1026:100, mode 750, and in Linux mode (no ACL);
+# the parent's ACL must be byte-identical to before; nothing else under fashion/ may change.
+stat -c '%n %U:%G %a' "$U" "$U/staging" "$U/ready"
+for d in "$U" "$U/staging" "$U/ready"; do /usr/syno/bin/synoacltool -get "$d" 2>&1 | head -1; done
+diff /tmp/fashion-acl-before.txt <(sudo /usr/syno/bin/synoacltool -get /volume1/ContentFactory/fashion) && echo "parent ACL unchanged"
 ```
 
+If any of the three directories still reports an ACL (`Archive: …has_ACL…`) instead of
+"It's Linux mode", **stop**: the containers (uid 1026, no `administrators` group) would only
+inherit read and execute and could not write. Do not add ACL entries. The approved fallback is
+the proven location `/volume1/docker/affilio/uploads` (same `mkdir`/`chown`/`chmod` recipe,
+`AFFILIO_UPLOADS_HOST_PATH` pointed there); the three directories just created under
+`fashion/` are then removed with `rmdir` (they are empty) under the same approval.
+
 Nothing under `FINAL` is created, changed or removed. `.affilio-incoming` stays until its own
-removal is approved. No `synoacltool` call anywhere. Directory semantics: plain ownership and
-mode bits are enough, because the service uid owns the tree; a DSM shared-folder ACL, if the
-volume applies one, inherits from the parent and is not edited.
+removal is approved. No `synoacltool -add/-del/-set-owner` call anywhere.
 
 ### D.2 Repository change (done locally at checkpoint 1; deploys with D.4)
 
@@ -583,24 +601,38 @@ read-only mounts in every service; nothing else in compose changes.
 
 ### D.3 NAS `.env` (administrator, with approval 2)
 
-Add one line to `infrastructure/docker/synology/.env` on the NAS (mode 600, never synced):
-`AFFILIO_UPLOADS_HOST_PATH=/volume1/ContentFactory/fashion/AFFILIO_UPLOADS`. Upload limits
-keep their defaults (8 MiB chunks, 8 GiB per file, 48 h session TTL, 100 GiB staging cap).
-`META_LIVE_PUBLISHING_ENABLED=false` stays.
+Add one line to `/volume1/docker/affilio/infrastructure/docker/synology/.env` on the NAS
+(mode 600, never synced); every other key stays as it is:
+
+```
+echo 'AFFILIO_UPLOADS_HOST_PATH=/volume1/ContentFactory/fashion/AFFILIO_UPLOADS' >> /volume1/docker/affilio/infrastructure/docker/synology/.env
+grep -nE '^(AFFILIO_UPLOADS_HOST_PATH|META_LIVE_PUBLISHING_ENABLED|META_PROVIDER_MODE)=' /volume1/docker/affilio/infrastructure/docker/synology/.env
+```
+
+Expected: the new line, `META_LIVE_PUBLISHING_ENABLED=false`, and `META_PROVIDER_MODE` absent
+or `live`. Upload limits keep their defaults (8 MiB chunks, 8 GiB per file, 48 h session TTL,
+100 GiB staging cap).
 
 ### D.4 Deploy (approval 3)
 
+From the workstation (Tailscale route to `leosunnas`):
+
 ```
-pnpm nas:sync                       # source only; never builds or restarts
-pnpm nas:deploy check               # .env, folders (incl. uploads/staging/ready), compose config
-pnpm nas:deploy deploy              # backup, build, migrations 0014→0018 on api start, restart
+pnpm nas:sync                       # source only (compose with the uploads mounts included); never builds or restarts
+pnpm nas:deploy check               # .env keys incl. AFFILIO_UPLOADS_HOST_PATH, root/staging/ready present and not symlinks,
+                                    # not inside FINAL, publishing flag false, compose config
+pnpm nas:deploy deploy              # pre-deploy pg_dump → tag :previous → build → up -d → health
 ```
 
-The deploy script takes `backups/pre-deploy-<timestamp>.dump` first and keeps the previous
-two. Migration sequence applied by the api container on start: `0014_owner_mappings`,
-`0015_media_uploads`, `0016_reporting_indexes`, `0017_upload_chunk_manifest`,
-`0018_upload_root`. 0018 only widens two CHECK constraints and is lossless on downgrade.
-Expected downtime: the usual image swap.
+Production is at `0013_facet_classification` (checked read-only 2026-11-04: 166 assets, 92
+finals all on the `finals` root, 1 approved / 91 pending, 92 `folder` assignments, 11 MB).
+The api container applies `0014_owner_mappings`, `0015_media_uploads`,
+`0016_reporting_indexes`, `0017_upload_chunk_manifest`, `0018_upload_root` on start. 0018
+drops and recreates `ck_media_roots_media_root_kind` and
+`ck_media_content_categories_category_assignment_source` (both present in production under
+those names) and touches no row; its downgrade is lossless. The deploy script's dump
+(`backups/pre-deploy-<timestamp>.dump`, custom format) is taken before the images change;
+four earlier dumps exist and 11 TB are free. Expected downtime: the usual image swap.
 
 ### D.5 Health verification (read-only)
 
@@ -616,30 +648,58 @@ Expected downtime: the usual image swap.
 
 ### D.6 One-editor smoke test (approval 4; decide beforehand whether the asset stays)
 
-1. A mapped editor uploads one short synthetic clip (ffmpeg test source, ~2 s, H.264/AAC)
-   through `/uploads` on the public hostname; expect `processing` → `completed` within one
-   worker poll plus hashing.
-2. Library: the asset appears as a final, `ingest_source: upload`, `root_key: uploads`, owner,
-   product category and content type from the form (`upload` assignments), pending review;
-   the preview plays; the thumbnail renders within a poll; `upload.completed` audit event with
-   `root_key` and the SHA-256; the file at
-   `AFFILIO_UPLOADS/ready/<org>/<YYYY>/<MM>/<upload id>.mp4`; `find FINAL -newer …` shows
-   nothing new under FINAL and the 92 legacy files unchanged.
-3. The same file again → `duplicate`, no new file, no new asset.
-4. Admin rejects it, the editor submits a corrected version → revision link, both in the
-   production report.
-5. Admin reclassifies the owner → database change only; the file's inode and mtime unchanged.
-6. Admin approves the corrected final → the publishing media check resolves it from the
-   `uploads` root (no live publish: the flag stays false).
+Prepare a disposable clip on the workstation (never from legacy media):
 
-### D.7 Rollback
+```
+ffmpeg -nostdin -hide_banner -f lavfi -i testsrc=duration=3:size=540x960:rate=30 \
+  -f lavfi -i sine=frequency=440:duration=3 -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest smoke-affilio.mp4
+sha256sum smoke-affilio.mp4
+```
 
-| Layer | Action |
-| --- | --- |
-| Code | `pnpm nas:deploy rollback` to the previous images |
-| Database | `alembic downgrade 0017_upload_chunk_manifest` keeps every asset and file row (0018 folds `upload` → `final`/`path`, `override` → `manual`); `0013_facet_classification` drops upload sessions and mappings as before; or restore `pre-deploy-<ts>.dump` |
-| Mounts / env | revert the patch and `up -d`; without `MEDIA_UPLOADS_PATH` uploads answer 503 and the finalizer is inert |
-| Filesystem | files under `AFFILIO_UPLOADS/ready` are registered finals: leave them. `FINAL` was never written. Nothing to restore on ACLs |
+1. A mapped editor signs in on the public hostname, opens `/uploads`, picks owner / product
+   category / content type, uploads `smoke-affilio.mp4`; expect `processing` → `completed`
+   within one worker poll plus hashing.
+2. Checks (read-only, on the NAS): the file is at `AFFILIO_UPLOADS/ready/<org>/<YYYY>/<MM>/<upload id>.mp4`
+   with the same SHA-256; `staging/` is empty again; nothing new under FINAL:
+
+   ```
+   U=/volume1/ContentFactory/fashion/AFFILIO_UPLOADS; F=/volume1/ContentFactory/fashion/FINAL
+   find "$U/ready" -type f -exec sha256sum {} +; find "$U/staging" -mindepth 1 | wc -l       # 1 file, 0
+   find "$F" -xdev -newer "$U" ! -path "$F/.affilio-incoming*" | wc -l                      # 0
+   find "$F" -xdev -type f ! -path "$F/.affilio-incoming/*" | wc -l                        # 92
+   ```
+
+   In the UI: the asset is a final with `Uploaded`, owner / category / type as chosen, pending
+   review; the preview plays; the thumbnail appears; the asset page shows root `uploads`.
+   Admin audit log: `upload.completed` with `root_key: uploads` and the SHA-256.
+3. Upload the same file again → `duplicate`; `find "$U/ready" -type f | wc -l` still 1.
+4. Admin rejects the first upload; the editor submits a corrected clip (re-encode with
+   `duration=4`) → `completed`, revision link on the asset and in `/reports/production`.
+5. Admin reclassifies the owner on the asset page → classification changes; the file's inode
+   and mtime are unchanged (`stat` before and after).
+6. Admin approves the corrected final → the publishing media check on its page resolves the
+   `uploads` root; no job is created and the live flag stays false.
+
+### D.7 Rollback (order matters)
+
+The previous image (`b16e8e2`) runs `alembic upgrade head` on start and knows nothing about
+revisions 0014–0018: with the database at `0018_upload_root` it would fail to start. So the
+schema goes back **before** the images do:
+
+| Step | Command (NAS) | Effect |
+| --- | --- | --- |
+| 1 | `cd /volume1/docker/affilio/infrastructure/docker/synology && sudo docker compose run --rm --no-deps api alembic downgrade 0013_facet_classification` | 0018 folds `upload` kind → `final`, `upload` → `path`, `override` → `manual` (lossless); 0017–0014 drop the chunk manifest, reporting indexes, upload sessions, owner mappings and the three asset attribution columns |
+| 2 | `pnpm nas:deploy rollback` | previous images, containers restarted on the old compose only after `nas:sync` of the previous revision, or by reverting the compose change on the NAS |
+| alt. | `bash scripts/db-restore.sh backups/pre-deploy-<ts>.dump` (stop api and worker first) | database exactly as before the deploy; everything uploaded after it loses its rows |
+
+Implications of a rollback with uploads already made: files under `AFFILIO_UPLOADS/ready`
+stay on disk (never deleted by any procedure). After step 1 their asset rows survive on the
+`uploads` root row (now kind `final`, key `uploads`); the old code never scans or resolves
+that key, so those assets show as present but their previews, thumbnails and publishing
+checks fail until a release that knows the root is deployed again (re-upgrade restores the
+`upload` kind by key). After the dump restore the rows are gone and the files are orphans to
+be re-registered by a later upload (they would be detected as duplicates by content hash only
+once re-uploaded). `FINAL` is unaffected in every path. No ACL change exists to revert.
 
 ### D.8 Deferred, separately approved
 
