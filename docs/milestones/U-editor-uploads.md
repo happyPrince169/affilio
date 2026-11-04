@@ -116,9 +116,10 @@ U2–U6 writes to production.
 
 ### Fast track F0–F2 (2026-11-04) — two storage roots
 
-- F0: inventory, safety review and exact cleanup / ACL-restoration commands for the B3.1B
-  probe (`docs/deployment/upload-rollout.md`, "Phase F0"); execution needs approval and a
-  Tailscale route to the NAS.
+- F0 (closed 2026-11-04): read-only inventory, safety review, then the approved exact-token
+  cleanup, ACL restoration and verification on the NAS; 92 legacy files unchanged, type dir
+  ACL back to baseline, no probe artefacts left (`docs/deployment/upload-rollout.md`, "Phase
+  F0"). The B3.1B probe had failed P6 (chmod and hard links allowed on a placed file).
 - F1: `uploads` root (`MEDIA_UPLOADS_PATH`, kind `upload`, read-write) with `staging/` and
   `ready/`; finalization by `rename_noreplace`; UUID physical names; classification stored as
   `upload` assignments from the session's taxonomy; unified `resolve_variant`; legacy

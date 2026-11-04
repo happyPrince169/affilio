@@ -435,105 +435,95 @@ through its staging name.
 8. Report: probe exit code, every T8 line with its errno, the `inspect` listing, cleanup and
    restore results, verify result, B3.1 verdict.
 
-## Phase F0 — closing the B3.1B probe (prepared 2026-11-04; nothing executed)
+## Phase F0 — closing the B3.1B probe (executed 2026-11-04, CLOSED)
 
 Decision (fast track, 2026-11-04): the hard-link + Synology ACL approach is **stopped**. New
 uploads go to a dedicated, AFFILIO-managed root (`AFFILIO_UPLOADS`, ADR 0012 amendment 2);
 `FINAL` stays read-only everywhere. Phase B3.2 (72-folder ACL rollout) and Phase C as written
-above are **cancelled**. What remains of Phase B3 is the removal of the B3.1B probe leftovers and
-the restoration of the one ACL entry, which this section prepares.
+below are **cancelled**. Phase F0 removed the B3.1B probe leftovers and restored the one ACL
+entry; this section is the record.
 
-Recorded state on the NAS (from the B3.1B session notes; not re-verified from this session,
-which has no Tailscale route to the NAS):
+### B3.1B probe result (run 2026-10-30 12:11Z, token `20261030T121127Z-d601032c`, read on 2026-11-04)
 
-| Item | Value |
+Verdict **FAIL**, exit 1, evidence `nas`, contract `--expect-placed-unlink denied`. Every
+negative on the protected file (T4a–T4h) and T5 passed; T6 (unlink of the placed name) was
+denied as required. The owner-rights block T8 found what the design could not tolerate:
+
+| Test | Observed on the placed file (owned by the service identity) |
 | --- | --- |
-| Baseline directory (`B2B_DIR`) | `/volume1/docker/affilio/backups/b2b-20261030T115206Z` (identical in content to the B2B baseline `b2b-20261029T161154Z`; both are kept) |
-| Probe token | `20261030T121127Z-d601032c` (Step E was run; report `/tmp/affilio-b2b/probe-report-b3.txt`) |
-| ACL entry | `user:hoangtuhanhphuc:allow:-w-----------:----` at index 0 on `FINAL/Hang/Mens-Fashion/Try-On` (**still applied**) |
-| Protected file | `FINAL/Hang/Mens-Fashion/Try-On/.affilio-protected-20261030T120116Z-2b9b71ec.tmp`, inode 412199, owner `dangtung`, legacy ACL (recorded in the baseline manifest as `protected=`) |
-| Scripts | `/tmp/affilio-b2b/nas-b2b-host.sh`, `nas_finalize_probe.py` (checksums of commit 7a2e5f7), wrapper `run-b3-probe.sh` |
+| T8a–T8d, T8g, T8j | open for write, truncate, utime, user xattr, rename: refused (`EACCES`/`EPERM`) |
+| **T8e chmod** | **succeeded**: the file left ACL mode and became plain Linux `0555` with no Synology ACL (`synoacltool -get` answers "It's Linux mode") |
+| T8f ACL rewrite | unverified: no ACL xattr visible to the identity |
+| **T8h hard link in the type dir** | **succeeded**, and the identity could not remove the new name (`EACCES`), so `.affilio-probe-<token>-link.mp4` stayed behind (inode 412371, nlink 2) |
+| **T8i hard link into staging** | **succeeded**; writing through it was refused (T8i2); the probe removed it |
+| T8k | changed: `ctime_ns`, `nlink` (consequence of T8h) |
+| T6b | nlink 2 instead of 1 (consequence of T8h) |
 
-### Disposable names the probe can have left (all derived from the token; nothing else)
+Property P6 ("cannot modify a placed final") therefore does **not** hold: the owner can
+change the mode, which drops the ACL, and can create new names. This is the empirical basis
+for amendment 2, independent of the business decision.
 
-| Name | Where | Expected state under the `denied` contract | Inode relationship |
-| --- | --- | --- | --- |
-| `.affilio-probe-20261030T121127Z-d601032c.mp4` | type dir | present, nlink 1, 42-byte payload, owner service user | the inode created in staging by T1, re-inherited the type dir's ACL at T2 |
-| `probe-20261030T121127Z-d601032c/src.part` | `.affilio-incoming/` | absent (T5 unlinked it) | second name of the same inode while nlink was 2 |
-| `probe-20261030T121127Z-d601032c/` | `.affilio-incoming/` | absent (T7 `rmdir`) | — |
-| `probe-…/stolen` | `.affilio-incoming/` | absent (T4d refused) | would be a link to the protected inode 412199 |
-| `probe-…/relinked` | `.affilio-incoming/` | absent (T8i refused) | would be a link to the placed inode |
-| `.affilio-probe-…-link.mp4` | type dir | absent (T8h refused) | would be a link to the placed inode |
-| `.affilio-probe-…-renamed.mp4` | type dir | absent (T8j refused or reversed) | the placed inode under another name |
-| `.affilio-dir-20261030T121127Z-d601032c` | type dir | absent (T4e refused) | — |
-| `.affilio-protected-20261030T120116Z-2b9b71ec.tmp` | type dir | present (administrator-created, left for host cleanup) | inode 412199, nlink 1 |
+### State found on 2026-11-04 before cleanup (read-only inventory)
 
-The probe report (`probe-report-b3.txt`, summary line `"leftovers"`) is the authoritative list
-for this token; the inventory below confirms it against the filesystem.
+| Item | Found |
+| --- | --- |
+| NAS | `LeosunNAS`, DSM 7.3.2 build 86009, kernel 4.4.302+, `/volume1` btrfs `rw,synoacl`; SSH identity uid 1026 `hoangtuhanhphuc` with `administrators` |
+| Scripts | `/tmp/affilio-b2b/nas-b2b-host.sh` sha256 `386a372f…a9e2` and `nas_finalize_probe.py` `5a9423ef…2861`, identical to the repository at `7a2e5f7` |
+| Baseline | `backups/b2b-20261030T115206Z`: manifest `added_index=0`, `protected=.affilio-protected-20261030T120116Z-2b9b71ec.tmp`; listing 170 lines, ACL dump 1026 lines |
+| ACL | create-only entry present once at index 0 on `Hang/Mens-Fashion/Try-On`; type dir ACL = 5-entry baseline + that line; staging ACL identical to its baseline |
+| Artefacts in the type dir | `.affilio-probe-<token>.mp4` and `.affilio-probe-<token>-link.mp4`: one inode 412371, nlink 2, 44 bytes, mode 0555, owner service user, sha256 `13077400…1d5b`; `.affilio-protected-20261030T120116Z-2b9b71ec.tmp`: inode 412199, nlink 1, 24 bytes, owner `dangtung`, legacy ACL, sha256 `8a0f848a…1211` |
+| Elsewhere | staging empty; no `probe-*` directory, no `-renamed`, no `.affilio-dir-*`, no symlinks under FINAL; no legacy file shares an inode with the artefacts |
+| Legacy | 92 regular files; `verify` PASS (inode, link count, size, mtime, ctime and ACL unchanged everywhere; only our entry on the type dir differs) |
 
-### Inventory (read-only; run first, as the administrator identity over SSH)
+`preflight` exit 0, `inspect <token>` exit 0, `verify` PASS. The 92 legacy files were never
+opened by any step.
 
-```
-export B2B_DIR=/volume1/docker/affilio/backups/b2b-20261030T115206Z
-export TOKEN=20261030T121127Z-d601032c
-F=/volume1/ContentFactory/fashion/FINAL; D=$F/Hang/Mens-Fashion/Try-On; S=$F/.affilio-incoming
-cd /tmp/affilio-b2b && sha256sum nas-b2b-host.sh nas_finalize_probe.py        # must match 7a2e5f7
-grep -E '"verdict"|"leftovers"|^(ok|FAIL|UNVERIFIED) ' probe-report-b3.txt     # probe outcome
-bash nas-b2b-host.sh preflight                                                 # entry present: 1 expected
-bash nas-b2b-host.sh inspect "$TOKEN"                                          # stat, SHA-256, ACL of every artefact
-find "$D" "$S" -maxdepth 2 -name '.affilio-*' -o -maxdepth 2 -name "probe-$TOKEN*" | sort
-for f in "$D"/.affilio-*; do stat -c '%n inode=%i nlink=%h size=%s owner=%U' -- "$f"; done
-find "$F" -xdev -inum "$(stat -c %i "$D/.affilio-probe-$TOKEN.mp4")"           # every name of the placed inode (expect exactly one)
-find "$F" -xdev -inum 412199                                                   # every name of the protected inode (expect exactly one)
-bash nas-b2b-host.sh verify     # PASS = the 92 legacy files unchanged (inode, nlink, size, mtime, ctime, ACL), only our entry differs
-wc -l "$B2B_DIR/listing.txt" "$B2B_DIR/acl-all.txt"                           # baseline sizes for the report (92 legacy files = 460 ACL lines in B2B)
-```
+### Cleanup script review (before execution)
 
-`verify` already excludes `.affilio-probe-*`, `.affilio-protected-*`, `.affilio-dir-*` and
-the staging directory from both comparisons, so it answers the "92 legacy files unchanged"
-question directly while the artefacts still exist. Any `BLOCKED` line stops Phase F0 until it
-is explained; nothing below may run before `verify` prints `PASS`.
+- Exact names from the token and the manifest; token restricted to `[A-Za-z0-9T-]`; `rm --`
+  per file after `[ -f ] && [ ! -L ]`; symlinks and special files skipped and reported;
+  `rmdir` only; no globbing, no recursion.
+- `PASS cleanup` requires zero `.affilio-*` names in the type dir and an empty staging
+  directory, so an unrelated leftover blocks instead of being deleted. Re-runnable.
+- `restore-acl` deletes only when exactly one matching entry exists and requires the full ACL
+  to equal the baseline afterwards.
+- Gap (compensated): `cleanup` does not re-check inode, owner or link count before `rm`. The
+  inventory above pinned the three names to inodes 412371/412371/412199 and a fail-closed
+  gate re-checked them immediately before execution.
+- The protected file is a disposable step-D fixture and is removed by design; the legacy
+  reference file is only read.
+- The probe files were mode 0555; GNU `rm` 8.30 prompts for write-protected files only on a
+  terminal, so the run used non-interactive SSH.
 
-### Review of the token-scoped cleanup (`nas-b2b-host.sh cleanup <token>`)
+### Execution (2026-11-04 05:40Z, as `hoangtuhanhphuc` over non-interactive SSH)
 
-- Removes only names built from the token and the manifest's `protected=` value, each with
-  `rm -- <exact path>` after `[ -f ] && [ ! -L ]`; a symlink or special file at one of those
-  names is reported and skipped (`rc=1`, `BLOCKED`), never followed.
-- Directories (`.affilio-dir-<token>`, `probe-<token>`) are removed with `rmdir` only, so a
-  non-empty directory stays and blocks the step. No recursion, no globbing, no `rm -r`.
-- Runs as the administrator identity: that is why it can remove the placed file the service
-  identity could not (T6 denied). It never opens or touches legacy media; the 92 files are
-  not named by any code path.
-- Token validation (`[A-Za-z0-9T-]` only) prevents a path from being smuggled in; a run
-  without a token handles only the protected file and says so.
-- `PASS cleanup` requires zero `.affilio-*` names in the type dir **and** an empty staging
-  directory, so an unrelated leftover would block instead of being deleted.
-- Gap found: none that affects this token. Note for the record: `cleanup` also removes
-  `<protected>.renamed` if present (T4f reversal failure), which is correct here.
-
-### Proposed cleanup and ACL restoration (NOT executed; separate approval required)
+Gate: 21 preconditions (checksum, types, inodes, owners, sizes, checksums, inode name sets,
+no other multi-link files, no symlinks, exactly three artefacts, staging empty and ACL
+unchanged, type dir ACL = baseline + entry at index 0, 92 legacy files, manifest name,
+`verify` PASS) all passed.
 
 ```
-bash nas-b2b-host.sh cleanup "$TOKEN"            # PASS cleanup expected; otherwise stop and list leftovers
-bash nas-b2b-host.sh restore-acl                 # removes exactly one matching entry; PASS only when ACL == baseline
-bash nas-b2b-host.sh verify                      # PASS: listing and ACL dump equal the baseline everywhere
-find "$F" -name '.affilio-probe-*' -o -name '.affilio-protected-*' -o -name '.affilio-dir-*' | wc -l   # 0
-find "$S" -mindepth 1 | wc -l                                                              # 0
-ls -la "$D" | grep -c '^-'                        # legacy file count in Try-On unchanged (0 today)
+bash nas-b2b-host.sh cleanup 20261030T121127Z-d601032c
+  removed .affilio-protected-20261030T120116Z-2b9b71ec.tmp
+  removed .affilio-probe-20261030T121127Z-d601032c.mp4
+  removed .affilio-probe-20261030T121127Z-d601032c-link.mp4
+  remaining probe artefacts: 0 in type dir, 0 under staging      PASS cleanup
+bash nas-b2b-host.sh restore-acl
+  removed entry index 0                                           PASS restore-acl (equals baseline)
+bash nas-b2b-host.sh verify
+  ok listing, ok acl                                              PASS verify
 ```
 
-Rollback of the restoration itself is `apply-acl` (same baseline); the baseline directories and
-the probe reports are kept indefinitely (`backups/` is protected from `nas:sync`).
+After: 0 probe artefacts under FINAL, 0 entries under staging, 92 legacy files, 0 files with
+more than one name, type dir ACL back to its five inherited entries, ACL dump 1026 lines equal
+to the baseline, listing equal to the baseline except the type dir's own mtime/ctime line.
+`.affilio-incoming` kept (empty, one service-user entry). Baseline directory (6 files) and the
+three probe reports in `/tmp/affilio-b2b` kept. Production: api, worker, publisher, exporter
+and web running, `/media/finals` mounted `ro` in every container, `META_LIVE_PUBLISHING_ENABLED=false`,
+`APP_ENV=production`.
 
-Optional, later and separately approved: `rmdir "$S"` once the new upload root is live and the
-directory is empty. Until then `.affilio-incoming` stays (hidden, dot-prefixed, skipped by scans).
-
-### Blockers for executing F0 from this session
-
-The NAS SSH alias (`leosunnas`, Tailscale) did not resolve from the environment that prepared
-this section, so the inventory above was not run and the recorded state is taken from the
-B3.1B session notes. Run the inventory first from a workstation with the Tailscale route; if
-`inspect` lists anything not in the table above, stop and record it before any cleanup.
+Still deferred (separate approval): `rmdir FINAL/.affilio-incoming` once the new upload root
+is live; Phase D deployment.
 
 ## Phase C (hard-link design) — CANCELLED 2026-11-04
 

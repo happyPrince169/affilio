@@ -166,8 +166,11 @@ without capabilities (to confirm after deployment).
 
 **Context.** Phases B1–B3.1 proved that the hard-link placement into `FINAL` works on this
 NAS but only behind a chain of Synology ACL assumptions (create-only entries on 72 folders,
-re-inheritance of the destination ACL at link time, owner-implicit rights still unverified,
-a probe left to clean up). Every one of those is filesystem behaviour AFFILIO does not control
+re-inheritance of the destination ACL at link time). The B3.1B owner-rights probe then
+failed: the service identity could `chmod` the file it had placed, which dropped its
+Synology ACL, and could create further hard links to it (`docs/deployment/upload-rollout.md`,
+"B3.1B probe result"). Property P6 does not hold, so the design's remaining protection would
+have been code discipline anyway. Every one of those is filesystem behaviour AFFILIO does not control
 and would have to re-establish after any DSM update or volume change. The business needs a
 working upload, library and approval flow now.
 
