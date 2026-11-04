@@ -10,6 +10,7 @@ import type {
   ScanJob,
   ScanStatus,
   AssetCategoriesUpdate,
+  AssetFacetsUpdate,
   CategoryCount,
   CategorySuggestion,
   CategorySuggestionStatus,
@@ -154,6 +155,14 @@ export const mediaQueries = {
 const JSON_HEADERS_MEDIA = { "Content-Type": "application/json" };
 const sendMedia = <T>(path: string, body: unknown, method = "POST") =>
   apiFetch<T>(path, { method, headers: JSON_HEADERS_MEDIA, body: JSON.stringify(body) });
+
+/** Metadata-only reclassification of a final (owner / product category / content type). */
+export const setAssetFacets = (assetId: string, body: AssetFacetsUpdate) =>
+  apiFetch<MediaAssetDetail>(`${MEDIA}/assets/${encodeURIComponent(assetId)}/facets`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 
 export const setAssetCategories = (assetId: string, body: AssetCategoriesUpdate) =>
   sendMedia<MediaAssetDetail>(

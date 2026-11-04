@@ -2,6 +2,7 @@
 
 import type {
   HandoffStatus,
+  IngestSource,
   MediaAssetFilters,
   MediaAssetKind,
   MediaAssetStatus,
@@ -38,7 +39,13 @@ function parseFilters(params: URLSearchParams): MediaAssetFilters {
   const hasProxy = params.get("has_proxy");
   const kind = params.get("asset_kind");
   const handoff = params.get("handoff_status");
+  const source = params.get("ingest_source");
   return {
+    production_owner_id: params.get("production_owner_id") ?? undefined,
+    product_category_id: params.get("product_category_id") ?? undefined,
+    content_type_id: params.get("content_type_id") ?? undefined,
+    ingest_source: source === "upload" || source === "scan" ? (source as IngestSource) : undefined,
+    uploaded_by_user_id: params.get("uploaded_by_user_id") ?? undefined,
     q: params.get("q") ?? undefined,
     asset_kind: kind === "final" || kind === "footage" ? (kind as MediaAssetKind) : undefined,
     handoff_status:
@@ -75,6 +82,11 @@ function serializeFilters(filters: MediaAssetFilters): string {
   if (filters.category_id) params.set("category_id", filters.category_id);
   if (filters.uncategorized) params.set("uncategorized", "true");
   if (filters.production_period) params.set("production_period", filters.production_period);
+  if (filters.production_owner_id) params.set("production_owner_id", filters.production_owner_id);
+  if (filters.product_category_id) params.set("product_category_id", filters.product_category_id);
+  if (filters.content_type_id) params.set("content_type_id", filters.content_type_id);
+  if (filters.ingest_source) params.set("ingest_source", filters.ingest_source);
+  if (filters.uploaded_by_user_id) params.set("uploaded_by_user_id", filters.uploaded_by_user_id);
   if (filters.sort && filters.sort !== "newest") params.set("sort", filters.sort);
   if (filters.page && filters.page > 1) params.set("page", String(filters.page));
   const query = params.toString();
@@ -108,13 +120,18 @@ export function ContentLibrary() {
     Boolean(filters.handoff_status) ||
     Boolean(filters.category_id) ||
     Boolean(filters.uncategorized) ||
-    Boolean(filters.production_period);
+    Boolean(filters.production_period) ||
+    Boolean(filters.production_owner_id) ||
+    Boolean(filters.product_category_id) ||
+    Boolean(filters.content_type_id) ||
+    Boolean(filters.ingest_source) ||
+    Boolean(filters.uploaded_by_user_id);
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Content Library"
-        description="Videos indexed from the originals root on the NAS. Originals and proxies are read-only; AFFILIO only writes thumbnails."
+        description="Footage and finals in one library: legacy finals scanned from the read-only FINAL share and finals uploaded through AFFILIO. Originals, proxies and legacy finals are never written; AFFILIO writes only its own upload root, thumbnails and exports."
         actions={
           stats.data ? (
             <div className="flex flex-wrap items-center gap-2">

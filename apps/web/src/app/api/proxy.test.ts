@@ -82,6 +82,34 @@ describe("API proxy streaming", () => {
     expect(signal).toBe(request.signal);
   });
 
+  it("forwards Range requests and 206 range answers for video previews", async () => {
+    globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = init?.headers as Headers;
+      expect(headers.get("range")).toBe("bytes=0-99");
+      return new Response(new Uint8Array(100), {
+        status: 206,
+        headers: {
+          "content-type": "video/mp4",
+          "content-range": "bytes 0-99/5000",
+          "accept-ranges": "bytes",
+          "content-length": "100",
+        },
+      });
+    }) as typeof fetch;
+    const request = new Request("http://web.local/api/v1/media/assets/abc/stream", {
+      method: "GET",
+      headers: { range: "bytes=0-99" },
+    });
+    const response = await GET(request, {
+      params: Promise.resolve({ path: ["v1", "media", "assets", "abc", "stream"] }),
+    });
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-range")).toBe("bytes 0-99/5000");
+    expect(response.headers.get("accept-ranges")).toBe("bytes");
+    expect(response.headers.get("content-type")).toBe("video/mp4");
+    expect((await response.arrayBuffer()).byteLength).toBe(100);
+  });
+
   it("answers 499 when the client aborted the request", async () => {
     globalThis.fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const error = new Error("aborted");

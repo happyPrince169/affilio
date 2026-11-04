@@ -3,6 +3,7 @@ import type {
   CategoryFacet,
   CategoryStatus,
   CategorySuggestionStatus,
+  IngestSource,
   OwnerMappingStatus,
   UploadStatus,
 } from "./domain";
@@ -11,7 +12,14 @@ import type {
  * Media library contracts (M1). Mirrors `apps/api/src/affilio/modules/media/schemas.py`.
  */
 
-export const MEDIA_ROOT_KINDS = ["original", "proxy", "final", "thumbnail", "export"] as const;
+export const MEDIA_ROOT_KINDS = [
+  "original",
+  "proxy",
+  "final",
+  "upload",
+  "thumbnail",
+  "export",
+] as const;
 export type MediaRootKind = (typeof MEDIA_ROOT_KINDS)[number];
 
 export const MEDIA_ASSET_STATUSES = ["active", "missing", "unsupported"] as const;
@@ -138,6 +146,14 @@ export interface AssetCategory {
 export interface MediaAssetSummary {
   id: string;
   title: string;
+  /** How the file entered the library and who delivered it (uploads). */
+  ingest_source: IngestSource;
+  uploaded_by_user_id: string | null;
+  revision_of_asset_id: string | null;
+  /** Storage root of the main file: `finals` (legacy, read-only) or `uploads` (AFFILIO). */
+  root_key: string | null;
+  /** Same-origin streaming preview, when a playable file is present. */
+  preview_url: string | null;
   /** Folder of the main file relative to its root ("" = root). */
   folder_path: string | null;
   categories: AssetCategory[];
@@ -276,6 +292,12 @@ export interface MediaAssetFilters {
   category_id?: string;
   uncategorized?: boolean;
   production_period?: string;
+  /** Facet filters: a value under the matching facet root. */
+  production_owner_id?: string;
+  product_category_id?: string;
+  content_type_id?: string;
+  ingest_source?: IngestSource;
+  uploaded_by_user_id?: string;
   sort?: MediaSortKey;
   page?: number;
   page_size?: number;
@@ -286,6 +308,13 @@ export interface MediaAssetFilters {
 export interface AssetCategoriesUpdate {
   primary_category_id: string | null;
   secondary_category_ids: string[];
+}
+
+/** PUT /media/assets/{id}/facets: metadata-only reclassification (the file never moves). */
+export interface AssetFacetsUpdate {
+  production_owner_category_id?: string | null;
+  product_category_id?: string | null;
+  content_type_id?: string | null;
 }
 
 // ---------------------------------------------------------------- facet suggestions

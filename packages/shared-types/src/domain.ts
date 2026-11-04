@@ -156,6 +156,8 @@ export const CATEGORY_ASSIGNMENT_SOURCES = [
   "import",
   "ai_future",
   "path",
+  "upload",
+  "override",
 ] as const;
 export type CategoryAssignmentSource = (typeof CATEGORY_ASSIGNMENT_SOURCES)[number];
 

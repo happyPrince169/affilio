@@ -5,6 +5,7 @@ import { Search, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { CategorySelect } from "@/components/taxonomy/category-select";
+import { FacetSelect } from "@/components/taxonomy/facet-select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -59,7 +60,11 @@ export function MediaFilters({ filters, onChange, disabled }: MediaFiltersProps)
     Boolean(filters.duplicates_only) ||
     Boolean(filters.category_id) ||
     Boolean(filters.uncategorized) ||
-    Boolean(filters.production_period);
+    Boolean(filters.production_period) ||
+    Boolean(filters.production_owner_id) ||
+    Boolean(filters.product_category_id) ||
+    Boolean(filters.content_type_id) ||
+    Boolean(filters.ingest_source);
 
   return (
     <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
@@ -152,6 +157,52 @@ export function MediaFilters({ filters, onChange, disabled }: MediaFiltersProps)
           aria-label="Production period"
           title="Production period (month of first ingestion)"
         />
+        <FacetSelect
+          facet="production_owner"
+          value={filters.production_owner_id ?? null}
+          onChange={(id) => update({ production_owner_id: id ?? undefined })}
+          noneLabel="Any owner"
+          placeholder="Owner"
+          className="w-36"
+          disabled={disabled}
+        />
+        <FacetSelect
+          facet="product_category"
+          value={filters.product_category_id ?? null}
+          onChange={(id) => update({ product_category_id: id ?? undefined })}
+          noneLabel="Any product category"
+          placeholder="Product category"
+          className="w-44"
+          disabled={disabled}
+        />
+        <FacetSelect
+          facet="content_type"
+          value={filters.content_type_id ?? null}
+          onChange={(id) => update({ content_type_id: id ?? undefined })}
+          noneLabel="Any content type"
+          placeholder="Content type"
+          className="w-40"
+          disabled={disabled}
+        />
+        <Select
+          value={filters.ingest_source ?? ALL}
+          onValueChange={(value) =>
+            update({
+              ingest_source:
+                value === ALL ? undefined : (value as MediaAssetFilters["ingest_source"]),
+            })
+          }
+          disabled={disabled}
+        >
+          <SelectTrigger className="w-36" aria-label="Source filter">
+            <SelectValue placeholder="Source" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>Any source</SelectItem>
+            <SelectItem value="upload">Uploaded</SelectItem>
+            <SelectItem value="scan">Scanned (legacy)</SelectItem>
+          </SelectContent>
+        </Select>
         <CategorySelect
           value={filters.category_id ?? null}
           onChange={(id) => update({ category_id: id ?? undefined, uncategorized: undefined })}

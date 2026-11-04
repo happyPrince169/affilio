@@ -13,6 +13,9 @@
  * whole, and a client that disconnects aborts the upstream request through `request.signal`.
  * Response bodies were already streamed. Node's fetch applies backpressure between the two
  * streams, so memory stays bounded by the stream's internal high-water mark.
+ *
+ * Previews (fast track F2): `Range` requests and the `206` answers with `Content-Range` pass
+ * through unchanged so the browser's video element can seek.
  */
 
 const API_INTERNAL_URL = (process.env.API_INTERNAL_URL ?? "http://localhost:8000").replace(
@@ -24,6 +27,9 @@ const FORWARD_REQUEST_HEADERS = [
   "content-type",
   "cookie",
   "origin",
+  // Video previews seek with byte ranges (fast track F2).
+  "range",
+  "if-range",
   "sec-fetch-site",
   "user-agent",
   "x-organization-slug",
@@ -35,6 +41,8 @@ const FORWARD_RESPONSE_HEADERS = [
   "cache-control",
   "etag",
   "last-modified",
+  "accept-ranges",
+  "content-range",
   "x-request-id",
   // OAuth callbacks answer with a redirect (M3B.1A); the browser must see where to go.
   "location",

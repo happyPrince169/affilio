@@ -9,9 +9,10 @@ import { PageHeader } from "@/components/layout/page-header";
 import { AssetStatusBadge, ThumbnailStatusBadge } from "@/components/media/media-badges";
 import { HandoffBadge } from "@/components/media/handoff-badge";
 import { AssetCategoriesCard } from "@/components/media/asset-categories-card";
+import { AssetFacetsCard } from "@/components/media/asset-facets-card";
 import { ExportStatusCard } from "@/components/media/export-status-card";
 import { HandoffReviewCard } from "@/components/media/handoff-review";
-import { MediaThumbnail } from "@/components/media/media-thumbnail";
+import { MediaPreview } from "@/components/media/media-preview";
 import { LinkedProductsCard } from "@/components/products/linked-products-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -94,6 +95,7 @@ function Detail({ asset }: { asset: MediaAssetDetail }) {
             <Badge variant="secondary" className="capitalize">
               {asset.asset_kind}
             </Badge>
+            {asset.ingest_source === "upload" ? <Badge variant="outline">Uploaded</Badge> : null}
             {asset.asset_kind === "final" && asset.handoff_status ? (
               <HandoffBadge status={asset.handoff_status} />
             ) : null}
@@ -137,10 +139,7 @@ function Detail({ asset }: { asset: MediaAssetDetail }) {
       <div className="grid gap-6 lg:grid-cols-5">
         <Card className="lg:col-span-2">
           <CardContent className="space-y-3">
-            <MediaThumbnail
-              asset={asset}
-              className="mx-auto aspect-[9/16] max-h-[480px] w-full max-w-xs rounded-lg"
-            />
+            <MediaPreview asset={asset} className="mx-auto w-full max-w-xs" />
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>Thumbnail</span>
               <ThumbnailStatusBadge status={asset.thumbnail_status} />
@@ -148,10 +147,6 @@ function Detail({ asset }: { asset: MediaAssetDetail }) {
             {asset.thumbnail_error ? (
               <p className="text-xs text-destructive">{asset.thumbnail_error}</p>
             ) : null}
-            <p className="text-xs text-muted-foreground">
-              Playback is not available in this milestone; thumbnails come from the proxy when one
-              is linked, otherwise from the original.
-            </p>
           </CardContent>
         </Card>
 
@@ -195,10 +190,40 @@ function Detail({ asset }: { asset: MediaAssetDetail }) {
                 label="Path"
                 value={
                   <span className="font-mono text-xs">
-                    {asset.asset_kind === "final" ? "finals" : "originals"}/{asset.relative_path}
+                    {asset.root_key ?? (asset.asset_kind === "final" ? "finals" : "originals")}/
+                    {asset.relative_path}
                   </span>
                 }
               />
+              {asset.asset_kind === "final" ? (
+                <Row
+                  label="Source"
+                  value={
+                    asset.ingest_source === "upload"
+                      ? "Uploaded through AFFILIO (application-managed root)"
+                      : "Scanned from the legacy FINAL share (read-only)"
+                  }
+                />
+              ) : null}
+              {asset.uploaded_by_user_id ? (
+                <Row
+                  label="Uploaded by"
+                  value={<span className="font-mono text-xs">{asset.uploaded_by_user_id}</span>}
+                />
+              ) : null}
+              {asset.revision_of_asset_id ? (
+                <Row
+                  label="Corrects"
+                  value={
+                    <Link
+                      href={`/content/${asset.revision_of_asset_id}`}
+                      className="text-brand hover:underline"
+                    >
+                      rejected original
+                    </Link>
+                  }
+                />
+              ) : null}
               <Row label="First seen" value={formatDateTime(asset.first_seen_at)} />
               {asset.asset_kind === "final" ? (
                 <Row label="Production period" value={asset.production_period ?? "–"} />
@@ -213,6 +238,9 @@ function Detail({ asset }: { asset: MediaAssetDetail }) {
       </div>
 
       {asset.asset_kind === "final" ? <HandoffReviewCard asset={asset} /> : null}
+      {asset.asset_kind === "final" ? (
+        <AssetFacetsCard key={asset.updated_at} asset={asset} />
+      ) : null}
       {asset.asset_kind === "final" && asset.export ? (
         <ExportStatusCard assetId={asset.id} status={asset.export} />
       ) : null}

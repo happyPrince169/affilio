@@ -1,5 +1,5 @@
 import type { MediaAssetSummary } from "@affilio/shared-types";
-import { Copy, Layers } from "lucide-react";
+import { Copy, Layers, UploadCloud } from "lucide-react";
 import Link from "next/link";
 
 import { HandoffBadge } from "@/components/media/handoff-badge";
@@ -57,11 +57,22 @@ export function MediaCard({ asset }: { asset: MediaAssetSummary }) {
           <span className="font-mono text-[11px] text-muted-foreground">
             {formatBytes(asset.file_size)}
           </span>
-          {asset.has_proxy ? (
-            <Badge variant="secondary" className="gap-1 text-[10px]">
-              <Layers className="size-3" /> Proxy
-            </Badge>
-          ) : null}
+          <span className="flex items-center gap-1">
+            {asset.ingest_source === "upload" ? (
+              <Badge
+                variant="outline"
+                className="gap-1 text-[10px]"
+                title="Uploaded through AFFILIO"
+              >
+                <UploadCloud className="size-3" /> Uploaded
+              </Badge>
+            ) : null}
+            {asset.has_proxy ? (
+              <Badge variant="secondary" className="gap-1 text-[10px]">
+                <Layers className="size-3" /> Proxy
+              </Badge>
+            ) : null}
+          </span>
         </div>
       </div>
     </Link>

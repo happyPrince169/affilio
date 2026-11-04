@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 export const SOURCE_LABEL: Record<AssetCategory["assignment_source"], string> = {
   folder: "from folder rule",
   path: "from path",
+  upload: "from upload",
+  override: "reclassified",
   manual: "manual",
   import: "import",
   ai_future: "ai",
@@ -25,7 +27,10 @@ export function CategoryBadge({
   category: AssetCategory;
   className?: string;
 }) {
-  const derived = category.assignment_source === "folder" || category.assignment_source === "path";
+  const derived =
+    category.assignment_source === "folder" ||
+    category.assignment_source === "path" ||
+    category.assignment_source === "upload";
   const Icon = derived ? FolderTree : Hand;
   const facet = category.facet ? ` · ${FACET_LABEL[category.facet]}` : "";
   return (
