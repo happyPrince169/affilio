@@ -106,6 +106,7 @@ class MediaDirs:
     thumbnails: Path
     exports: Path
     finals: Path
+    uploads: Path | None = None  # AFFILIO_UPLOADS root (staging/ + ready/), fast track F1
 
     @property
     def registry(self) -> MediaRootRegistry:
@@ -113,26 +114,37 @@ class MediaDirs:
             originals=self.originals,
             proxies=self.proxies,
             finals=self.finals,
+            uploads=self.uploads,
             thumbnails=self.thumbnails,
             exports=self.exports,
         )
 
     def env(self) -> dict[str, str]:
-        return {
+        out = {
             "MEDIA_ORIGINALS_PATH": str(self.originals),
             "MEDIA_PROXIES_PATH": str(self.proxies),
             "MEDIA_FINALS_PATH": str(self.finals),
             "MEDIA_THUMBNAILS_PATH": str(self.thumbnails),
             "MEDIA_EXPORTS_PATH": str(self.exports),
         }
+        if self.uploads is not None:
+            out["MEDIA_UPLOADS_PATH"] = str(self.uploads)
+        return out
 
 
 def make_dirs(base: Path) -> MediaDirs:
     dirs = MediaDirs(
-        base / "originals", base / "proxies", base / "thumbnails", base / "exports", base / "finals"
+        base / "originals",
+        base / "proxies",
+        base / "thumbnails",
+        base / "exports",
+        base / "finals",
+        base / "uploads",
     )
     for path in (dirs.originals, dirs.proxies, dirs.thumbnails, dirs.exports, dirs.finals):
         path.mkdir(parents=True, exist_ok=True)
+    assert dirs.uploads is not None
+    dirs.uploads.mkdir(parents=True, exist_ok=True)
     return dirs
 
 
@@ -142,6 +154,7 @@ def build_settings(dirs: MediaDirs, **overrides: object) -> Settings:
         "media_originals_path": dirs.originals,
         "media_proxies_path": dirs.proxies,
         "media_finals_path": dirs.finals,
+        "media_uploads_path": dirs.uploads,
         "media_thumbnails_path": dirs.thumbnails,
         "media_exports_path": dirs.exports,
         "media_scan_commit_every": 1000,

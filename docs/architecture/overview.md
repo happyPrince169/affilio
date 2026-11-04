@@ -43,7 +43,8 @@ packages/shared-types ◀── mirrors schemas ──────▶ │       
 | postgres | container | Only state besides regenerable thumbnails |
 
 Media files are addressed as logical root + relative path (ADR 0005); roots are bound to
-container/host paths from settings. Originals and proxies are read-only.
+container/host paths from settings. Originals, proxies and the legacy finals tree are
+read-only; AFFILIO writes only its own roots (uploads, thumbnails, exports).
 
 ## Request lifecycle (API)
 

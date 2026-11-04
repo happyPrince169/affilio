@@ -31,11 +31,12 @@ from sqlalchemy.orm import Session, selectinload
 from affilio.core.enums import (
     CategoryAssignmentSource,
     CategoryFacet,
+    CategoryStatus,
     MediaRootKind,
     MediaVariantKind,
 )
 from affilio.core.errors import ConflictError, NotFoundError
-from affilio.modules.media.errors import InvalidFolderPathError
+from affilio.modules.media.errors import InvalidFolderPathError, UploadInvalidTaxonomyError
 from affilio.modules.media.models import (
     FolderCategoryRule,
     MediaAsset,
@@ -282,7 +283,18 @@ def folder_report(session: Session, organization_id: uuid.UUID) -> list[FolderRe
 # ---------------------------------------------------------------- assignments
 
 
-DERIVED_SOURCES = {CategoryAssignmentSource.FOLDER, CategoryAssignmentSource.PATH}
+# Rows the system derives and may rewrite: folder rules, structured-path facets (legacy
+# finals) and the upload session's facets (uploads root). `manual` rows belong to people.
+DERIVED_SOURCES = {
+    CategoryAssignmentSource.FOLDER,
+    CategoryAssignmentSource.PATH,
+    CategoryAssignmentSource.UPLOAD,
+}
+FACET_SOURCES = {CategoryAssignmentSource.PATH, CategoryAssignmentSource.UPLOAD}
+FINAL_ROOT_KINDS = {MediaRootKind.FINAL, MediaRootKind.UPLOAD}
+# A facet value a person set on a legacy final (`set_facets`). Not derived (never rewritten by
+# a rescan), not a generic manual category (left alone by the categories override).
+OVERRIDE = CategoryAssignmentSource.OVERRIDE
 
 
 def _assignments(asset: MediaAsset) -> list[MediaContentCategory]:
@@ -305,7 +317,7 @@ def derived_primary(assignments: list[MediaContentCategory]) -> MediaContentCate
         (
             a
             for a in assignments
-            if a.assignment_source == CategoryAssignmentSource.PATH
+            if a.assignment_source in FACET_SOURCES
             and a.category is not None
             and a.category.facet == CategoryFacet.PRODUCT_CATEGORY
         ),
@@ -323,17 +335,34 @@ def apply_folder_classification(
     now: datetime | None = None,
     facet_assignments: dict[CategoryFacet, uuid.UUID] | None = None,
 ) -> bool:
-    """Ensure the derived assignments (folder rule / fallback and path facets) reflect the
-    file's folders. Returns True when a previously derived classification changed (callers
-    may then flag downstream reviews); the first classification is not a change."""
-    if root.kind != MediaRootKind.FINAL:
+    """Ensure the derived assignments (folder rule / fallback and facet values) reflect the
+    file's folders (legacy finals root, source `path`) or the upload session's choices
+    (uploads root, source `upload`). A facet that carries an `override` row is left to that
+    row: a reclassification made by a person is never undone by a rescan. Returns True when a
+    previously derived classification changed (callers may then flag downstream reviews);
+    the first classification is not a change."""
+    if root.kind not in FINAL_ROOT_KINDS:
         return False
     now = now or datetime.now(UTC)
+    facet_source = (
+        CategoryAssignmentSource.PATH
+        if root.kind == MediaRootKind.FINAL
+        else CategoryAssignmentSource.UPLOAD
+    )
     rule_set = (
         rules if rules is not None else rules_for_root(session, asset.organization_id, root.id)
     )
     rule = resolve_rule(rule_set, folder_of(relative_path))
-    facets = dict(facet_assignments or {})
+    overridden_facets = {
+        a.category.facet
+        for a in _assignments(asset)
+        if a.assignment_source == OVERRIDE and a.category is not None
+    }
+    facets = {
+        facet: category_id
+        for facet, category_id in (facet_assignments or {}).items()
+        if facet not in overridden_facets
+    }
     product_id = facets.get(CategoryFacet.PRODUCT_CATEGORY)
 
     # Desired derived rows, in primacy order: folder rule → product category → fallback.
@@ -350,7 +379,7 @@ def apply_folder_classification(
     ):
         category_id = facets.get(facet)
         if category_id is not None and category_id not in desired:
-            desired[category_id] = CategoryAssignmentSource.PATH
+            desired[category_id] = facet_source
     primary_candidate = next(iter(desired), None)
 
     assignments = _assignments(asset)
@@ -414,18 +443,21 @@ def set_manual_categories(
     primary_category_id: uuid.UUID | None,
     secondary_category_ids: list[uuid.UUID],
 ) -> None:
-    """Operator override. `primary_category_id=None` returns primacy to the derived primary
-    (folder rule / fallback, else the path's product category). Secondary categories are
-    replaced wholesale; derived rows (folder and path) are preserved."""
+    """Operator override of the generic categories. `primary_category_id=None` returns
+    primacy to the derived primary (folder rule / fallback, else the product-category facet).
+    Secondary categories are replaced wholesale; derived rows (folder, path, upload) and facet
+    `override` rows (managed by `set_facets`) are preserved."""
     wanted = [*([primary_category_id] if primary_category_id else []), *secondary_category_ids]
     taxonomy_service.get_categories(session, organization_id, wanted)
     assignments = _assignments(asset)
     derived_rows = [a for a in assignments if _is_derived(a)]
-    derived_by_category = {a.category_id: a for a in derived_rows}
+    kept_rows = {
+        a.category_id: a for a in assignments if _is_derived(a) or a.assignment_source == OVERRIDE
+    }
     for a in assignments:
-        if not _is_derived(a):
+        if a.category_id not in kept_rows:
             asset.category_assignments.remove(a)
-    for a in derived_rows:
+    for a in kept_rows.values():
         a.is_primary = False
     session.flush()
     if primary_category_id is None:
@@ -433,10 +465,10 @@ def set_manual_categories(
         if fallback_primary is not None:
             fallback_primary.is_primary = True
     for category_id in dict.fromkeys(wanted):
-        derived = derived_by_category.get(category_id)
-        if derived is not None:
+        kept = kept_rows.get(category_id)
+        if kept is not None:
             if category_id == primary_category_id:
-                derived.is_primary = True
+                kept.is_primary = True
             continue
         asset.category_assignments.append(
             MediaContentCategory(
@@ -449,6 +481,95 @@ def set_manual_categories(
             )
         )
     asset.classification_changed_at = datetime.now(UTC)
+    session.flush()
+
+
+def set_facets(
+    session: Session,
+    organization_id: uuid.UUID,
+    asset: MediaAsset,
+    *,
+    changes: dict[CategoryFacet, uuid.UUID],
+    now: datetime | None = None,
+) -> None:
+    """Metadata-only reclassification (fast track F2): replace the asset's value for each
+    facet in `changes`. Each new value must be an active category under the organization's
+    root for that facet. The physical file is never touched; the upload session's attribution
+    (who delivered what, for whom) is untouched too.
+
+    Source of the new row: for a final under the `uploads` root the classification *is* the
+    database record, so the row stays an `upload` assignment. For a legacy final the folders
+    remain the derived truth and the new value is an `override` row that wins over them on
+    every later rescan (`apply_folder_classification`) and that the generic categories
+    override leaves alone."""
+    if not changes:
+        return
+    now = now or datetime.now(UTC)
+    main = asset.main_variant()
+    source = (
+        CategoryAssignmentSource.UPLOAD
+        if main is not None and main.root is not None and main.root.kind == MediaRootKind.UPLOAD
+        else OVERRIDE
+    )
+    tree = taxonomy_service.load_tree(session, organization_id)
+    for facet, category_id in changes.items():
+        category = tree.by_id.get(category_id)
+        if category is None or category.facet != facet or category.parent_id is None:
+            raise UploadInvalidTaxonomyError(
+                f"Category is not a {facet.value.replace('_', ' ')} value",
+                details={"category_id": str(category_id), "facet": facet.value},
+            )
+        if category.status != CategoryStatus.ACTIVE:
+            raise UploadInvalidTaxonomyError(
+                "An archived category cannot be assigned",
+                details={"category_id": str(category_id), "status": category.status.value},
+            )
+    assignments = _assignments(asset)
+    had_primary_facet: CategoryFacet | None = None
+    for a in assignments:
+        facet = a.category.facet if a.category is not None else None
+        if facet in changes:
+            if a.is_primary:
+                had_primary_facet = facet
+            asset.category_assignments.remove(a)
+    session.flush()
+    present = {a.category_id for a in asset.category_assignments}
+    for category_id in changes.values():
+        if category_id in present:
+            continue
+        asset.category_assignments.append(
+            MediaContentCategory(
+                id=uuid.uuid4(),
+                organization_id=organization_id,
+                media_asset_id=asset.id,
+                category_id=category_id,
+                is_primary=False,
+                assignment_source=source,
+            )
+        )
+    session.flush()
+    rows = _assignments(asset)
+    if not any(a.is_primary for a in rows):
+        # Primacy follows the product category when it was primary (or nothing is), else the
+        # derived primary, else whatever row replaced the old primary.
+        product = CategoryFacet.PRODUCT_CATEGORY
+        candidate = next(
+            (a for a in rows if a.category is not None and a.category.facet == product), None
+        )
+        if candidate is None:
+            candidate = derived_primary([a for a in rows if _is_derived(a)])
+        if candidate is None and had_primary_facet is not None:
+            candidate = next(
+                (
+                    a
+                    for a in rows
+                    if a.category is not None and a.category.facet == had_primary_facet
+                ),
+                None,
+            )
+        if candidate is not None:
+            candidate.is_primary = True
+    asset.classification_changed_at = now
     session.flush()
 
 

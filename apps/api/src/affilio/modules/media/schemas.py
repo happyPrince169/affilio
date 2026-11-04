@@ -16,6 +16,7 @@ from affilio.core.enums import (
     ExportJobStatus,
     ExportTrigger,
     HandoffStatus,
+    IngestSource,
     MediaAssetKind,
     MediaAssetStatus,
     MediaRootAccess,
@@ -95,6 +96,14 @@ class AssetCategoryResponse(MediaModel):
 class MediaAssetSummary(MediaModel):
     id: uuid.UUID
     title: str
+    # Provenance (fast track F2): how the file entered the library, who delivered it, which
+    # storage root holds it (`finals` = legacy read-only tree, `uploads` = AFFILIO-managed).
+    ingest_source: IngestSource = IngestSource.SCAN
+    uploaded_by_user_id: uuid.UUID | None = None
+    revision_of_asset_id: uuid.UUID | None = None
+    root_key: str | None = None
+    # Same-origin streaming preview (`GET …/assets/{id}/stream`), when a file is present.
+    preview_url: str | None = None
     folder_path: str | None = None
     categories: list[AssetCategoryResponse] = Field(default_factory=list)
     classification_changed_at: datetime | None = None
@@ -271,6 +280,27 @@ class AssetCategoriesUpdate(BaseModel):
     @classmethod
     def _unique(cls, value: list[uuid.UUID]) -> list[uuid.UUID]:
         return list(dict.fromkeys(value))
+
+
+class AssetFacetsUpdate(BaseModel):
+    """Metadata-only reclassification of a final (fast track F2). Only the facets given are
+    changed; the file is never moved. At least one facet is required."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    production_owner_category_id: uuid.UUID | None = None
+    product_category_id: uuid.UUID | None = None
+    content_type_id: uuid.UUID | None = None
+
+    def changes(self) -> dict[CategoryFacet, uuid.UUID]:
+        out: dict[CategoryFacet, uuid.UUID] = {}
+        if self.production_owner_category_id:
+            out[CategoryFacet.PRODUCTION_OWNER] = self.production_owner_category_id
+        if self.product_category_id:
+            out[CategoryFacet.PRODUCT_CATEGORY] = self.product_category_id
+        if self.content_type_id:
+            out[CategoryFacet.CONTENT_TYPE] = self.content_type_id
+        return out
 
 
 class FolderRuleCreate(BaseModel):

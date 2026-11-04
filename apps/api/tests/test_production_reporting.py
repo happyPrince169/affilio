@@ -41,6 +41,20 @@ CSV = "/api/v1/analytics/production/rows.csv"
 PERIODS = "/api/v1/analytics/production/periods"
 
 
+def _month_after(base: datetime, months: int) -> datetime:
+    year = base.year + (base.month - 1 + months) // 12
+    month = (base.month - 1 + months) % 12 + 1
+    return datetime(year, month, 1, tzinfo=UTC)
+
+
+# Synthetic periods for the hand-made uploads: the next two calendar months, so they never
+# coincide with the month the scanned legacy final is stamped with, whatever today's date.
+SYNTH_MONTH_1 = _month_after(datetime.now(UTC), 1)
+SYNTH_MONTH_2 = _month_after(datetime.now(UTC), 2)
+PERIOD_1 = SYNTH_MONTH_1.strftime("%Y-%m")
+PERIOD_2 = SYNTH_MONTH_2.strftime("%Y-%m")
+
+
 @pytest.fixture
 def api(
     monkeypatch: pytest.MonkeyPatch, media_dirs, organization, schema, db_session: Session
@@ -196,7 +210,7 @@ def test_revision_chains_count_one_approved_unit(
     api: TestClient, world: dict, db_session: Session, organization
 ) -> None:
     editor = world["editor"]
-    t0 = datetime(2026, 11, 3, 10, tzinfo=UTC)
+    t0 = SYNTH_MONTH_1 + timedelta(days=2, hours=10)
     original = uploaded_final(
         db_session,
         organization,
@@ -274,7 +288,7 @@ def test_revision_chains_count_one_approved_unit(
     assert rows["take1"].review_note == "colour" and rows["take1"].reviewed_by == "reviewer@test"
     assert not rows["p2"].approved_unit and rows["p2"].work_root_id == pending_root.id
 
-    summary = api.get(SUMMARY, params={"period": "2026-11"}).json()
+    summary = api.get(SUMMARY, params={"period": PERIOD_1}).json()
     assert summary["totals"] == {
         "key": "all",
         "label": "All",
@@ -292,7 +306,7 @@ def test_revision_chains_count_one_approved_unit(
     assert summary["by_editor"][0]["approved_units"] == 2
     assert summary["unknown_editor"] == 0
     # Lineage is visible per row.
-    page = api.get(ROWS, params={"period": "2026-11", "page_size": 10}).json()
+    page = api.get(ROWS, params={"period": PERIOD_1, "page_size": 10}).json()
     assert page["total"] == 6
     by_title = {r["title"]: r for r in page["items"]}
     assert by_title["take2"]["revision_of_asset_id"] == str(original.id)
@@ -302,7 +316,7 @@ def test_revision_chains_count_one_approved_unit(
     this_month = api.get(SUMMARY, params={"period": datetime.now(UTC).strftime("%Y-%m")}).json()
     assert this_month["totals"]["historical"] == 1 and this_month["totals"]["files"] == 1
     assert [p["period"] for p in api.get(PERIODS).json()][:2] == sorted(
-        {datetime.now(UTC).strftime("%Y-%m"), "2026-11"}, reverse=True
+        {datetime.now(UTC).strftime("%Y-%m"), PERIOD_1}, reverse=True
     )
 
 
@@ -310,7 +324,7 @@ def test_multiple_approvals_in_a_chain_count_once_on_the_latest_review(
     api: TestClient, world: dict, db_session: Session, organization
 ) -> None:
     editor = world["editor"]
-    t0 = datetime(2026, 11, 5, tzinfo=UTC)
+    t0 = SYNTH_MONTH_1 + timedelta(days=4)
     first = uploaded_final(
         db_session,
         organization,
@@ -334,7 +348,7 @@ def test_multiple_approvals_in_a_chain_count_once_on_the_latest_review(
     )
     rows = {r.title: r for r in reporting.load_rows(db_session, organization.id)}
     assert rows["a2"].approved_unit and not rows["a1"].approved_unit
-    summary = api.get(SUMMARY, params={"period": "2026-11"}).json()
+    summary = api.get(SUMMARY, params={"period": PERIOD_1}).json()
     assert summary["totals"]["approved"] == 2 and summary["totals"]["approved_units"] == 1
 
 
@@ -349,7 +363,7 @@ def test_attribution_filters_and_on_behalf_uploads(
         name="e1.mp4",
         uploader=editor,
         owner="hang",
-        period="2026-11",
+        period=PERIOD_1,
     )
     uploaded_final(
         db_session,
@@ -358,7 +372,7 @@ def test_attribution_filters_and_on_behalf_uploads(
         name="e2.mp4",
         uploader=editor2,
         owner="hao",
-        period="2026-11",
+        period=PERIOD_1,
     )
     on_behalf = uploaded_final(
         db_session,
@@ -368,7 +382,7 @@ def test_attribution_filters_and_on_behalf_uploads(
         uploader=admin,
         submitted_for=editor,
         owner="hao",
-        period="2026-11",
+        period=PERIOD_1,
     )
     rows = {r.title: r for r in reporting.load_rows(db_session, organization.id)}
     assert rows["admin-for-editor"].uploader.id == admin.id
@@ -379,12 +393,12 @@ def test_attribution_filters_and_on_behalf_uploads(
     )
 
     by_editor = {
-        b["key"]: b for b in api.get(SUMMARY, params={"period": "2026-11"}).json()["by_editor"]
+        b["key"]: b for b in api.get(SUMMARY, params={"period": PERIOD_1}).json()["by_editor"]
     }
     assert by_editor[str(editor.id)]["files"] == 2 and by_editor[str(editor2.id)]["files"] == 1
     assert str(admin.id) not in by_editor  # the admin delivered, the editor is attributed
     by_owner = {
-        b["label"]: b for b in api.get(SUMMARY, params={"period": "2026-11"}).json()["by_owner"]
+        b["label"]: b for b in api.get(SUMMARY, params={"period": PERIOD_1}).json()["by_owner"]
     }
     assert by_owner["Hang"]["files"] == 1 and by_owner["Hao"]["files"] == 2
 
@@ -396,7 +410,7 @@ def test_attribution_filters_and_on_behalf_uploads(
     )
     assert api.get(ROWS, params={"unknown_editor": "true"}).json()["total"] == 1
     assert (
-        api.get(ROWS, params={"status": "pending_review", "period": "2026-11"}).json()["total"] == 3
+        api.get(ROWS, params={"status": "pending_review", "period": PERIOD_1}).json()["total"] == 3
     )
     assert api.get(ROWS, params={"period": "2026-1"}).status_code == 422
     assert on_behalf.ingest_source == IngestSource.UPLOAD
@@ -413,22 +427,22 @@ def test_pagination_and_csv_escaping(
             world,
             name=f"v{n}.mp4",
             uploader=editor,
-            period="2026-12",
+            period=PERIOD_2,
             status=HandoffStatus.REJECTED,
             reviewed_at=datetime(2026, 12, 1, n, tzinfo=UTC),
             note='needs "quotes", commas\nand a newline' if n == 0 else "=SUM(1)",
             seen_at=datetime(2026, 12, 1, n, tzinfo=UTC),
         )
-    first = api.get(ROWS, params={"period": "2026-12", "page_size": 2, "page": 1}).json()
-    second = api.get(ROWS, params={"period": "2026-12", "page_size": 2, "page": 3}).json()
+    first = api.get(ROWS, params={"period": PERIOD_2, "page_size": 2, "page": 1}).json()
+    second = api.get(ROWS, params={"period": PERIOD_2, "page_size": 2, "page": 3}).json()
     assert first["total"] == 5 and len(first["items"]) == 2 and len(second["items"]) == 1
     assert first["items"][0]["title"] == "v4"  # newest first
     assert api.get(ROWS, params={"page_size": 500}).status_code == 422
 
-    response = api.get(CSV, params={"period": "2026-12"})
+    response = api.get(CSV, params={"period": PERIOD_2})
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/csv")
-    assert 'filename="production-2026-12.csv"' in response.headers["content-disposition"]
+    assert f'filename="production-{PERIOD_2}.csv"' in response.headers["content-disposition"]
     text = response.text
     assert text.startswith("﻿")
     parsed = list(csv.reader(io.StringIO(text.lstrip("﻿"))))

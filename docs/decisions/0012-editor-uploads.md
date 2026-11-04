@@ -1,7 +1,10 @@
 # ADR 0012 — Editor video uploads: split write path, staged finalization, direct registration
 
 - **Status:** Proposed (U1, 2026-10-29); implemented locally U2–U7 Phase A; amended
-  2026-10-30 after the U7 Phase B2B probe (see "Amendment" below). Not deployed.
+  2026-10-30 after the U7 Phase B2B probe; **amended 2026-11-04 (amendment 2, fast track):
+  placement into FINAL by hard link is abandoned in favour of a dedicated, AFFILIO-managed
+  upload root.** Decisions 1 and 3 and the 2026-10-30 amendment are superseded where they
+  describe writing into FINAL; everything else stands. Not deployed.
 - **Context:** Finished videos reach AFFILIO today by editors copying files onto the NAS share
   under `FINAL/{Owner}/{ProductCategory}/{ContentType}/` and an admin running a finals scan.
   Editors must know the folder convention, the scan is whole-root and admin-only, and nothing
@@ -158,3 +161,63 @@ without capabilities (to confirm after deployment).
 3. Phase C is blocked until Phase B3 (owner-rights probe on the placed file, then the
    72-folder ACL rollout with full-tree verification) passes. The worker implementation is
    unchanged by this amendment.
+
+## Amendment 2 — 2026-11-04 — Two storage roots, no hard links, no ACL work (fast track)
+
+**Context.** Phases B1–B3.1 proved that the hard-link placement into `FINAL` works on this
+NAS but only behind a chain of Synology ACL assumptions (create-only entries on 72 folders,
+re-inheritance of the destination ACL at link time, owner-implicit rights still unverified,
+a probe left to clean up). Every one of those is filesystem behaviour AFFILIO does not control
+and would have to re-establish after any DSM update or volume change. The business needs a
+working upload, library and approval flow now.
+
+**Decision.**
+
+1. **Two storage roots.** `finals` (LEGACY FINAL, `MEDIA_FINALS_PATH`) stays exactly what it
+   is: a read-only root, mounted read-only in every container, scanned as today, holding the
+   92 existing records at their existing paths. A new root `uploads` (AFFILIO_UPLOADS,
+   `MEDIA_UPLOADS_PATH`, `MediaRootKind.UPLOAD`, access read-write) is dedicated to files
+   delivered through AFFILIO. It lives outside `FINAL` on the same volume, is never scanned,
+   and is **application-managed storage**: its layout and contents are owned by the code,
+   not by people copying files onto a share.
+2. **Layout and finalization.** `<uploads>/staging/<organization>/<token>.part` receives
+   chunks (API); `<uploads>/ready/<organization>/<YYYY>/<MM>/<upload id>.<ext>` holds the
+   finalized file (worker). Finalization is one atomic `rename_noreplace` on the same
+   filesystem (`renameat2(RENAME_NOREPLACE)`, with an exclusive-reservation fallback), so
+   the staging name disappears as the final name appears and an existing name is never
+   replaced. There are no hard links anywhere in the upload path.
+3. **UUID physical names, classification in the database.** The physical filename is the
+   upload id plus the sanitized extension; the asset title keeps the editor's filename.
+   Owner, product category and content type are stored as `media_content_categories` rows
+   with `assignment_source = upload`, taken from the taxonomy ids the editor chose (never
+   from folder names). Reclassification (`PUT /media/assets/{id}/facets`) rewrites those rows
+   in place (legacy finals get an `override` row that wins over their folders on rescans)
+   and never moves a file; the upload session keeps its original attribution.
+4. **Unified resolver.** Every reader of media bytes (preview stream, thumbnails, exports,
+   publishing checks and uploads, duplicate confirmation) resolves a stored variant through
+   `MediaRootRegistry.resolve_variant`, which binds the variant's own root (`finals`,
+   `uploads`, `originals`, `exports`) and applies the traversal guard. Both roots are
+   therefore served by one code path; `publication_uploads.file_root_key` may be `uploads`.
+5. **Unchanged.** Chunk protocol, resume identity, SHA-256 verification, idempotency, quotas,
+   the session state machine, duplicate rejection by content hash across both roots, the
+   worker lease/retry model, owner mappings, handoff review, revisions and reporting.
+6. **Not in this milestone.** Permanent deletion of uploaded files (no code path exists; the
+   `ready/` tree is only ever appended to), migration of legacy finals into the new root.
+
+**Tradeoff, stated explicitly.** The legacy tree was protected by the filesystem (read-only
+mounts plus Synology ACLs); the new root is protected by the application: the API container
+needs `staging/` writable and the worker the whole root writable, so a bug or compromise in
+those processes could damage uploaded finals, where it could not damage legacy finals.
+Mitigations: the API mounts only `staging/` read-write (the root itself read-only for
+previews); the worker is the only writer of `ready/` and has exactly one write operation on
+it (the no-replace rename); nothing opens a finalized file for writing, renames or deletes
+one; every directory walk is `O_NOFOLLOW`; the staging file must be a singly-linked regular
+file owned by the service uid; and the audit trail records every placement with its SHA-256,
+so integrity can be re-verified from the database. The legacy root is untouched by all of it
+and stays immutable by mount.
+
+**Consequences.** Phase B3.2 (72-folder ACL rollout) and Phase C as planned are cancelled;
+the B3.1B probe leftovers are removed and the one ACL entry restored (Phase F0,
+`docs/deployment/upload-rollout.md`). Production needs one new directory tree (created by an
+administrator, owned by the service uid), two compose binds and two environment variables;
+no ACL changes. Migration 0018 widens two CHECK constraints and is lossless on downgrade.

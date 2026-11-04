@@ -575,7 +575,9 @@ def _step_upload(
         upload.next_action_at = _now()  # continue on the next claim (budget exhausted)
 
 
-UPLOAD_ROOT_KEYS = frozenset({"finals", "exports"})
+# Roots the publisher may stream from: legacy finals, AFFILIO uploads (finals delivered through
+# the app) and publish-ready exports. All three are mounted read-only in the publisher.
+UPLOAD_ROOT_KEYS = frozenset({"finals", "uploads", "exports"})
 
 
 def _resolve_pinned_file(

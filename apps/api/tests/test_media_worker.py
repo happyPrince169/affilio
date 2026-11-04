@@ -92,7 +92,8 @@ def test_thumbnail_generation_prefers_proxy_and_writes_only_thumbnails_root(
     assert asset is not None and asset.thumbnail_status == ThumbnailStatus.PENDING
     generator = ThumbnailGenerator(settings, media_dirs.registry)
     source = generator.pick_source(asset)
-    assert source is not None and source[0] == "proxies"
+    assert source is not None and source.kind == MediaVariantKind.PROXY
+    assert media_dirs.registry.resolve_variant(source) == media_dirs.proxies / "clip.mp4"
 
     factory = sessionmaker(bind=schema, expire_on_commit=False)
     processed = generator.process_pending(factory, limit=4)

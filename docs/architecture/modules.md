@@ -56,8 +56,8 @@ modules/media/
 │                   classification, handoff, period, thumbnail; duplicate lookup by full hash
 ├── owner_mappings.py  editor → production-owner mappings (U2)
 ├── uploads.py      upload sessions, API side: authorization, quotas, streamed chunks (U4)
-├── upload_storage.py  the only filesystem writes: staging store + exclusive placement into finals (U4)
-├── upload_finalize.py worker finalization: verify, duplicate check, intent, link, register, recovery (U4)
+├── upload_storage.py  the only writes on the uploads root: staging store + ready store (no-replace rename)
+├── upload_finalize.py worker finalization: verify, duplicate check, intent, rename, register, recovery
 ├── reporting.py    production report rows, revision chains, approved units, CSV (U6; routes in analytics)
 ├── thumbnails.py   ffmpeg thumbnail generation, proxy-first, atomic writes
 ├── export_profile.py publishing profile from ffprobe output, HDR detection (E1)
@@ -97,6 +97,10 @@ impossible: an asset from another organization is simply "not found".
   procurement; a WINNER can be unpurchased and a received product can be ARCHIVED.
 - **Finals are not footage.** The finals root produces `asset_kind = final` assets with their
   own duplicate scope, no proxy linking, and a human handoff gate (`handoff_status`).
+- **Two final roots, one resolver.** `finals` (legacy share, read-only, folder-classified)
+  and `uploads` (AFFILIO-managed, `ready/` tree, database-classified) both yield finals;
+  every reader resolves a variant through `MediaRootRegistry.resolve_variant` and never
+  assumes a root (ADR 0012 amendment 2).
 
 ### publishing engine and publisher worker (M3B.2A)
 
@@ -110,8 +114,8 @@ accounts/    providers gain the Reels calls (mock: faults + registry; live: gate
 ```
 
 `publishing.engine` imports `accounts.vault`, `accounts.connections` and the provider factory
-(service functions only). The publisher reads the finals root through `RootBinding.resolve`
-and never writes anywhere. See `docs/architecture/publishing-engine.md`.
+(service functions only). The publisher reads finals, uploads and exports through the
+registry's `resolve_variant` and never writes anywhere. See `docs/architecture/publishing-engine.md`.
 
 ### accounts: connections, vault and providers (M3B.1A)
 

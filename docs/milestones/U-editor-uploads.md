@@ -6,7 +6,9 @@
   U4 implemented locally (migration 0015, upload API, staging store, worker finalizer);
   U5 implemented locally (`/uploads` page, queue, resume, My uploads, streaming proxy);
   U6 implemented locally (production reporting API, `/reports/production`, migration 0016);
-  U7 planned. Nothing deployed.
+  U7 Phases A–B3.1 done; **fast track F0–F2 (2026-11-04) replaces the FINAL hard-link
+  placement with a dedicated upload root (ADR 0012 amendment 2, migration 0018)**; Phase
+  B3.2 and the old Phase C are cancelled. Nothing deployed.
 - **Depends on:** M3A (sessions, roles), M3A.1 (taxonomy, folder rules), M3C.1 (finals,
   handoff review), Facets F1 (facet roots, path classification), Step 4 (75 directories).
 - **Goal:** editors submit finished videos through AFFILIO in bulk, resumably, attributed to a
@@ -112,6 +114,26 @@ one real editor pilot upload, verification of classification, thumbnail, review,
 reporting, rollback rehearsal). Record: `docs/deployment/upload-rollout.md`. Nothing in
 U2–U6 writes to production.
 
+### Fast track F0–F2 (2026-11-04) — two storage roots
+
+- F0: inventory, safety review and exact cleanup / ACL-restoration commands for the B3.1B
+  probe (`docs/deployment/upload-rollout.md`, "Phase F0"); execution needs approval and a
+  Tailscale route to the NAS.
+- F1: `uploads` root (`MEDIA_UPLOADS_PATH`, kind `upload`, read-write) with `staging/` and
+  `ready/`; finalization by `rename_noreplace`; UUID physical names; classification stored as
+  `upload` assignments from the session's taxonomy; unified `resolve_variant`; legacy
+  `finals` root untouched and read-only; migration 0018; settings `MEDIA_UPLOADS_PATH`,
+  `MEDIA_UPLOADS_WRITABLE` (the old `MEDIA_INCOMING_PATH` / `MEDIA_FINALS_WRITABLE` are gone).
+- F2: library filters by owner, product category, content type, source and uploader;
+  provenance on assets (`ingest_source`, `uploaded_by_user_id`, `root_key`,
+  `revision_of_asset_id`); streaming preview with Range support (`…/stream`, proxied);
+  metadata-only reclassification (`PUT /media/assets/{id}/facets`, admin any final, editor
+  own uploads within mapped owners); "Uploaded" provenance in the library and asset page.
+- Tests: `tests/test_media_uploads.py` (31 tests: protocol, finalize, duplicates, same-name
+  collisions, crash recovery at four boundaries, conflicts, symlinks, expiry, inert worker,
+  legacy read-only guard with 0555 directories, static no-write guard, resolver, stream and
+  ranges, publishing input, thumbnail from the uploads root, filters, reclassification).
+
 ## Acceptance criteria (whole track)
 
 - [ ] Editors upload many files at once with resumable progress and recover after a reload.
@@ -120,14 +142,15 @@ U2–U6 writes to production.
 - [ ] Duplicate content never creates a second asset or file; legacy files are never touched.
 - [ ] Crashes at any finalization boundary are recovered without loss or duplication.
 - [ ] Reports distinguish submitted, approved and corrected work per owner and uploader.
-- [ ] Only the API's staging bind and the worker's finals mount are writable; every other
-      mount stays read-only.
+- [ ] Only the API's `uploads/staging` bind and the worker's `uploads` mount are writable;
+      legacy finals, originals and proxies stay read-only in every container.
 
 ## Operational notes for U5 and U7
 
-- The API needs `MEDIA_INCOMING_PATH` (its own writable bind of `FINAL/.affilio-incoming`);
-  the worker needs `MEDIA_FINALS_WRITABLE=true`. Without them the upload routes answer 503
-  and the finalizer stays inert, so the code is safe to deploy before the mounts exist.
+- Every container needs `MEDIA_UPLOADS_PATH` (the AFFILIO_UPLOADS root; the API needs its
+  `staging/` writable); the worker needs `MEDIA_UPLOADS_WRITABLE=true`. Without them the
+  upload routes answer 503 and the finalizer stays inert, so the code is safe to deploy
+  before the mounts exist.
 - Chunk requests carry `Upload-Offset`, `Content-Length` and `X-Upload-Chunk-Sha256`; the
   proxy must forward PATCH bodies. Buffering one 8 MiB chunk per request is acceptable.
 - Finalization runs one session per worker poll between scan claims and thumbnail work; a
@@ -135,10 +158,9 @@ U2–U6 writes to production.
 - `failed` sessions keep their staging copy until the TTL for inspection; `duplicate`,
   `aborted`, `expired` and `completed` sessions lose it immediately or at the next hourly
   maintenance run.
-- Hard links on the production share (btrfs, `synoacl`) were exercised in U7 Phase B1 and
-  B2B with disposable files: placement by link works, the placed file inherits the
-  destination folder's ACL, and the service identity cannot delete it. The owner-rights
-  probe on a placed file and the 72-folder ACL rollout (Phase B3) precede any deployment.
+- Hard links into FINAL were exercised in U7 Phases B1–B3.1 and then abandoned (ADR 0012
+  amendment 2): uploads are finalized by rename inside the dedicated `uploads` root, so no
+  ACL change on FINAL is needed for deployment.
 
 ## Known limits
 

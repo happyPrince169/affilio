@@ -43,7 +43,8 @@ class MediaRootKind(StrEnum):
 
     ORIGINAL = "original"  # read-only: camera originals / masters
     PROXY = "proxy"  # read-only: existing HEVC proxies produced by the NAS workflow
-    FINAL = "final"  # read-only: edited, finished videos uploaded by editors (handoff)
+    FINAL = "final"  # read-only: legacy finished videos copied onto the share (handoff)
+    UPLOAD = "upload"  # read-write, application-managed: finals delivered through AFFILIO
     THUMBNAIL = "thumbnail"  # read-write: AFFILIO-generated thumbnails
     EXPORT = "export"  # read-write: future publish-ready H.264/AAC exports
 
@@ -328,6 +329,8 @@ class CategoryAssignmentSource(StrEnum):
     IMPORT = "import"
     AI_FUTURE = "ai_future"  # reserved; no AI classification exists yet
     PATH = "path"  # derived from the structured finals path (facet classification)
+    UPLOAD = "upload"  # derived from the taxonomy the editor chose at upload (fast track F1)
+    OVERRIDE = "override"  # facet value set by a person; wins over folder-derived facets (F2)
 
 
 class CategoryFacet(StrEnum):

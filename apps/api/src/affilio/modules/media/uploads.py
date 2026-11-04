@@ -1,6 +1,7 @@
 """Editor upload sessions, API side (upload track U4, ADR 0012).
 
-The API owns the session rows and the staging file bytes; it never touches the finals tree.
+The API owns the session rows and the staging file bytes under `<uploads>/staging`; it never
+touches `ready/` or the legacy finals tree.
 Every operation re-checks the caller: organization from the session cookie, then the row's
 uploader (or admin). Progress is server-authoritative: `committed_offset` moves only after
 the bytes are durably written and the chunk digest matched. Finalization is the worker's

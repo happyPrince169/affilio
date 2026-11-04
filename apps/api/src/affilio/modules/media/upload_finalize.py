@@ -1,27 +1,30 @@
-"""Upload finalization, worker side (upload track U4, ADR 0012).
+"""Upload finalization, worker side (ADR 0012, amendment 2: dedicated upload root).
 
 Runs inside the existing worker (`affilio.worker.runner`) and is the only code that writes
-into the finals tree. One session at a time, claimed with a lease so a dead worker's work is
-re-run by the next one. Every step is re-entrant and driven by the row's recorded state:
+`ready/` under the AFFILIO_UPLOADS root. One session at a time, claimed with a lease so a dead
+worker's work is re-run by the next one. Every step is re-entrant and driven by the row's
+recorded state:
 
-    uploaded ──claim──▶ verifying ──intent──▶ finalizing ──place+register──▶ completed
+    uploaded ──claim──▶ verifying ──intent──▶ finalizing ──rename+register──▶ completed
                             │                      │
                             ├─ invalid/mismatch ─▶ failed        (staging removed)
                             └─ same content ─────▶ duplicate     (staging removed)
 
+Placement is one atomic `rename_noreplace` from `staging/<org>/<token>.part` to
+`ready/<org>/<YYYY>/<MM>/<upload id>.<ext>` on the same filesystem: the staging name disappears
+in the same operation the final name appears, and an existing name is never replaced.
+
 Recovery is deterministic from (status, final_relative_path, verified_sha256, staging):
 
 - `verifying` with staging present: verify from scratch (idempotent).
-- `finalizing`, destination missing, staging present: place again.
-- `finalizing`, destination present: prove it is our file (size + SHA-256 equal to the
-  intent) and continue with registration; a different file at that name is a conflict,
-  never adopted.
-- `finalizing`, destination present and registered by a scan meanwhile: the asset is
-  adopted only after the same identity proof; attribution is then written once.
-- staging missing before placement: `failed(staging_missing)`; after placement it is simply
-  the already-removed copy.
+- `finalizing`, destination missing, staging present: rename again.
+- `finalizing`, destination present (the rename happened): prove it is our file (size +
+  SHA-256 equal to the intent) and continue with registration; a different file at that name
+  is a conflict, never adopted. An empty reservation left by the fallback rename strategy is
+  replaced by the staged file.
+- staging missing before any placement: `failed(staging_missing)`.
 
-The session row is the primary recovery record; a later root scan is never relied upon.
+The session row is the primary recovery record; the uploads root is never scanned.
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from affilio.core.audit import record_audit
 from affilio.core.config import Settings
-from affilio.core.enums import IngestSource, MediaVariantKind, UploadStatus
+from affilio.core.enums import CategoryFacet, IngestSource, MediaVariantKind, UploadStatus
 from affilio.core.redaction import Redactor
 from affilio.modules.media import ingest
 from affilio.modules.media.fingerprint import quick_fingerprint
@@ -49,12 +52,12 @@ from affilio.modules.media.models import MediaRoot, MediaUpload
 from affilio.modules.media.probe import FFprobe, ProbeError, Prober
 from affilio.modules.media.roots import MediaRootRegistry
 from affilio.modules.media.upload_storage import (
-    FinalsPlacer,
+    ReadyStore,
     StagingStore,
     StorageError,
-    with_suffix,
+    ensure_layout,
+    physical_name,
 )
-from affilio.modules.taxonomy import service as taxonomy_service
 
 log = structlog.get_logger(__name__)
 
@@ -173,7 +176,7 @@ class Finalizer:
     # -- entry point ---------------------------------------------------------------------
     def run_next(self, *, now: datetime | None = None) -> Outcome | None:
         """Claim and process one session. Returns None when nothing was due."""
-        if not self.settings.media_finals_writable:
+        if not self.settings.media_uploads_writable:
             return None
         now = now or datetime.now(UTC)
         upload = claim_next(
@@ -212,17 +215,26 @@ class Finalizer:
         return outcome
 
     # -- pieces --------------------------------------------------------------------------
-    def _finals(self, organization_id: uuid.UUID) -> tuple[Path, MediaRoot]:
-        binding = self.registry.finals
+    def _uploads(self, organization_id: uuid.UUID) -> tuple[Path, MediaRoot]:
+        binding = self.registry.uploads
         if binding is None:
-            raise RetryableError("finals root is not configured")
+            raise RetryableError("uploads root is not configured")
+        if not binding.path.is_dir():
+            raise RetryableError("uploads root is not mounted")  # outage: try again later
+        try:
+            ensure_layout(binding.path)
+        except StorageError as exc:  # a symlink where a directory must be: never follow it
+            raise FinalizationFailedError("destination_unavailable", str(exc)) from exc
+        except OSError as exc:
+            raise RetryableError(f"uploads root is not usable: {exc}") from exc
         roots = self.registry.ensure_db_roots(self.session, organization_id)
-        return binding.path, roots["finals"]
+        return binding.path, roots["uploads"]
 
     def _process(self, upload: MediaUpload, now: datetime) -> Outcome:
-        finals_path, root_row = self._finals(upload.organization_id)
-        staging = StagingStore.for_worker(finals_path)
-        placer = FinalsPlacer(finals_path)
+        uploads_path, root_row = self._uploads(upload.organization_id)
+        staging = StagingStore.for_root(uploads_path)
+        assert staging is not None  # noqa: S101
+        ready = ReadyStore.for_root(uploads_path)
         try:
             staged = staging.stat_regular(upload.organization_id, upload.staging_name)
         except StorageError as exc:
@@ -230,7 +242,7 @@ class Finalizer:
         staging_path = staging.path_for(upload.organization_id, upload.staging_name)
 
         if upload.status == UploadStatus.FINALIZING and upload.final_relative_path:
-            return self._resume_placement(upload, staged, staging_path, placer, root_row, now)
+            return self._resume_placement(upload, staged, staging_path, ready, root_row, now)
 
         if staged is None:
             raise FinalizationFailedError("staging_missing", "staged file is gone before placement")
@@ -269,27 +281,19 @@ class Finalizer:
         if match is not None:
             return self._duplicate(upload, match.asset.id, staging, now)
 
-        # Destination from authorized taxonomy ids only; the folder names are category names.
-        tree = taxonomy_service.load_tree(self.session, upload.organization_id)
-        names = [
-            tree.by_id[upload.production_owner_category_id].name,
-            tree.by_id[upload.product_category_id].name,
-            tree.by_id[upload.content_type_id].name,
-        ]
+        # Destination: UUID name under a date shard; classification stays in the database.
+        parts = ReadyStore.directory_parts(upload.organization_id, now)
         try:
-            dir_fd, used = placer.resolve_directory(names)
+            filename = physical_name(upload.id, upload.safe_filename)
+            dir_fd = ready.open_directory(parts, create=True)
         except (StorageError, OSError) as exc:
             raise FinalizationFailedError("destination_unavailable", str(exc)) from exc
         try:
-            filename = upload.safe_filename
-            if placer.entry_exists(dir_fd, filename):
-                filename = with_suffix(filename, upload.id.hex[:8])
-            # Intent record: the path we are about to use, before the tree changes. The
-            # partial unique index on (organization, verified_sha256) decides concurrent
-            # identical uploads here.
+            # Intent record before the filesystem changes. The partial unique index on
+            # (organization, verified_sha256) decides concurrent identical uploads here.
             upload.verified_sha256 = content_hash
             upload.fingerprint = fingerprint
-            upload.final_relative_path = "/".join([*used, filename])
+            upload.final_relative_path = ReadyStore.relative_path(parts, filename)
             upload.status = UploadStatus.FINALIZING
             try:
                 self.session.commit()
@@ -300,7 +304,7 @@ class Finalizer:
                     self._reload(upload.id), winner, staging, now, concurrent=True
                 )
             upload = self._reload(upload.id)
-            self._place(upload, staging_path, dir_fd, filename, content_hash)
+            self._place(upload, staging_path, dir_fd, filename, content_hash, uploads_path)
         finally:
             os.close(dir_fd)
         return self._register(upload, root_row, staging, now)
@@ -310,29 +314,34 @@ class Finalizer:
         upload: MediaUpload,
         staged: os.stat_result | None,
         staging_path: Path,
-        placer: FinalsPlacer,
+        ready: ReadyStore,
         root_row: MediaRoot,
         now: datetime,
     ) -> Outcome:
         """`finalizing` with an intent recorded: find out how far the previous attempt got."""
         assert upload.final_relative_path and upload.verified_sha256  # noqa: S101
         parts = upload.final_relative_path.split("/")
-        folders, filename = parts[:-1], parts[-1]
+        folders, filename = parts[1:-1], parts[-1]  # drop the leading `ready`
         try:
-            dir_fd, _ = placer.resolve_directory(folders)
+            dir_fd = ready.open_directory(folders, create=staged is not None)
         except (StorageError, OSError) as exc:
             raise FinalizationFailedError("destination_unavailable", str(exc)) from exc
+        uploads_path = ready.root.parent
         try:
-            dest = placer.stat_entry(dir_fd, filename)
+            dest = ready.stat_entry(dir_fd, filename)
             if dest is None:
                 if staged is None:
                     raise FinalizationFailedError(
                         "staging_missing", "neither the staged nor the placed file exists"
                     )
-                self._place(upload, staging_path, dir_fd, filename, upload.verified_sha256)
+                self._place(
+                    upload, staging_path, dir_fd, filename, upload.verified_sha256, uploads_path
+                )
+            elif staged is not None and self._is_reservation(dest):
+                ReadyStore.replace_reservation(staging_path, dir_fd, filename)
             else:
                 # Prove the destination is our file before touching the library.
-                dest_path = Path(placer.finals_root, *folders, filename)
+                dest_path = Path(uploads_path, *upload.final_relative_path.split("/"))
                 if (
                     dest.st_size != upload.expected_size
                     or sha256_of(dest_path, on_progress=self._lease_refresher(upload))
@@ -346,27 +355,43 @@ class Finalizer:
             raise FinalizationFailedError("destination_conflict", str(exc)) from exc
         finally:
             os.close(dir_fd)
-        staging = StagingStore.for_worker(placer.finals_root)
+        staging = StagingStore.for_root(uploads_path)
+        assert staging is not None  # noqa: S101
         return self._register(upload, root_row, staging, now)
 
+    @staticmethod
+    def _is_reservation(info: os.stat_result) -> bool:
+        return info.st_size == 0 and info.st_nlink == 1 and info.st_uid == os.geteuid()
+
     def _place(
-        self, upload: MediaUpload, staging_path: Path, dir_fd: int, filename: str, content_hash: str
+        self,
+        upload: MediaUpload,
+        staging_path: Path,
+        dir_fd: int,
+        filename: str,
+        content_hash: str,
+        uploads_path: Path,
     ) -> None:
-        placer = FinalsPlacer(staging_path.parents[2])  # <finals>/.affilio-incoming/<org>/x
         try:
-            placer.link_into(staging_path, dir_fd, filename)
+            ReadyStore.place(staging_path, dir_fd, filename)
         except FileExistsError:
             try:
-                existing = placer.stat_entry(dir_fd, filename)
+                existing = ReadyStore.stat_entry(dir_fd, filename)
             except StorageError as exc:  # a symlink or special file sits at the name
                 raise FinalizationFailedError("destination_conflict", str(exc)) from exc
-            dest_path = Path(placer.finals_root, *upload.final_relative_path.split("/"))
+            if existing is not None and self._is_reservation(existing):
+                try:
+                    ReadyStore.replace_reservation(staging_path, dir_fd, filename)
+                except OSError as exc:
+                    raise FinalizationFailedError("placement_failed", str(exc)) from exc
+                return
+            dest_path = Path(uploads_path, *upload.final_relative_path.split("/"))
             if (
                 existing is not None
                 and existing.st_size == upload.expected_size
                 and sha256_of(dest_path) == content_hash
             ):
-                return  # our own earlier link (crash after link)
+                return  # the same bytes are already there (nothing else to move)
             raise FinalizationFailedError(
                 "destination_conflict", "a different file occupies the intended final path"
             ) from None
@@ -377,7 +402,7 @@ class Finalizer:
         self, upload: MediaUpload, root_row: MediaRoot, staging: StagingStore, now: datetime
     ) -> Outcome:
         assert upload.final_relative_path and upload.verified_sha256  # noqa: S101
-        binding = self.registry.finals
+        binding = self.registry.uploads
         assert binding is not None  # noqa: S101
         errors: list[tuple[str, str, str]] = []
         ctx = ingest.IngestContext.load(
@@ -395,9 +420,15 @@ class Finalizer:
                 ctx,
                 upload.final_relative_path,
                 asset_fields={
+                    "title": ingest.title_from_name(upload.safe_filename),
                     "ingest_source": IngestSource.UPLOAD,
                     "uploaded_by_user_id": upload.uploaded_by_user_id,
                     "revision_of_asset_id": upload.replaces_asset_id,
+                },
+                facet_assignments={
+                    CategoryFacet.PRODUCTION_OWNER: upload.production_owner_category_id,
+                    CategoryFacet.PRODUCT_CATEGORY: upload.product_category_id,
+                    CategoryFacet.CONTENT_TYPE: upload.content_type_id,
                 },
             )
         except ingest.IngestFileError as exc:
@@ -435,13 +466,17 @@ class Finalizer:
                     str(upload.submitted_for_user_id) if upload.submitted_for_user_id else None
                 ),
                 "production_owner_category_id": str(upload.production_owner_category_id),
+                "product_category_id": str(upload.product_category_id),
+                "content_type_id": str(upload.content_type_id),
                 "adopted_existing_asset": not registration.created,
+                "root_key": root_row.key,
                 "final_relative_path": upload.final_relative_path,
+                "verified_sha256": upload.verified_sha256,
             },
         )
         self.session.commit()
-        # The staging copy is removed only after the registration is durable; a crash here
-        # leaves a copy that maintenance removes (completed + staging present).
+        # The rename already removed the staging name; this covers the fallback strategy and
+        # older rows. A failure here leaves a copy that maintenance removes.
         try:
             staging.remove(upload.organization_id, upload.staging_name)
         except (StorageError, OSError) as exc:
@@ -512,12 +547,11 @@ class Finalizer:
         )
         self.session.commit()
         if code in {"invalid_media", "hash_mismatch", "size_mismatch", "staging_invalid"}:
-            binding = self.registry.finals
-            if binding is not None:
+            binding = self.registry.uploads
+            staging = StagingStore.for_root(binding.path) if binding is not None else None
+            if staging is not None:
                 with contextlib.suppress(StorageError, OSError):
-                    StagingStore.for_worker(binding.path).remove(
-                        upload.organization_id, upload.staging_name
-                    )
+                    staging.remove(upload.organization_id, upload.staging_name)
         return Outcome(upload_id=upload.id, status=UploadStatus.FAILED, code=code)
 
     def _release(self, upload_id: uuid.UUID, reason: str) -> None:
@@ -581,11 +615,11 @@ def expire_and_clean(
     and remove orphan `.part` files older than the TTL. Nothing outside staging is touched."""
     now = now or datetime.now(UTC)
     counts = {"expired": 0, "staging_removed": 0, "orphans_removed": 0}
-    binding = registry.finals
-    if binding is None or not settings.media_finals_writable:
+    binding = registry.uploads
+    if binding is None or not settings.media_uploads_writable:
         return counts
-    staging = StagingStore.for_worker(binding.path)
-    if not staging.root.is_dir():
+    staging = StagingStore.for_root(binding.path)
+    if staging is None or not staging.root.is_dir():
         return counts
     idle = session.scalars(
         select(MediaUpload).where(
@@ -623,9 +657,7 @@ def expire_and_clean(
             )
         )
     ).all()
-    known = set()
     for upload in terminal:
-        known.add(upload.staging_name)
         try:
             if staging.remove(upload.organization_id, upload.staging_name):
                 counts["staging_removed"] += 1

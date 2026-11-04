@@ -1,6 +1,8 @@
 """Thumbnail generation with ffmpeg.
 
-- Source: the proxy variant when present (smaller, faster to decode), else the original.
+- Source: the proxy variant when present (smaller, faster to decode), else the original, else
+  the final (legacy `finals` tree or the AFFILIO `uploads` root, resolved through the
+  registry's unified resolver).
 - Output: `<thumbnails root>/<id[:2]>/<asset id>.jpg`, written to a temp file and renamed
   atomically. Only the thumbnails root is ever written to.
 - Resource limits: single-threaded ffmpeg, bounded concurrency, hard timeout.
@@ -27,6 +29,7 @@ from affilio.core.enums import (
     ThumbnailStatus,
 )
 from affilio.core.redaction import Redactor
+from affilio.modules.media.errors import InvalidMediaPathError, MediaRootNotConfiguredError
 from affilio.modules.media.models import MediaAsset, MediaFileVariant, MediaRoot
 from affilio.modules.media.roots import MediaRootRegistry
 
@@ -103,20 +106,19 @@ class ThumbnailGenerator:
         self.registry = registry
         self.redactor = Redactor.from_settings(settings)
 
-    def pick_source(self, asset: MediaAsset) -> tuple[str, MediaFileVariant] | None:
+    def pick_source(self, asset: MediaAsset) -> MediaFileVariant | None:
+        """The variant to render from; its root comes from the variant itself."""
         proxy = asset.variant(MediaVariantKind.PROXY)
         if (
             proxy is not None
             and proxy.status == MediaVariantStatus.PRESENT
             and not proxy.probe_error
         ):
-            return "proxies", proxy
-        original = asset.variant(MediaVariantKind.ORIGINAL)
-        if original is not None and original.status == MediaVariantStatus.PRESENT:
-            return "originals", original
-        final = asset.variant(MediaVariantKind.FINAL)
-        if final is not None and final.status == MediaVariantStatus.PRESENT:
-            return "finals", final
+            return proxy
+        for kind in (MediaVariantKind.ORIGINAL, MediaVariantKind.FINAL):
+            variant = asset.variant(kind)
+            if variant is not None and variant.status == MediaVariantStatus.PRESENT:
+                return variant
         return None
 
     def generate(self, session: Session, asset: MediaAsset) -> bool:
@@ -127,16 +129,16 @@ class ThumbnailGenerator:
             asset.thumbnail_status = ThumbnailStatus.SKIPPED
             asset.thumbnail_error = "thumbnails root not configured or not writable"
             return False
-        source = self.pick_source(asset)
-        if source is None or asset.status != MediaAssetStatus.ACTIVE:
+        source_variant = self.pick_source(asset)
+        if source_variant is None or asset.status != MediaAssetStatus.ACTIVE:
             asset.thumbnail_status = ThumbnailStatus.SKIPPED
             asset.thumbnail_error = "no readable source file"
             return False
-        source_key, source_variant = source
-        source_binding = self.registry.get(source_key)
-        if source_binding is None:
+        try:
+            source_path = self.registry.resolve_variant(source_variant)
+        except (MediaRootNotConfiguredError, InvalidMediaPathError) as exc:
             asset.thumbnail_status = ThumbnailStatus.SKIPPED
-            asset.thumbnail_error = f"{source_key} root not configured"
+            asset.thumbnail_error = self.redactor.message(exc)
             return False
 
         asset.thumbnail_attempts += 1
@@ -147,7 +149,7 @@ class ThumbnailGenerator:
             target.parent.mkdir(parents=True, exist_ok=True)
             run_ffmpeg_thumbnail(
                 ffmpeg=self.settings.media_ffmpeg_path,
-                source=source_binding.resolve(source_variant.relative_path),
+                source=source_path,
                 target=tmp,
                 seek=seek_position(source_variant.duration_seconds or asset.duration_seconds),
                 width=self.settings.media_thumbnail_width,

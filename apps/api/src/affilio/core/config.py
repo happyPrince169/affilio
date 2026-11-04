@@ -119,12 +119,12 @@ class Settings(BaseSettings):
     media_scan_stale_after_seconds: int = 600
     # Final handoff: a file is indexed only once its mtime is older than this (upload settled).
     media_final_settle_seconds: int = 120
-    # --- editor uploads (upload track U4, ADR 0012) ---
-    # Hidden staging directory `FINAL/.affilio-incoming` as the API sees it (its own writable
-    # bind). The worker reaches the same directory through the finals root, which it may write
-    # only when MEDIA_FINALS_WRITABLE is true; every other process keeps finals read-only.
-    media_incoming_path: Path | None = None
-    media_finals_writable: bool = False
+    # --- editor uploads (ADR 0012, amendment 2: dedicated upload root) ---
+    # AFFILIO_UPLOADS root (`staging/` and `ready/` inside it). The API needs `staging/`
+    # writable; the worker needs the whole root writable and MEDIA_UPLOADS_WRITABLE=true to
+    # finalize. Legacy finals (MEDIA_FINALS_PATH) stay read-only in every process.
+    media_uploads_path: Path | None = None
+    media_uploads_writable: bool = False
     upload_chunk_bytes: int = 8 * 1024 * 1024
     upload_max_file_bytes: int = 8 * 1024 * 1024 * 1024
     upload_max_active_sessions_per_user: int = 20
@@ -275,6 +275,7 @@ class Settings(BaseSettings):
         "media_originals_path",
         "media_proxies_path",
         "media_finals_path",
+        "media_uploads_path",
         "media_thumbnails_path",
         "media_exports_path",
         mode="before",

@@ -166,9 +166,9 @@ def run_once(
             execute_scan_job(session, job, settings=settings, registry=registry, prober=prober)
             return True
 
-    # Editor uploads (U4): one finalization per iteration, only where the finals root is
+    # Editor uploads: one finalization per iteration, only where the uploads root is
     # writable (the worker container). Scans keep priority; thumbnails follow.
-    if settings.media_finals_writable:
+    if settings.media_uploads_writable:
         with session_factory() as session:
             finalizer = Finalizer.build(
                 session, registry, settings, prober=prober, worker_id=WORKER_ID

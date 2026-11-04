@@ -77,7 +77,9 @@ Point the four logical roots at local folders or a mounted NAS share in `.env`, 
 ```bash
 MEDIA_ORIGINALS_PATH=/mnt/nas/video/originals    # read-only
 MEDIA_PROXIES_PATH=/mnt/nas/video/proxies        # read-only
-MEDIA_FINALS_PATH=/mnt/nas/video/finals          # read-only, finished edits (handoff review)
+MEDIA_FINALS_PATH=/mnt/nas/video/finals          # read-only, legacy finished edits (handoff review)
+MEDIA_UPLOADS_PATH=$PWD/var/uploads              # AFFILIO-managed root for editor uploads (create it)
+MEDIA_UPLOADS_WRITABLE=true                      # worker only: finalize uploads into ready/
 MEDIA_THUMBNAILS_PATH=$PWD/var/thumbnails        # read-write (create it)
 MEDIA_EXPORTS_PATH=$PWD/var/exports              # read-write (create it)
 
@@ -86,8 +88,11 @@ pnpm media:scan -- --root finals  # same for the finals root (defaults to origin
 pnpm dev:worker                   # or keep the worker running and press "Scan now" in the UI
 ```
 
-AFFILIO never writes under the originals or proxies roots. Proxy files are linked to originals
-by filename pattern (`MEDIA_PROXY_PATTERNS`); confirm the pattern matches your proxy naming.
+AFFILIO never writes under the originals, proxies or finals roots. Proxy files are linked to
+originals by filename pattern (`MEDIA_PROXY_PATTERNS`); confirm the pattern matches your proxy
+naming. Editor uploads (`/uploads`) are staged and finalized inside `MEDIA_UPLOADS_PATH`
+(`staging/`, `ready/<org>/<YYYY>/<MM>/<upload id>.<ext>`); their owner, product category and
+content type live in the database, so reclassifying never moves a file (ADR 0012, amendment 2).
 
 ### Ports
 

@@ -229,7 +229,7 @@ def check_reel_media(
 
     # --- 2. otherwise the final itself must pass on its own -----------------------------------
     before = len(check.errors)
-    _check_file(check, final, registry.finals, "finals", settings, facts=asset)
+    _check_file(check, final, registry.binding_for(final), final.root.key, settings, facts=asset)
     if check.ok:
         check.source = "final"
         return check

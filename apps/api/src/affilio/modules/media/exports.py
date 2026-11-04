@@ -488,17 +488,19 @@ class ExportGenerator:
         source = session.get(MediaFileVariant, job.source_variant_id)
         if asset is None or source is None:
             raise _PermanentExportError("source_missing", "The final asset or its file row is gone")
-        finals, exports = self.registry.finals, self.registry.exports
-        if finals is None or not finals.availability().readable:
+        # The source final may live under the legacy `finals` tree or the `uploads` root;
+        # the registry resolves either through the stored variant's own root.
+        source_root, exports = self.registry.binding_for(source), self.registry.exports
+        if source_root is None or not source_root.availability().readable:
             raise _TransientExportError(
-                "roots_unavailable", "Finals root not readable on this worker"
+                "roots_unavailable", "Source root not readable on this worker"
             )
         if exports is None or not exports.availability().writable:
             raise _TransientExportError(
                 "roots_unavailable", "Exports root not writable on this worker"
             )
 
-        source_path = finals.resolve(source.relative_path)
+        source_path = source_root.resolve(source.relative_path)
         identity = self._verify_source(source, source_path)
         job.source_file_size = identity.file_size
         job.source_modified_at = identity.modified_at

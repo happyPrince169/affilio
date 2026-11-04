@@ -437,6 +437,20 @@ of every committed chunk, indexed by `offset // chunk_bytes`, so a reselected fi
 verified over the whole committed prefix before an interrupted upload resumes. At most 1024
 entries for an 8 GiB file. The downgrade drops the column.
 
+## Dedicated upload root (migration `0018_upload_root`)
+
+ADR 0012 amendment 2 (fast track F1). Two CHECK constraints are widened: `media_roots.kind`
+gains `upload` (the AFFILIO_UPLOADS root, read-write, never scanned) and
+`media_content_categories.assignment_source` gains `upload` (owner / product category /
+content type copied from the upload session instead of folder names) and `override` (a
+person's facet value on a legacy final, kept across rescans). No table or column
+changes: uploaded finals are ordinary `media_assets` (`asset_kind = final`,
+`ingest_source = upload`) whose `final` variant points at the `uploads` root with
+`relative_path = ready/<organization>/<YYYY>/<MM>/<upload id>.<ext>`. The downgrade folds the
+new values into the legacy ones (`upload` kind → `final`, `upload` source → `path`,
+`override` → `manual`) and
+restores the previous constraints, so no asset, file row or assignment is lost.
+
 ## Growth plan (not implemented)
 
 | Milestone  | Tables (indicative)                                                                                            |

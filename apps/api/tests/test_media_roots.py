@@ -60,4 +60,11 @@ def test_registry_only_binds_configured_roots(tmp_path: Path) -> None:
     assert registry.originals is not None
     assert registry.proxies is None
     assert registry.get("thumbnails") is None
-    assert set(registry.keys()) == {"originals", "proxies", "finals", "thumbnails", "exports"}
+    assert set(registry.keys()) == {
+        "originals",
+        "proxies",
+        "finals",
+        "uploads",
+        "thumbnails",
+        "exports",
+    }

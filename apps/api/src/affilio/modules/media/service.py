@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, aliased, selectinload
 
 from affilio.core.enums import (
     HandoffStatus,
+    IngestSource,
     MediaAssetKind,
     MediaAssetStatus,
     MediaVariantKind,
@@ -24,6 +25,7 @@ from affilio.core.enums import (
 from affilio.core.errors import AppError, NotFoundError
 from affilio.modules.media import classification
 from affilio.modules.media.errors import (
+    InvalidMediaPathError,
     MediaRootNotConfiguredError,
     MediaRootUnavailableError,
     ScanAlreadyActiveError,
@@ -72,6 +74,12 @@ class AssetFilters:
     category_id: uuid.UUID | None = None  # includes descendants
     uncategorized: bool = False  # no assignment at all, or only the Uncategorized fallback
     production_period: str | None = None  # exact "YYYY-MM"
+    # Facet filters (fast track F2): each is a category under the matching facet root.
+    production_owner_id: uuid.UUID | None = None
+    product_category_id: uuid.UUID | None = None
+    content_type_id: uuid.UUID | None = None
+    ingest_source: IngestSource | None = None
+    uploaded_by_user_id: uuid.UUID | None = None
     sort: SortKey = "newest"
     page: int = 1
     page_size: int = 24
@@ -384,6 +392,21 @@ def _apply_filters(
         stmt = stmt.where(
             MediaAsset.id.in_(classification.asset_ids_in_categories(session, organization_id, ids))
         )
+    for facet_id in (
+        filters.production_owner_id,
+        filters.product_category_id,
+        filters.content_type_id,
+    ):
+        if facet_id:
+            stmt = stmt.where(
+                MediaAsset.id.in_(
+                    classification.asset_ids_in_categories(session, organization_id, {facet_id})
+                )
+            )
+    if filters.ingest_source:
+        stmt = stmt.where(MediaAsset.ingest_source == filters.ingest_source)
+    if filters.uploaded_by_user_id:
+        stmt = stmt.where(MediaAsset.uploaded_by_user_id == filters.uploaded_by_user_id)
     if filters.production_period:
         stmt = stmt.where(MediaAsset.production_period == filters.production_period)
     if filters.uncategorized:
@@ -456,7 +479,7 @@ def list_assets(
     }[filters.sort]
     stmt = (
         base.options(
-            selectinload(MediaAsset.variants),
+            selectinload(MediaAsset.variants).selectinload(MediaFileVariant.root),
             selectinload(MediaAsset.category_assignments).selectinload(
                 MediaContentCategory.category
             ),
@@ -519,12 +542,31 @@ def _asset_categories(asset: MediaAsset) -> list[AssetCategoryResponse]:
     return out
 
 
+def preview_variant(asset: MediaAsset) -> MediaFileVariant | None:
+    """The file a browser preview streams: a present publish-ready export of a final when
+    one exists (H.264, smaller), else the asset's main file. None when nothing is present."""
+    if asset.asset_kind == MediaAssetKind.FINAL:
+        export = asset.variant(MediaVariantKind.EXPORT)
+        if export is not None and export.status == MediaVariantStatus.PRESENT:
+            return export
+    main = asset.main_variant()
+    if main is not None and main.status == MediaVariantStatus.PRESENT:
+        return main
+    return None
+
+
 def _summary_fields(asset: MediaAsset, *, thumbnail_url_prefix: str) -> dict:
     original = asset.main_variant()
     proxy = asset.variant(MediaVariantKind.PROXY)
+    previewable = asset.status == MediaAssetStatus.ACTIVE and preview_variant(asset) is not None
     return {
         "id": asset.id,
         "title": asset.title,
+        "ingest_source": asset.ingest_source,
+        "uploaded_by_user_id": asset.uploaded_by_user_id,
+        "revision_of_asset_id": asset.revision_of_asset_id,
+        "root_key": original.root.key if original is not None else None,
+        "preview_url": f"{thumbnail_url_prefix}/{asset.id}/stream" if previewable else None,
         "folder_path": (
             classification.folder_of(original.relative_path) if original is not None else None
         ),
@@ -750,6 +792,36 @@ def review_handoff(
     asset.handoff_reviewed_by = actor
     session.flush()
     return asset
+
+
+PREVIEW_MEDIA_TYPES = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/x-m4v",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+}
+
+
+def preview_path(
+    session: Session, organization_id: uuid.UUID, asset_id: uuid.UUID, registry: MediaRootRegistry
+) -> tuple[Path, str]:
+    """On-disk file and media type for the browser preview of an asset. The variant is chosen
+    server-side (`preview_variant`) and resolved through its own root (legacy finals, AFFILIO
+    uploads, originals or exports), so no client input ever names a path."""
+    asset = get_asset(session, organization_id, asset_id)
+    variant = preview_variant(asset)
+    if variant is None or asset.status != MediaAssetStatus.ACTIVE:
+        raise NotFoundError("No previewable file for this asset")
+    try:
+        path = registry.resolve_variant(variant)
+    except (MediaRootNotConfiguredError, InvalidMediaPathError) as exc:
+        raise NotFoundError("Preview file is not reachable from this server") from exc
+    if path.is_symlink() or not path.is_file():
+        raise NotFoundError("Preview file missing")
+    extension = (variant.extension or "").lower()
+    media_type = PREVIEW_MEDIA_TYPES.get(extension, "application/octet-stream")
+    return path, media_type
 
 
 def thumbnail_path(

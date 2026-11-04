@@ -1,8 +1,10 @@
 # Editor video uploads — technical design (U1)
 
 Decision record: `docs/decisions/0012-editor-uploads.md`. Milestones:
-`docs/milestones/U-editor-uploads.md`. Status: design only; no code, schema or production
-change exists yet. Names below are proposals for U2–U6 and may be refined there.
+`docs/milestones/U-editor-uploads.md`. Status: implemented locally (U2–U7 Phase A, then the
+fast track of 2026-11-04). **Section 3b supersedes sections 1, 3 and 3a wherever they
+describe writing into FINAL**: uploads are finalized into a dedicated root by no-overwrite
+rename; nothing writes FINAL. Those sections are kept as the record of the abandoned design.
 
 ## 1. Architecture comparison
 
@@ -268,6 +270,71 @@ may not, on the tested NAS only (DS923+, DSM 7.3.2, btrfs with `synoacl`):
   is not created in production: `mkdir` is refused without the create-subfolder right and
   the session fails with `destination_unavailable` until an administrator bootstraps the
   folder.
+
+## 3b. Storage layout after amendment 2 (fast track, 2026-11-04) — current design
+
+```
+MEDIA_FINALS_PATH   (LEGACY FINAL, read-only everywhere, scanned)          root key `finals`
+└── Hang/T9/… , Hang/Mens-Fashion/Try-On/…        92 existing finals, never written
+
+MEDIA_UPLOADS_PATH  (AFFILIO_UPLOADS, application-managed)                 root key `uploads`
+├── staging/<organization_id>/<32 hex>.part       chunks; API writes, worker reads/renames
+└── ready/<organization_id>/<YYYY>/<MM>/<upload uuid>.<ext>   finalized; worker writes once
+```
+
+Processes and what they may write:
+
+| Process   | `finals` | `uploads/staging` | `uploads/ready` | thumbnails / exports |
+| --------- | -------- | ----------------- | --------------- | -------------------- |
+| api       | ro       | rw (chunks, abort, `staging/` mkdir)  | ro (previews) | ro |
+| worker    | ro       | rw (rename away, expiry cleanup) | rw: one `rename_noreplace` per upload, `mkdir` of date shards | rw (as today) |
+| publisher | ro       | –                 | ro (stream)     | exports ro |
+| exporter  | ro       | –                 | ro (source)     | exports rw |
+
+Rules enforced in `media/upload_storage.py` (the only module with write calls on the root):
+
+- `StagingStore`: token names, exclusive create, `O_NOFOLLOW`, regular file owned by the
+  service uid with `st_nlink == 1` (a staged file that gained a second name is refused for
+  writing and truncation), writes only at the committed offset, deletes only here.
+- `ReadyStore`: directory walk by fixed component shapes (organization uuid, year, month)
+  with `O_DIRECTORY | O_NOFOLLOW`, symlinks refused anywhere, missing shards created with
+  mode 0750; placement is `rename_noreplace(staging, dir_fd, "<upload id>.<ext>")`:
+  `renameat2(RENAME_NOREPLACE)` when the kernel and filesystem support it, otherwise an
+  exclusive reservation of the name followed by a rename over that reservation only. An
+  occupied name raises `FileExistsError`; no code path overwrites, rewrites, renames or
+  deletes a finalized file. The date shard is for operators browsing the share; it carries
+  no meaning and nothing moves when metadata changes.
+- The client's filename contributes only its sanitized extension to the physical name; the
+  asset title keeps the display name. Two uploads of the same filename produce two files.
+
+Registration: `ingest.register_file(ctx, "ready/…", asset_fields=…, facet_assignments=…)`
+on the `uploads` root (`IngestContext.is_final_root` true, `classifies_by_path` false). The
+owner, product category and content type come from the upload session and are written as
+`assignment_source = upload` rows (primary: product category). Legacy finals keep their
+`path` and `folder` rows. `PUT /media/assets/{id}/facets` replaces a facet's row: on the
+uploads root the row stays `upload` (the database is the record); on a legacy final it becomes
+an `override` row, which `apply_folder_classification` never replaces and the generic
+categories override never removes, so a later rescan keeps the person's decision.
+
+Recovery matrix (replaces the link-based rows of section 5):
+
+| Crash                                   | State found on retry                                | Recovery                                                     |
+| --------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------ |
+| before the intent commit                | `verifying`, staging present                        | verify again from the staged file                            |
+| after the intent, before the rename     | `finalizing`, staging present, destination missing  | rename again                                                 |
+| after the rename, before registration   | `finalizing`, staging gone, destination present     | size + SHA-256 must equal the intent → register              |
+| fallback reservation left, no rename    | destination empty (size 0, ours), staging present   | rename over the reservation                                  |
+| destination holds other bytes           | hash differs                                        | `failed(destination_conflict)`, nothing adopted or replaced  |
+| both names gone                         | –                                                   | `failed(staging_missing)`, intent kept for inspection        |
+
+Readers resolve files through `MediaRootRegistry.resolve_variant(variant)`: preview stream
+(`GET /media/assets/{id}/stream`, Range requests, export preferred when present), thumbnails
+(proxy → original → final), exports (source root from the variant), publishing checks and the
+publisher (`file_root_key` ∈ {finals, uploads, exports}) and duplicate confirmation.
+
+Settings: `MEDIA_UPLOADS_PATH` (all containers), `MEDIA_UPLOADS_WRITABLE=true` (worker only);
+`MEDIA_INCOMING_PATH` and `MEDIA_FINALS_WRITABLE` no longer exist. Migration 0018 widens the
+`media_roots.kind` and `media_content_categories.assignment_source` CHECK constraints.
 
 ## 4. State machine
 

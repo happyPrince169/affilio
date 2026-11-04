@@ -49,6 +49,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from affilio.core.enums import (
+    CategoryFacet,
     HandoffStatus,
     MediaAssetKind,
     MediaAssetStatus,
@@ -63,7 +64,14 @@ from affilio.modules.media import classification, facets
 from affilio.modules.media.fingerprint import full_hash, quick_fingerprint
 from affilio.modules.media.models import MediaAsset, MediaFileVariant, MediaRoot
 from affilio.modules.media.probe import ProbeError, Prober, ProbeResult
-from affilio.modules.media.roots import MediaRootRegistry, RootBinding, normalize_relative_path
+from affilio.modules.media.roots import (
+    FINAL_KINDS,
+    MediaRootRegistry,
+    RootBinding,
+    normalize_relative_path,
+)
+
+FacetAssignments = Mapping[CategoryFacet, uuid.UUID]
 
 ErrorSink = Callable[[str, "Path | str", str], None]  # (kind, path, message)
 
@@ -127,13 +135,20 @@ class IngestContext:
             redactor=redactor,
             on_error=on_error or (lambda _kind, _path, _message: None),
         )
-        if ctx.is_final_root:
+        if ctx.classifies_by_path:
             ctx.folder_rules = classification.rules_for_root(session, organization_id, root.id)
             ctx.facet_context = facets.FacetContext.load(session, organization_id)
         return ctx
 
     @property
     def is_final_root(self) -> bool:
+        """The root holds finals (legacy `finals` tree or the AFFILIO `uploads` root)."""
+        return self.root.kind in FINAL_KINDS
+
+    @property
+    def classifies_by_path(self) -> bool:
+        """Only the legacy finals tree derives categories from folder names; the uploads
+        root is classified from the taxonomy recorded on the upload session."""
         return self.root.kind == MediaRootKind.FINAL
 
     @property
@@ -203,12 +218,35 @@ def probe_into(
     return True
 
 
-def classify(ctx: IngestContext, asset: MediaAsset, relative_path: str) -> bool:
-    """Folder-derived category and path facets for FINAL roots. Never touches the file or
-    manual rows; unknown facet values of valid finals are collected as suggestions. Returns
-    True when a previously derived classification changed (the first one is not a change)."""
+def classify(
+    ctx: IngestContext,
+    asset: MediaAsset,
+    relative_path: str,
+    *,
+    facet_assignments: FacetAssignments | None = None,
+) -> bool:
+    """Derived classification of a final. Legacy finals root: folder rule plus the facets
+    named by the structured path (unknown values of valid finals become suggestions).
+    Uploads root: the explicit `facet_assignments` recorded on the upload session, stored
+    with `assignment_source = upload`; the physical path means nothing. Never touches the
+    file or manual rows. Returns True when a previously derived classification changed (the
+    first one is not a change)."""
     if not ctx.is_final_root:
         return False
+    if not ctx.classifies_by_path:
+        try:
+            return classification.apply_folder_classification(
+                ctx.session,
+                asset,
+                root=ctx.root,
+                relative_path=relative_path,
+                rules=[],
+                now=ctx.now,
+                facet_assignments=dict(facet_assignments or {}),
+            )
+        except Exception as exc:
+            ctx.on_error("classification_error", relative_path, str(exc))
+            return False
     try:
         facet_assignments = None
         if ctx.facet_context is not None and ctx.facet_context.enabled:
@@ -271,7 +309,13 @@ class Registration:
     classification_changed: bool
 
 
-def register_new(ctx: IngestContext, entry: FileEntry, fingerprint: str) -> Registration:
+def register_new(
+    ctx: IngestContext,
+    entry: FileEntry,
+    fingerprint: str,
+    *,
+    facet_assignments: FacetAssignments | None = None,
+) -> Registration:
     """Create the asset + main variant for a file never seen under this root: probe, classify
     (finals), handoff gate and production period. Thumbnail queueing is the caller's step
     (`queue_thumbnail`), as it is for every touched asset."""
@@ -303,7 +347,9 @@ def register_new(ctx: IngestContext, entry: FileEntry, fingerprint: str) -> Regi
     )
     ctx.session.add(asset)
     probe_ok = probe_into(ctx, variant, entry.path, asset)
-    classification_changed = classify(ctx, asset, entry.relative_path)
+    classification_changed = classify(
+        ctx, asset, entry.relative_path, facet_assignments=facet_assignments
+    )
     return Registration(
         asset=asset,
         variant=variant,
@@ -338,6 +384,7 @@ def register_file(
     relative_path: str,
     *,
     asset_fields: Mapping[str, Any] | None = None,
+    facet_assignments: FacetAssignments | None = None,
 ) -> Registration:
     """Register one completed file at `relative_path` under `ctx.root` without a root scan.
 
@@ -348,6 +395,8 @@ def register_file(
       asset rediscovered if it was missing, and the thumbnail queued again.
 
     `asset_fields` are applied to the asset (new or reconciled) and must name real columns.
+    `facet_assignments` (uploads root) are the owner, product category and content type the
+    editor chose; they are stored as `upload` assignments instead of being read from folders.
     Flushes, never commits: the caller owns the transaction.
     """
     entry = stat_entry(ctx.binding, relative_path)
@@ -364,9 +413,11 @@ def register_file(
         fingerprint = fingerprint_entry(ctx, entry)
         if fingerprint is None:
             raise IngestFileError("File could not be read for fingerprinting")
-        registration = register_new(ctx, entry, fingerprint)
+        registration = register_new(ctx, entry, fingerprint, facet_assignments=facet_assignments)
     else:
-        registration = _reconcile_existing(ctx, existing, entry)
+        registration = _reconcile_existing(
+            ctx, existing, entry, facet_assignments=facet_assignments
+        )
     _apply_asset_fields(registration.asset, asset_fields)
     if registration.changed:
         queue_thumbnail(registration.asset)
@@ -375,7 +426,11 @@ def register_file(
 
 
 def _reconcile_existing(
-    ctx: IngestContext, variant: MediaFileVariant, entry: FileEntry
+    ctx: IngestContext,
+    variant: MediaFileVariant,
+    entry: FileEntry,
+    *,
+    facet_assignments: FacetAssignments | None = None,
 ) -> Registration:
     asset = variant.asset
     was_missing = variant.status == MediaVariantStatus.MISSING
@@ -405,7 +460,9 @@ def _reconcile_existing(
             # Same bytes, new stat (copied/touched): keep metadata, record the new stat.
             variant.file_size = entry.size
             variant.modified_at = mtime_from_ns(entry.mtime_ns)
-    classification_changed = classify(ctx, asset, entry.relative_path)
+    classification_changed = classify(
+        ctx, asset, entry.relative_path, facet_assignments=facet_assignments
+    )
     return Registration(
         asset=asset,
         variant=variant,
@@ -516,6 +573,7 @@ def find_duplicate(
 __all__ = [
     "DuplicateMatch",
     "ErrorSink",
+    "FacetAssignments",
     "FileEntry",
     "IngestContext",
     "IngestFileError",

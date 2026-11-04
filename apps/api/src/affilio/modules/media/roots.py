@@ -17,18 +17,23 @@ from sqlalchemy.orm import Session
 
 from affilio.core.config import Settings
 from affilio.core.enums import MediaRootAccess, MediaRootKind
-from affilio.modules.media.errors import InvalidMediaPathError
-from affilio.modules.media.models import MediaRoot
+from affilio.modules.media.errors import InvalidMediaPathError, MediaRootNotConfiguredError
+from affilio.modules.media.models import MediaFileVariant, MediaRoot
 
 ROOT_KEYS: dict[str, tuple[MediaRootKind, MediaRootAccess, str]] = {
     "originals": (MediaRootKind.ORIGINAL, MediaRootAccess.READ_ONLY, "Original videos"),
     "proxies": (MediaRootKind.PROXY, MediaRootAccess.READ_ONLY, "Proxy videos"),
-    "finals": (MediaRootKind.FINAL, MediaRootAccess.READ_ONLY, "Final videos (handoff)"),
+    "finals": (MediaRootKind.FINAL, MediaRootAccess.READ_ONLY, "Final videos (legacy, handoff)"),
+    "uploads": (MediaRootKind.UPLOAD, MediaRootAccess.READ_WRITE, "AFFILIO uploads (finals)"),
     "thumbnails": (MediaRootKind.THUMBNAIL, MediaRootAccess.READ_WRITE, "Generated thumbnails"),
     "exports": (MediaRootKind.EXPORT, MediaRootAccess.READ_WRITE, "Publish-ready exports"),
 }
 
 _MAX_RELATIVE_PATH = 1024
+# Roots whose files are finals (asset_kind final, handoff review). `finals` is the legacy tree
+# classified by its folders; `uploads` is application-managed and classified from the database.
+FINAL_KINDS: frozenset[MediaRootKind] = frozenset({MediaRootKind.FINAL, MediaRootKind.UPLOAD})
+# Only the legacy trees are walked by scans; the uploads root is written by the finalizer only.
 SCANNABLE_KINDS: frozenset[MediaRootKind] = frozenset({MediaRootKind.ORIGINAL, MediaRootKind.FINAL})
 # Keys a scan may target (`originals`, `finals`); proxies are variants, never scanned.
 SCANNABLE_ROOT_KEYS: tuple[str, ...] = tuple(
@@ -108,6 +113,7 @@ class MediaRootRegistry:
         originals: Path | None = None,
         proxies: Path | None = None,
         finals: Path | None = None,
+        uploads: Path | None = None,
         thumbnails: Path | None = None,
         exports: Path | None = None,
     ) -> MediaRootRegistry:
@@ -115,6 +121,7 @@ class MediaRootRegistry:
             "originals": originals,
             "proxies": proxies,
             "finals": finals,
+            "uploads": uploads,
             "thumbnails": thumbnails,
             "exports": exports,
         }
@@ -132,6 +139,7 @@ class MediaRootRegistry:
             originals=settings.media_originals_path,
             proxies=settings.media_proxies_path,
             finals=settings.media_finals_path,
+            uploads=settings.media_uploads_path,
             thumbnails=settings.media_thumbnails_path,
             exports=settings.media_exports_path,
         )
@@ -155,8 +163,31 @@ class MediaRootRegistry:
         return self._bindings.get("finals")
 
     @property
+    def uploads(self) -> RootBinding | None:
+        return self._bindings.get("uploads")
+
+    @property
     def thumbnails(self) -> RootBinding | None:
         return self._bindings.get("thumbnails")
+
+    # -- unified resolver (fast track F1) ------------------------------------------------
+    def binding_for(self, variant: MediaFileVariant) -> RootBinding | None:
+        """Binding of the root a stored variant belongs to, whatever its kind: a legacy final
+        under `finals`, an uploaded final under `uploads`, footage under `originals`, …"""
+        return self._bindings.get(variant.root.key)
+
+    def resolve_variant(self, variant: MediaFileVariant) -> Path:
+        """Absolute path of a stored variant through its root's traversal guard. Raises
+        `MediaRootNotConfiguredError` when that root has no path in this process, and
+        `InvalidMediaPathError` when the stored relative path would escape it. Every reader
+        of media bytes (previews, thumbnails, exports, publishing, duplicate confirmation)
+        goes through here, so both storage roots are served by one code path."""
+        binding = self.binding_for(variant)
+        if binding is None:
+            raise MediaRootNotConfiguredError(
+                f"Media root '{variant.root.key}' has no path configured in this process"
+            )
+        return binding.resolve(variant.relative_path)
 
     @property
     def exports(self) -> RootBinding | None:

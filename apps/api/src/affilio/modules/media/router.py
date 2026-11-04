@@ -27,9 +27,11 @@ from affilio.api.deps import (
 )
 from affilio.core.audit import record_audit
 from affilio.core.enums import (
+    CategoryFacet,
     CategorySuggestionStatus,
     ExportTrigger,
     HandoffStatus,
+    IngestSource,
     MediaAssetKind,
     MediaAssetStatus,
     MembershipRole,
@@ -39,11 +41,12 @@ from affilio.core.enums import (
 )
 from affilio.modules.media import classification, facets, owner_mappings, service, uploads
 from affilio.modules.media import exports as exports_module
-from affilio.modules.media.errors import UploadStorageUnavailableError
+from affilio.modules.media.errors import UploadForbiddenError, UploadStorageUnavailableError
 from affilio.modules.media.models import CategorySuggestion, FolderCategoryRule, MediaUpload
 from affilio.modules.media.schemas import (
     AssetCategoriesUpdate,
     AssetExportStatus,
+    AssetFacetsUpdate,
     CategoryCountEntry,
     CategorySuggestionResponse,
     CreateScanRequest,
@@ -118,6 +121,11 @@ def list_assets(
     category_id: uuid.UUID | None = None,
     uncategorized: bool = False,
     production_period: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}$")] = None,
+    production_owner_id: uuid.UUID | None = None,
+    product_category_id: uuid.UUID | None = None,
+    content_type_id: uuid.UUID | None = None,
+    ingest_source: IngestSource | None = None,
+    uploaded_by_user_id: uuid.UUID | None = None,
     sort: SortKey = "newest",
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=service.MAX_PAGE_SIZE)] = 24,
@@ -134,6 +142,11 @@ def list_assets(
         category_id=category_id,
         uncategorized=uncategorized,
         production_period=production_period,
+        production_owner_id=production_owner_id,
+        product_category_id=product_category_id,
+        content_type_id=content_type_id,
+        ingest_source=ingest_source,
+        uploaded_by_user_id=uploaded_by_user_id,
         sort=sort,
         page=page,
         page_size=page_size,
@@ -265,6 +278,28 @@ def review_handoff(
     asset = service.get_asset(session, organization.id, asset_id)
     return service.asset_detail(
         session, asset, thumbnail_url_prefix=_thumbnail_prefix(request, settings.api_v1_prefix)
+    )
+
+
+@router.get(
+    "/assets/{asset_id}/stream",
+    summary="Stream the asset's video for an in-browser preview (Range requests honoured)",
+    response_class=FileResponse,
+    responses={404: {"description": "No previewable file"}},
+)
+def stream_asset(
+    asset_id: uuid.UUID,
+    session: DbSession,
+    organization: CurrentOrganization,
+    registry: MediaRegistry,
+) -> Response:
+    # The variant and its root are chosen server-side; the client only names the asset id.
+    # Starlette's FileResponse answers `Range` requests with 206 and `Content-Range`.
+    path, media_type = service.preview_path(session, organization.id, asset_id, registry)
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers={"Cache-Control": "private, no-store", "Accept-Ranges": "bytes"},
     )
 
 
@@ -428,6 +463,69 @@ def set_asset_categories(
         entity_type="media_asset",
         entity_id=asset.id,
         data=body.model_dump(mode="json"),
+    )
+    session.commit()
+    asset = service.get_asset(session, identity.organization.id, asset_id)
+    return service.asset_detail(
+        session, asset, thumbnail_url_prefix=_thumbnail_prefix(request, settings.api_v1_prefix)
+    )
+
+
+@router.put(
+    "/assets/{asset_id}/facets",
+    response_model=MediaAssetDetail,
+    summary="Metadata-only reclassification of a final: owner, product category, content type",
+)
+def set_asset_facets(
+    asset_id: uuid.UUID,
+    body: AssetFacetsUpdate,
+    request: Request,
+    session: DbSession,
+    identity: RequireEditor,
+    settings: SettingsDep,
+) -> MediaAssetDetail:
+    """Admins reclassify any final. An editor may reclassify only finals they uploaded, and
+    may move them only to a production owner they are mapped to. The file never moves."""
+    changes = body.changes()
+    if not changes:
+        raise HandoffNotApplicableError("Name at least one facet to change")
+    asset = service.get_asset(session, identity.organization.id, asset_id)
+    if asset.asset_kind != MediaAssetKind.FINAL:
+        raise HandoffNotApplicableError("Only final videos are classified")
+    if not identity.has_role(MembershipRole.ADMIN):
+        if identity.user is None or asset.uploaded_by_user_id != identity.user.id:
+            raise UploadForbiddenError("You may only reclassify finals you uploaded")
+        owner_id = changes.get(CategoryFacet.PRODUCTION_OWNER)
+        if owner_id is not None:
+            allowed = {
+                c.id
+                for c in owner_mappings.submittable_owners(
+                    session, identity.organization.id, identity.user.id
+                )
+            }
+            if owner_id not in allowed:
+                raise UploadForbiddenError(
+                    "You are not mapped to that production owner",
+                    details={"production_owner_category_id": str(owner_id)},
+                )
+    before = {
+        c.facet.value: str(c.category_id)
+        for c in service.asset_summary(asset, thumbnail_url_prefix="").categories
+        if c.facet is not None
+    }
+    classification.set_facets(session, identity.organization.id, asset, changes=changes)
+    record_audit(
+        session,
+        organization_id=identity.organization.id,
+        identity=identity,
+        action="media.facets_reclassified",
+        entity_type="media_asset",
+        entity_id=asset.id,
+        data={
+            "before": before,
+            "after": {facet.value: str(category_id) for facet, category_id in changes.items()},
+            "ingest_source": asset.ingest_source.value,
+        },
     )
     session.commit()
     asset = service.get_asset(session, identity.organization.id, asset_id)
@@ -875,7 +973,10 @@ def _upload_response(
 
 
 def _staging(settings) -> StagingStore | None:
-    return StagingStore.for_api(settings.media_incoming_path)
+    staging = StagingStore.for_root(settings.media_uploads_path)
+    if staging is not None and not staging.available():
+        staging.ensure()  # `staging/` is the one directory the API may create
+    return staging
 
 
 @router.get(

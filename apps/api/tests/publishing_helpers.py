@@ -20,6 +20,9 @@ from tests.media_helpers import FakeProber, build_settings, write_bytes
 
 
 def scan_root(session: Session, organization_id, dirs, root_key: str) -> None:
+    # The worker scans with a fresh session; tests share one with earlier API calls, so drop
+    # cached rows first or the scanner would classify from a stale view of the assignments.
+    session.expire_all()
     job = enqueue_scan(
         session, organization_id, dirs.registry, root_key=root_key, trigger=ScanTrigger.CLI
     )

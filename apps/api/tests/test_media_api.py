@@ -57,7 +57,7 @@ def test_roots_report_configuration_without_paths(media_client: TestClient, medi
 
     assert response.status_code == 200
     roots = {r["key"]: r for r in response.json()}
-    assert set(roots) == {"originals", "proxies", "finals", "thumbnails", "exports"}
+    assert set(roots) == {"originals", "proxies", "finals", "uploads", "thumbnails", "exports"}
     assert roots["originals"]["configured"] and roots["originals"]["readable"]
     assert roots["originals"]["writable"] is False
     assert roots["thumbnails"]["writable"] is True
