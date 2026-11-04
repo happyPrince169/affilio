@@ -1,7 +1,9 @@
-# Editor uploads — production rollout (U7)
+# Editor uploads — production rollout (U7, then the fast track of 2026-11-04)
 
-Phase A (readiness audit, read-only) is done; Phase B (probe) and Phase C (deployment) each
-need explicit approval. Design: `docs/architecture/editor-uploads.md`, ADR 0012.
+Phases A, B1, B2B and B3.1 are done and recorded below. On 2026-11-04 the hard-link design
+was abandoned (ADR 0012 amendment 2): Phase F0 closes the B3.1B probe, Phase D is the new
+deployment plan, and the old Phase C and B3.2 are cancelled. Design:
+`docs/architecture/editor-uploads.md` (section 3b), ADR 0012.
 
 ## Preconditions found in Phase A
 
@@ -433,42 +435,178 @@ through its staging name.
 8. Report: probe exit code, every T8 line with its errno, the `inspect` listing, cleanup and
    restore results, verify result, B3.1 verdict.
 
-## Phase C — deployment sequence (needs approval; BLOCKED until Phase B3 passes)
+## Phase F0 — closing the B3.1B probe (prepared 2026-11-04; nothing executed)
 
-1. `pnpm nas:sync` (code only), then `pnpm nas:deploy check`.
-2. Backup: the deploy script takes `backups/pre-deploy-<ts>.dump`; keep the previous two.
-3. Compose (`infrastructure/docker/synology/docker-compose.yml`, on the NAS via sync):
-   - api: add bind `${AFFILIO_FINALS_HOST_PATH}/.affilio-incoming` → `/data/incoming` (rw)
-     and env `MEDIA_INCOMING_PATH=/data/incoming`;
-   - worker: `/media/finals` `read_only: false`, env `MEDIA_FINALS_WRITABLE=true`, and
-     `cap_drop: [ALL]` (the B2B probe ran that way; the compose file currently drops nothing);
-   - publisher, exporter, originals, proxies: unchanged (read-only).
-4. `.env`: `UPLOAD_*` only if the defaults need changing; `META_LIVE_PUBLISHING_ENABLED=false`
-   stays.
-5. `pnpm nas:deploy deploy`: builds images, runs migrations 0014–0017 on api start, restarts
-   api, worker, publisher, exporter, web. Expected downtime: the usual image swap.
-6. Health: `/api/v1/health` and `/system/info`; `alembic_version = 0017_upload_chunk_manifest`;
-   `GET /media/uploads/options` answers 200 for an editor; finals still `ro` in publisher and
-   exporter (`/proc/<pid>/mountinfo`); worker log shows `worker.started`.
-7. Smoke test: one short synthetic clip (ffmpeg, host) uploaded by a mapped editor through
-   `/uploads` on the public hostname; expect `processing` → `completed` within one poll
-   interval plus hashing; asset in the library with three path assignments, pending review;
-   `upload.completed` audit; staging copy removed; `/reports/production` shows it. Then the
-   same file again → `duplicate` with no asset and no file. Reviewer rejects the first,
-   editor submits a corrected version → revision link visible in the report.
-8. Keep or remove the smoke asset: decide before the test (removal is a scan-visible
-   deletion by the operator plus a `missing` asset row).
+Decision (fast track, 2026-11-04): the hard-link + Synology ACL approach is **stopped**. New
+uploads go to a dedicated, AFFILIO-managed root (`AFFILIO_UPLOADS`, ADR 0012 amendment 2);
+`FINAL` stays read-only everywhere. Phase B3.2 (72-folder ACL rollout) and Phase C as written
+above are **cancelled**. What remains of Phase B3 is the removal of the B3.1B probe leftovers and
+the restoration of the one ACL entry, which this section prepares.
+
+Recorded state on the NAS (from the B3.1B session notes; not re-verified from this session,
+which has no Tailscale route to the NAS):
+
+| Item | Value |
+| --- | --- |
+| Baseline directory (`B2B_DIR`) | `/volume1/docker/affilio/backups/b2b-20261030T115206Z` (identical in content to the B2B baseline `b2b-20261029T161154Z`; both are kept) |
+| Probe token | `20261030T121127Z-d601032c` (Step E was run; report `/tmp/affilio-b2b/probe-report-b3.txt`) |
+| ACL entry | `user:hoangtuhanhphuc:allow:-w-----------:----` at index 0 on `FINAL/Hang/Mens-Fashion/Try-On` (**still applied**) |
+| Protected file | `FINAL/Hang/Mens-Fashion/Try-On/.affilio-protected-20261030T120116Z-2b9b71ec.tmp`, inode 412199, owner `dangtung`, legacy ACL (recorded in the baseline manifest as `protected=`) |
+| Scripts | `/tmp/affilio-b2b/nas-b2b-host.sh`, `nas_finalize_probe.py` (checksums of commit 7a2e5f7), wrapper `run-b3-probe.sh` |
+
+### Disposable names the probe can have left (all derived from the token; nothing else)
+
+| Name | Where | Expected state under the `denied` contract | Inode relationship |
+| --- | --- | --- | --- |
+| `.affilio-probe-20261030T121127Z-d601032c.mp4` | type dir | present, nlink 1, 42-byte payload, owner service user | the inode created in staging by T1, re-inherited the type dir's ACL at T2 |
+| `probe-20261030T121127Z-d601032c/src.part` | `.affilio-incoming/` | absent (T5 unlinked it) | second name of the same inode while nlink was 2 |
+| `probe-20261030T121127Z-d601032c/` | `.affilio-incoming/` | absent (T7 `rmdir`) | — |
+| `probe-…/stolen` | `.affilio-incoming/` | absent (T4d refused) | would be a link to the protected inode 412199 |
+| `probe-…/relinked` | `.affilio-incoming/` | absent (T8i refused) | would be a link to the placed inode |
+| `.affilio-probe-…-link.mp4` | type dir | absent (T8h refused) | would be a link to the placed inode |
+| `.affilio-probe-…-renamed.mp4` | type dir | absent (T8j refused or reversed) | the placed inode under another name |
+| `.affilio-dir-20261030T121127Z-d601032c` | type dir | absent (T4e refused) | — |
+| `.affilio-protected-20261030T120116Z-2b9b71ec.tmp` | type dir | present (administrator-created, left for host cleanup) | inode 412199, nlink 1 |
+
+The probe report (`probe-report-b3.txt`, summary line `"leftovers"`) is the authoritative list
+for this token; the inventory below confirms it against the filesystem.
+
+### Inventory (read-only; run first, as the administrator identity over SSH)
+
+```
+export B2B_DIR=/volume1/docker/affilio/backups/b2b-20261030T115206Z
+export TOKEN=20261030T121127Z-d601032c
+F=/volume1/ContentFactory/fashion/FINAL; D=$F/Hang/Mens-Fashion/Try-On; S=$F/.affilio-incoming
+cd /tmp/affilio-b2b && sha256sum nas-b2b-host.sh nas_finalize_probe.py        # must match 7a2e5f7
+grep -E '"verdict"|"leftovers"|^(ok|FAIL|UNVERIFIED) ' probe-report-b3.txt     # probe outcome
+bash nas-b2b-host.sh preflight                                                 # entry present: 1 expected
+bash nas-b2b-host.sh inspect "$TOKEN"                                          # stat, SHA-256, ACL of every artefact
+find "$D" "$S" -maxdepth 2 -name '.affilio-*' -o -maxdepth 2 -name "probe-$TOKEN*" | sort
+for f in "$D"/.affilio-*; do stat -c '%n inode=%i nlink=%h size=%s owner=%U' -- "$f"; done
+find "$F" -xdev -inum "$(stat -c %i "$D/.affilio-probe-$TOKEN.mp4")"           # every name of the placed inode (expect exactly one)
+find "$F" -xdev -inum 412199                                                   # every name of the protected inode (expect exactly one)
+bash nas-b2b-host.sh verify     # PASS = the 92 legacy files unchanged (inode, nlink, size, mtime, ctime, ACL), only our entry differs
+wc -l "$B2B_DIR/listing.txt" "$B2B_DIR/acl-all.txt"                           # baseline sizes for the report (92 legacy files = 460 ACL lines in B2B)
+```
+
+`verify` already excludes `.affilio-probe-*`, `.affilio-protected-*`, `.affilio-dir-*` and
+the staging directory from both comparisons, so it answers the "92 legacy files unchanged"
+question directly while the artefacts still exist. Any `BLOCKED` line stops Phase F0 until it
+is explained; nothing below may run before `verify` prints `PASS`.
+
+### Review of the token-scoped cleanup (`nas-b2b-host.sh cleanup <token>`)
+
+- Removes only names built from the token and the manifest's `protected=` value, each with
+  `rm -- <exact path>` after `[ -f ] && [ ! -L ]`; a symlink or special file at one of those
+  names is reported and skipped (`rc=1`, `BLOCKED`), never followed.
+- Directories (`.affilio-dir-<token>`, `probe-<token>`) are removed with `rmdir` only, so a
+  non-empty directory stays and blocks the step. No recursion, no globbing, no `rm -r`.
+- Runs as the administrator identity: that is why it can remove the placed file the service
+  identity could not (T6 denied). It never opens or touches legacy media; the 92 files are
+  not named by any code path.
+- Token validation (`[A-Za-z0-9T-]` only) prevents a path from being smuggled in; a run
+  without a token handles only the protected file and says so.
+- `PASS cleanup` requires zero `.affilio-*` names in the type dir **and** an empty staging
+  directory, so an unrelated leftover would block instead of being deleted.
+- Gap found: none that affects this token. Note for the record: `cleanup` also removes
+  `<protected>.renamed` if present (T4f reversal failure), which is correct here.
+
+### Proposed cleanup and ACL restoration (NOT executed; separate approval required)
+
+```
+bash nas-b2b-host.sh cleanup "$TOKEN"            # PASS cleanup expected; otherwise stop and list leftovers
+bash nas-b2b-host.sh restore-acl                 # removes exactly one matching entry; PASS only when ACL == baseline
+bash nas-b2b-host.sh verify                      # PASS: listing and ACL dump equal the baseline everywhere
+find "$F" -name '.affilio-probe-*' -o -name '.affilio-protected-*' -o -name '.affilio-dir-*' | wc -l   # 0
+find "$S" -mindepth 1 | wc -l                                                              # 0
+ls -la "$D" | grep -c '^-'                        # legacy file count in Try-On unchanged (0 today)
+```
+
+Rollback of the restoration itself is `apply-acl` (same baseline); the baseline directories and
+the probe reports are kept indefinitely (`backups/` is protected from `nas:sync`).
+
+Optional, later and separately approved: `rmdir "$S"` once the new upload root is live and the
+directory is empty. Until then `.affilio-incoming` stays (hidden, dot-prefixed, skipped by scans).
+
+### Blockers for executing F0 from this session
+
+The NAS SSH alias (`leosunnas`, Tailscale) did not resolve from the environment that prepared
+this section, so the inventory above was not run and the recorded state is taken from the
+B3.1B session notes. Run the inventory first from a workstation with the Tailscale route; if
+`inspect` lists anything not in the table above, stop and record it before any cleanup.
+
+## Phase C (hard-link design) — CANCELLED 2026-11-04
+
+The sequence that used to stand here (API bind of `FINAL/.affilio-incoming`, worker with
+FINAL read-write, 72 ACL entries) is withdrawn with ADR 0012 amendment 2. It is replaced by
+Phase D below. The B3.2 ACL rollout is not performed.
+
+## Phase D — smallest safe NAS deployment of the two-root design (needs approval; nothing applied)
+
+Preconditions: Phase F0 finished (`verify` PASS, ACL back to baseline, no probe leftovers);
+local checks green at the approved commit; database backup by the deploy script.
+
+1. **One new directory tree, by an administrator (approval 1).** Outside `FINAL`, on the same
+   volume so no legacy path changes:
+
+   ```
+   sudo mkdir -p /volume1/ContentFactory/fashion/AFFILIO_UPLOADS/{staging,ready}
+   sudo chown -R 1026:100 /volume1/ContentFactory/fashion/AFFILIO_UPLOADS
+   sudo chmod 750 /volume1/ContentFactory/fashion/AFFILIO_UPLOADS /volume1/ContentFactory/fashion/AFFILIO_UPLOADS/{staging,ready}
+   ```
+
+   Nothing under `FINAL` is created, changed or removed; `.affilio-incoming` stays as it is
+   until its own removal is approved. No ACL command is run anywhere.
+
+2. **Compose and environment (approval 2, reviewed as a diff).** Source of truth stays
+   `infrastructure/docker/synology/docker-compose.yml`; the change is deliberately small:
+   - `.env`: `AFFILIO_UPLOADS_HOST_PATH=/volume1/ContentFactory/fashion/AFFILIO_UPLOADS`.
+   - shared media mounts (api, worker): add the bind `${AFFILIO_UPLOADS_HOST_PATH}` →
+     `/data/uploads` **read-only**; api additionally binds
+     `${AFFILIO_UPLOADS_HOST_PATH}/staging` → `/data/uploads/staging` read-write (nested
+     bind: the API can write chunks and nothing else); worker instead binds the whole root
+     read-write. Publisher and exporter: `/data/uploads` read-only.
+   - shared env: `MEDIA_UPLOADS_PATH=/data/uploads`; worker only:
+     `MEDIA_UPLOADS_WRITABLE=true`. `MEDIA_FINALS_PATH` stays `/media/finals`, read-only in
+     every service. `META_LIVE_PUBLISHING_ENABLED=false` stays.
+   - Simpler acceptable variant: api binds the whole root read-write and skips the nested
+     bind. Documented tradeoff: the internet-facing process could then write `ready/`.
+     Recommended: the nested bind.
+   - Optional hardening carried over from B2B: `cap_drop: [ALL]` on the worker.
+
+3. **Deploy.** `pnpm nas:sync`, `pnpm nas:deploy check`, `pnpm nas:deploy deploy` (migrations
+   0014–0018 run on API start). Rollback: `pnpm nas:deploy rollback` to the previous images
+   and `alembic downgrade 0013_facet_classification` (0018's downgrade is lossless for
+   assets; 0015/0014 drop upload sessions and mappings as before).
+
+4. **Post-deploy checks (read-only).** `/api/v1/health`; `alembic_version = 0018_upload_root`;
+   `GET /api/v1/media/roots` lists `uploads` configured, exists, readable and writable only
+   on the worker's view (the API reports `writable: false` for the root itself); `finals`
+   still read-only in every container (`/proc/<pid>/mountinfo`); worker log `worker.started`
+   with `uploads: true`; `GET /media/uploads/options` answers 200 for a mapped editor.
+
+5. **Pilot (approval 3).** One short synthetic clip uploaded by a mapped editor through the
+   public hostname: expect `processing` → `completed`; the asset in the library with owner,
+   product category and content type from the form (`upload` assignments), pending review,
+   preview playing in the browser, thumbnail rendered, `upload.completed` audit event with the
+   SHA-256, the file at `AFFILIO_UPLOADS/ready/<org>/<YYYY>/<MM>/<upload id>.mp4`, nothing
+   new under `FINAL`. Then: the same file again → `duplicate`, no file; a rejection and a
+   corrected submission → revision link in the report; an admin reclassification → database
+   change only, file untouched. Decide beforehand whether the pilot asset stays.
+
+6. **Later, separately approved.** `rmdir FINAL/.affilio-incoming` (empty, hidden); migration
+   of legacy finals into the new root is out of scope.
 
 ## What happens if placement succeeds but the database transaction fails
 
-The file is already linked under `FINAL/<Owner>/<Category>/<Type>/` and the staging copy
-still exists; the session row stays `finalizing` with its intent (`final_relative_path`,
-`verified_sha256`). Database rollback does **not** remove the file. Recovery: when the lease
-expires (10 min) the next worker claim resumes from the intent, verifies the placed file by
-size and SHA-256, registers it (or adopts a scan-registered asset after the same proof),
-commits, then removes the staging copy. If the database stays unavailable, a later scan may
-index the file first; the finalizer then adopts it rather than creating a second asset. In no
-case is the placed file deleted or overwritten by recovery.
+The file has been renamed to `ready/<org>/<YYYY>/<MM>/<upload id>.<ext>` (the staging name is
+gone in the same operation); the session row stays `finalizing` with its intent
+(`final_relative_path`, `verified_sha256`). Database rollback does **not** remove the file.
+Recovery: when the lease expires (10 min) the next worker claim resumes from the intent,
+verifies the placed file by size and SHA-256, registers it and commits. The uploads root is
+never scanned, so no other process can register the file first. In no case is the placed
+file deleted or overwritten by recovery; a hash mismatch fails the session as
+`destination_conflict` and leaves the occupant alone.
 
 ## Rollback
 
@@ -476,8 +614,8 @@ case is the placed file deleted or overwritten by recovery.
 | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Code       | `pnpm nas:deploy rollback` to the previous images (b16e8e2).                                                                                                                                                                 |
 | Database   | `alembic downgrade 0013_facet_classification` on the previous image, or restore `pre-deploy-<ts>.dump`. Downgrading drops upload sessions and owner mappings and the three asset attribution columns; assets and files stay. |
-| Mounts     | revert the compose changes and `up -d` api and worker; uploads then answer 503 and the finalizer is inert even before the revert takes effect.                                                                               |
-| Filesystem | files placed by uploads are ordinary finals: leave them. `FINAL/.affilio-incoming` may stay (hidden, ignored by scans) or be removed after confirming it holds no `.part` files. The ACL grant can be removed independently. |
+| Mounts     | revert the compose changes and `up -d`; without `MEDIA_UPLOADS_PATH` uploads answer 503 and the finalizer is inert even before the revert takes effect.                                                                      |
+| Filesystem | files under `AFFILIO_UPLOADS/ready` are registered finals: leave them (the downgrade keeps their rows). `FINAL` was never written. No ACL change exists to revert.                                                           |
 | Reports    | the report page needs 0015+; after a downgrade it answers with empty uploads but still lists historical finals.                                                                                                              |
 
 ## Resume identity after Phase A
