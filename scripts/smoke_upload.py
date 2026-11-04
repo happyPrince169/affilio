@@ -200,6 +200,18 @@ def main() -> int:
         print("     no separate editor account: the admin uploads (admin path, any owner)")
         editor = admin
 
+    # 0. storage roots as the API sees them (service token cannot reach this through the proxy)
+    status, roots = admin.json("GET", f"{API}/media/roots")
+    by_key = {r["key"]: r for r in roots} if status == 200 and isinstance(roots, list) else {}
+    rep.check("roots endpoint answers", status == 200 and bool(by_key), str(status))
+    if by_key:
+        for key in ("finals", "uploads"):
+            r = by_key.get(key, {})
+            print(f"     root {key}: kind={r.get('kind')} access={r.get('access')} configured={r.get('configured')} exists={r.get('exists')} readable={r.get('readable')} writable={r.get('writable')} scan={r.get('scan_enabled')}")
+        rep.check("legacy finals root read-only and not writable", by_key.get("finals", {}).get("access") == "read_only" and by_key.get("finals", {}).get("writable") is False)
+        rep.check("uploads root configured, present and readable", all(by_key.get("uploads", {}).get(k) for k in ("configured", "exists", "readable")))
+        rep.check("uploads root is not scanned", by_key.get("uploads", {}).get("scan_enabled") is False)
+
     status, options = editor.json("GET", f"{API}/media/uploads/options")
     if status != 200:
         rep.check("upload options", False, f"{status} {options}")
@@ -299,6 +311,18 @@ def main() -> int:
     rep.check("admin approved the corrected final", status == 200 and approved.get("handoff_status") == "approved", f"{status} {approved if status != 200 else ''}")
     status, export = admin.json("GET", f"{API}/media/assets/{new_id}/export")
     rep.check("export/publishing input resolves on the uploads root", status == 200 and export is not None and export.get("state") in {"not_needed", "not_generated", "ready", "queued", "processing"}, f"{status} {export}")
+
+    # 11. audit trail (admin)
+    status, events = admin.json("GET", f"{API}/auth/audit?limit=200")
+    if status == 200 and isinstance(events, list):
+        actions = {e["action"] for e in events if e.get("entity_id") in {first["id"], dup.get("id"), corrected["id"], asset_id, new_id}}
+        expected = {"upload.created", "upload.uploaded", "upload.completed", "upload.duplicate", "media.facets_reclassified"}
+        rep.check("audit events recorded for the run", expected <= actions, f"missing {sorted(expected - actions)}")
+        done = [e for e in events if e.get("action") == "upload.completed" and e.get("entity_id") == first["id"]]
+        rep.check("upload.completed audit carries the uploads root and the SHA-256",
+                  bool(done) and done[0]["data"].get("root_key") == "uploads" and done[0]["data"].get("verified_sha256") == first["_sha256"])
+    else:
+        print(f"     audit endpoint not readable ({status}); verify audit rows another way")
 
     print()
     print(json.dumps({
