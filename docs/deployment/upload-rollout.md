@@ -718,7 +718,8 @@ mapping needed); the WAF, cookie and CSRF settings were not changed.
 | Containers | api, worker, publisher, exporter, web running; health `ok` |
 
 Remaining acceptance checks that need a browser or an editor account (not covered by the
-driver): bulk drag-and-drop with two concurrent sessions and per-file progress; pause,
+driver; the full list and the automated local run are in
+`docs/operations/browser-acceptance-uploads.md`): bulk drag-and-drop with two concurrent sessions and per-file progress; pause,
 resume and reload recovery with file reselection; the preview playing in the browser (Range
 through the proxy); the "My uploads" view and "Submit corrected version" for an editor; an
 editor refused outside their mapped owners (needs an editor member plus an owner mapping);

@@ -140,9 +140,19 @@ U2–U6 writes to production.
   Browser-level acceptance (bulk queue, resume after reload, preview playback, editor
   account flows, report page) remains to be exercised by a person; see the rollout record.
 
+- W0/W1 (2026-11-04): browser acceptance of the editor and admin workflow run with headless
+  Chrome against a local stack (`scripts/browser_acceptance_uploads.js`, checklist in
+  `docs/operations/browser-acceptance-uploads.md`): bulk upload with two concurrent sessions,
+  pause/resume, cancel, reload recovery with reselection, thumbnails and in-page preview,
+  owner restrictions, rejection → corrected submission → approval, report attribution. Two
+  blockers found and fixed locally: files added to the queue were duplicated under React
+  StrictMode (impure state updater) and handoff decisions wrote no audit event. Not deployed.
+
 ## Acceptance criteria (whole track)
 
-- [ ] Editors upload many files at once with resumable progress and recover after a reload.
+- [x] Editors upload many files at once with resumable progress and recover after a reload
+      (headless-browser acceptance 2026-11-04; production browser run still to be done by a
+      person, see `docs/operations/browser-acceptance-uploads.md`).
 - [x] Every uploaded final is attributed to an owner and an uploader, classified like a
       scanned file, visible immediately, and enters handoff review (production smoke test
       2026-11-04).
