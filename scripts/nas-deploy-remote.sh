@@ -108,7 +108,7 @@ preflight() {
   perms="$(stat -c %a "$ENV_FILE" 2>/dev/null || echo '?')"
   [[ "$perms" == "600" ]] || log "warning: $ENV_FILE has mode $perms (recommended 600)"
   local var missing=()
-  for var in POSTGRES_PASSWORD MEDIA_ADMIN_TOKEN AFFILIO_ORIGINALS_HOST_PATH AFFILIO_PROXIES_HOST_PATH AFFILIO_FINALS_HOST_PATH AFFILIO_THUMBNAILS_HOST_PATH AFFILIO_EXPORTS_HOST_PATH AFFILIO_DATA_HOST_PATH; do
+  for var in POSTGRES_PASSWORD MEDIA_ADMIN_TOKEN AFFILIO_ORIGINALS_HOST_PATH AFFILIO_PROXIES_HOST_PATH AFFILIO_FINALS_HOST_PATH AFFILIO_UPLOADS_HOST_PATH AFFILIO_THUMBNAILS_HOST_PATH AFFILIO_EXPORTS_HOST_PATH AFFILIO_DATA_HOST_PATH; do
     [[ -n "$(env_value "$var")" ]] || missing+=("$var")
   done
   [[ ${#missing[@]} -eq 0 ]] || fail "unset in .env: ${missing[*]}"
@@ -129,6 +129,14 @@ preflight() {
   for var in AFFILIO_THUMBNAILS_HOST_PATH AFFILIO_EXPORTS_HOST_PATH AFFILIO_DATA_HOST_PATH; do
     [[ -d "$(env_value "$var")" ]] || fail "$var points to a missing folder: $(env_value "$var") (create it: sudo mkdir -p ... && sudo chown 1026:100 ...)"
   done
+  # Uploads root (ADR 0012 amendment 2): the root and both subfolders must exist before the
+  # nested bind mounts can be created; the api binds staging/ directly.
+  local uploads sub
+  uploads="$(env_value AFFILIO_UPLOADS_HOST_PATH)"
+  for sub in "" /staging /ready; do
+    [[ -d "$uploads$sub" && ! -L "$uploads$sub" ]] || fail "AFFILIO_UPLOADS_HOST_PATH$sub is missing or a symlink: $uploads$sub (create it: sudo mkdir -p $uploads/staging $uploads/ready && sudo chown -R 1026:100 $uploads && sudo chmod 750 $uploads $uploads/staging $uploads/ready)"
+  done
+  case "$uploads" in "$(env_value AFFILIO_FINALS_HOST_PATH)"|"$(env_value AFFILIO_FINALS_HOST_PATH)"/*) fail "AFFILIO_UPLOADS_HOST_PATH must not be inside the legacy FINAL tree" ;; esac
   STEP="compose-config"
   if [[ -x "$DOCKER_BIN" ]]; then
     compose_nosudo config -q || fail "docker compose config rejected the compose file / .env"

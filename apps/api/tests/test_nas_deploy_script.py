@@ -75,6 +75,8 @@ def project(tmp_path: Path) -> Path:
     shutil.copy(COMPOSE, compose_dir / "docker-compose.yml")
     for name in ("originals", "proxies", "finals", "thumbnails", "exports", "data"):
         (root / name).mkdir()
+    for name in ("uploads", "uploads/staging", "uploads/ready"):
+        (root / name).mkdir()
     env = compose_dir / ".env"
     env.write_text(
         "\n".join(
@@ -84,6 +86,7 @@ def project(tmp_path: Path) -> Path:
                 f"AFFILIO_ORIGINALS_HOST_PATH={root / 'originals'}",
                 f"AFFILIO_PROXIES_HOST_PATH={root / 'proxies'}",
                 f"AFFILIO_FINALS_HOST_PATH={root / 'finals'}",
+                f"AFFILIO_UPLOADS_HOST_PATH={root / 'uploads'}",
                 f"AFFILIO_THUMBNAILS_HOST_PATH={root / 'thumbnails'}",
                 f"AFFILIO_EXPORTS_HOST_PATH={root / 'exports'}",
                 f"AFFILIO_DATA_HOST_PATH={root / 'data'}",

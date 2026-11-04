@@ -533,11 +533,11 @@ Phase D below. The B3.2 ACL rollout is not performed.
 
 ## Phase D — smallest safe NAS deployment of the two-root design (runbook; needs approval, nothing applied)
 
-Reviewed 2026-11-04 (F3). Every repository-side change is in one patch,
-`docs/deployment/phase-d-uploads-root.patch` (compose, Synology `.env.example`, deploy-script
-checks and their test); it was rendered with `docker compose config` and its deploy-script test
-passed before it was saved. It is **not applied** to the compose file in the repository until
-Phase D is approved. No ACL command, hard link or probe is part of this plan.
+Reviewed 2026-11-04 (F3) and applied to the repository on 2026-11-04 (F4 checkpoint 1): the
+compose file, the Synology `.env.example`, the deploy-script checks and their test now carry
+the uploads root (the reviewed diff is preserved as `phase-d-uploads-root.patch` in commit
+`151e73b`). Rendered with `docker compose config`; deploy-script test green. Nothing is synced
+or deployed until Phase D is approved. No ACL command, hard link or probe is part of this plan.
 
 ### D.0 Prerequisites (all true before anything is changed)
 
@@ -564,10 +564,9 @@ removal is approved. No `synoacltool` call anywhere. Directory semantics: plain 
 mode bits are enough, because the service uid owns the tree; a DSM shared-folder ACL, if the
 volume applies one, inherits from the parent and is not edited.
 
-### D.2 Repository change (approval 2, reviewed as the patch)
+### D.2 Repository change (done locally at checkpoint 1; deploys with D.4)
 
-`git apply docs/deployment/phase-d-uploads-root.patch`, then run the deploy-script test and
-`docker compose config`, commit locally. What the patch does:
+What the change does:
 
 | Service   | `/media/finals` | `/data/uploads`                                  | env |
 | --------- | --------------- | ------------------------------------------------ | --- |

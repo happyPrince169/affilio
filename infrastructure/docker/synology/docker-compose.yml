@@ -66,6 +66,9 @@ x-api-env: &api-env
   MEDIA_ORIGINALS_PATH: /media/originals
   MEDIA_PROXIES_PATH: /media/proxies
   MEDIA_FINALS_PATH: /media/finals
+  # AFFILIO_UPLOADS root (ADR 0012 amendment 2): staging/ and ready/ live inside it. Every
+  # service reads it; only the worker finalizes (MEDIA_UPLOADS_WRITABLE on the worker).
+  MEDIA_UPLOADS_PATH: /data/uploads
   MEDIA_THUMBNAILS_PATH: /data/thumbnails
   MEDIA_EXPORTS_PATH: /data/exports
   MEDIA_PROXY_PATTERNS: ${MEDIA_PROXY_PATTERNS:-{stem}.mp4,{stem}_proxy.mp4,{name}.mp4,{stem}.mov}
@@ -79,25 +82,43 @@ x-api-env: &api-env
   MEDIA_SCAN_STALE_AFTER_SECONDS: ${MEDIA_SCAN_STALE_AFTER_SECONDS:-600}
   WORKER_POLL_INTERVAL_SECONDS: ${WORKER_POLL_INTERVAL_SECONDS:-5}
 
-x-media-mounts: &media-mounts
-  - type: bind
-    source: ${AFFILIO_ORIGINALS_HOST_PATH:?set AFFILIO_ORIGINALS_HOST_PATH}
-    target: /media/originals
-    read_only: true
-  - type: bind
-    source: ${AFFILIO_PROXIES_HOST_PATH:?set AFFILIO_PROXIES_HOST_PATH}
-    target: /media/proxies
-    read_only: true
-  - type: bind
-    source: ${AFFILIO_FINALS_HOST_PATH:?set AFFILIO_FINALS_HOST_PATH}
-    target: /media/finals
-    read_only: true
-  - type: bind
-    source: ${AFFILIO_THUMBNAILS_HOST_PATH:?set AFFILIO_THUMBNAILS_HOST_PATH}
-    target: /data/thumbnails
-  - type: bind
-    source: ${AFFILIO_EXPORTS_HOST_PATH:?set AFFILIO_EXPORTS_HOST_PATH}
-    target: /data/exports
+# Mounts shared by api and worker. Originals, proxies and the legacy FINAL tree are read-only
+# everywhere; thumbnails and exports are AFFILIO's own. The uploads root is added per service
+# below: the api sees it read-only with a nested read-write bind of staging/ (it can write
+# chunks and nothing else), the worker sees the whole root read-write (it finalizes).
+x-originals: &originals
+  type: bind
+  source: ${AFFILIO_ORIGINALS_HOST_PATH:?set AFFILIO_ORIGINALS_HOST_PATH}
+  target: /media/originals
+  read_only: true
+x-proxies: &proxies
+  type: bind
+  source: ${AFFILIO_PROXIES_HOST_PATH:?set AFFILIO_PROXIES_HOST_PATH}
+  target: /media/proxies
+  read_only: true
+x-finals: &finals
+  type: bind
+  source: ${AFFILIO_FINALS_HOST_PATH:?set AFFILIO_FINALS_HOST_PATH}
+  target: /media/finals
+  read_only: true
+x-thumbnails: &thumbnails
+  type: bind
+  source: ${AFFILIO_THUMBNAILS_HOST_PATH:?set AFFILIO_THUMBNAILS_HOST_PATH}
+  target: /data/thumbnails
+x-exports: &exports
+  type: bind
+  source: ${AFFILIO_EXPORTS_HOST_PATH:?set AFFILIO_EXPORTS_HOST_PATH}
+  target: /data/exports
+x-exports-ro: &exports-ro
+  type: bind
+  source: ${AFFILIO_EXPORTS_HOST_PATH:?set AFFILIO_EXPORTS_HOST_PATH}
+  target: /data/exports
+  read_only: true
+x-uploads-ro: &uploads-ro
+  type: bind
+  source: ${AFFILIO_UPLOADS_HOST_PATH:?set AFFILIO_UPLOADS_HOST_PATH}
+  target: /data/uploads
+  read_only: true
 
 services:
   postgres:
@@ -138,7 +159,17 @@ services:
       <<: *api-env
       RUN_MIGRATIONS_ON_START: "true"
       UVICORN_WORKERS: ${UVICORN_WORKERS:-1}
-    volumes: *media-mounts
+    volumes:
+      - *originals
+      - *proxies
+      - *finals
+      - *thumbnails
+      - *exports
+      # Uploads root read-only (previews), staging/ read-write on top of it (chunks).
+      - *uploads-ro
+      - type: bind
+        source: ${AFFILIO_UPLOADS_HOST_PATH:?set AFFILIO_UPLOADS_HOST_PATH}/staging
+        target: /data/uploads/staging
     depends_on:
       postgres:
         condition: service_healthy
@@ -156,7 +187,16 @@ services:
     command: ["worker"]
     environment:
       <<: *api-env
-    volumes: *media-mounts
+      MEDIA_UPLOADS_WRITABLE: "true" # the only process that finalizes uploads into ready/
+    volumes:
+      - *originals
+      - *proxies
+      - *finals
+      - *thumbnails
+      - *exports
+      - type: bind
+        source: ${AFFILIO_UPLOADS_HOST_PATH:?set AFFILIO_UPLOADS_HOST_PATH}
+        target: /data/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -181,18 +221,13 @@ services:
     command: ["publisher"]
     environment:
       <<: *api-env
-    # Finals and exports, both read-only (E2): the publisher streams either the final or its
-    # publish-ready export; it never touches originals, proxies or thumbnails and never
-    # transcodes.
+    # Finals (legacy and uploaded) and exports, all read-only (E2): the publisher streams
+    # either the final or its publish-ready export; it never touches originals, proxies or
+    # thumbnails and never transcodes.
     volumes:
-      - type: bind
-        source: ${AFFILIO_FINALS_HOST_PATH:?set AFFILIO_FINALS_HOST_PATH}
-        target: /media/finals
-        read_only: true
-      - type: bind
-        source: ${AFFILIO_EXPORTS_HOST_PATH:?set AFFILIO_EXPORTS_HOST_PATH}
-        target: /data/exports
-        read_only: true
+      - *finals
+      - *uploads-ro
+      - *exports-ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -222,13 +257,9 @@ services:
     environment:
       <<: *api-env
     volumes:
-      - type: bind
-        source: ${AFFILIO_FINALS_HOST_PATH:?set AFFILIO_FINALS_HOST_PATH}
-        target: /media/finals
-        read_only: true
-      - type: bind
-        source: ${AFFILIO_EXPORTS_HOST_PATH:?set AFFILIO_EXPORTS_HOST_PATH}
-        target: /data/exports
+      - *finals
+      - *uploads-ro
+      - *exports
     depends_on:
       postgres:
         condition: service_healthy
