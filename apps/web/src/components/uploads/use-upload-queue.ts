@@ -318,72 +318,75 @@ export function useUploadQueue(options: UploadOptions | undefined): UseUploadQue
       let mismatched = 0;
       const fresh: QueueItem[] = [];
       const pendingVerifications: Array<Promise<void>> = [];
-      setItems((prev) => {
-        const next = [...prev];
-        for (const file of files) {
-          if (!isVideoFile(file.name, allowed)) {
-            skipped += 1;
-            continue;
-          }
-          const candidate = next.find(
-            (i) =>
-              i.state === "needs_file" &&
-              i.uploadId &&
-              matchesSession(file, {
-                uploadId: i.uploadId,
-                name: i.name,
-                size: i.size,
-                lastModified: i.lastModified,
-              }),
-          );
-          if (candidate) {
-            const localId = candidate.localId;
-            pendingVerifications.push(
-              (async () => {
-                const manifest = await fetchUploadManifest(candidate.uploadId as string);
-                const identity = await verifyResumeIdentity(file, manifest);
-                if (identity.ok) {
-                  resumed += 1;
-                  patch(localId, {
-                    file,
-                    lastModified: file.lastModified,
-                    state: "queued",
-                    offset: identity.offset,
-                    error: null,
-                  });
-                } else {
-                  mismatched += 1;
-                  patch(localId, {
-                    error:
-                      identity.reason === "chunk_mismatch"
-                        ? "This is not the same file as the interrupted upload; select the original file"
-                        : identity.reason === "size_mismatch"
-                          ? "File size differs from the interrupted upload"
-                          : "The server's record of this upload is incomplete; cancel it and upload again",
-                  });
-                }
-              })(),
-            );
-            continue;
-          }
-          const item = itemFromFile(file);
-          if (correction) {
-            item.replacesAssetId = correction.replacesAssetId;
-            item.override = {
-              productCategoryId: correction.productCategoryId,
-              contentTypeId: correction.contentTypeId,
-            };
-          }
-          fresh.push(item);
-          added += 1;
+      // Decide everything against the rendered snapshot, then apply one pure update: a state
+      // updater may be invoked twice by React, which used to add every file twice.
+      const current = items;
+      const claimed = new Set<string>();
+      for (const file of files) {
+        if (!isVideoFile(file.name, allowed)) {
+          skipped += 1;
+          continue;
         }
-        return [...next, ...fresh];
-      });
+        const candidate = current.find(
+          (i) =>
+            i.state === "needs_file" &&
+            i.uploadId &&
+            !claimed.has(i.localId) &&
+            matchesSession(file, {
+              uploadId: i.uploadId,
+              name: i.name,
+              size: i.size,
+              lastModified: i.lastModified,
+            }),
+        );
+        if (candidate) {
+          claimed.add(candidate.localId);
+          const localId = candidate.localId;
+          pendingVerifications.push(
+            (async () => {
+              const manifest = await fetchUploadManifest(candidate.uploadId as string);
+              const identity = await verifyResumeIdentity(file, manifest);
+              if (identity.ok) {
+                resumed += 1;
+                patch(localId, {
+                  file,
+                  lastModified: file.lastModified,
+                  state: "queued",
+                  offset: identity.offset,
+                  error: null,
+                });
+              } else {
+                mismatched += 1;
+                patch(localId, {
+                  error:
+                    identity.reason === "chunk_mismatch"
+                      ? "This is not the same file as the interrupted upload; select the original file"
+                      : identity.reason === "size_mismatch"
+                        ? "File size differs from the interrupted upload"
+                        : "The server's record of this upload is incomplete; cancel it and upload again",
+                });
+              }
+            })(),
+          );
+          continue;
+        }
+        const item = itemFromFile(file);
+        if (correction) {
+          item.replacesAssetId = correction.replacesAssetId;
+          item.override = {
+            productCategoryId: correction.productCategoryId,
+            contentTypeId: correction.contentTypeId,
+          };
+        }
+        fresh.push(item);
+        added += 1;
+      }
+      if (fresh.length) setItems((prev) => [...prev, ...fresh]);
       if (correction && added > 0) setCorrection(null);
       void Promise.all(pendingVerifications);
       return { added, resumed, skipped, mismatched };
     },
-    [options, correction, patch],
+    [items, options, correction, patch],
   );
 
   const setOverride = useCallback(

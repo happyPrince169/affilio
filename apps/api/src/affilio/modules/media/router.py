@@ -273,7 +273,31 @@ def review_handoff(
     settings: SettingsDep,
     identity: RequireAdmin,
 ) -> MediaAssetDetail:
-    service.review_handoff(session, organization.id, asset_id, body, actor=identity.label)
+    previous = service.get_asset(session, organization.id, asset_id).handoff_status
+    asset = service.review_handoff(session, organization.id, asset_id, body, actor=identity.label)
+    # Every review decision is audited (W1): who decided what, from which state, with the
+    # note the decision was made with. The note is the reviewer's own text, as shown to the
+    # editor in "My uploads".
+    record_audit(
+        session,
+        organization_id=organization.id,
+        identity=identity,
+        action=f"media.handoff_{body.status.value}",
+        entity_type="media_asset",
+        entity_id=asset.id,
+        data={
+            "status": body.status.value,
+            "previous_status": previous.value if previous else None,
+            "note": asset.handoff_note,
+            "ingest_source": asset.ingest_source.value,
+            "uploaded_by_user_id": (
+                str(asset.uploaded_by_user_id) if asset.uploaded_by_user_id else None
+            ),
+            "revision_of_asset_id": (
+                str(asset.revision_of_asset_id) if asset.revision_of_asset_id else None
+            ),
+        },
+    )
     session.commit()
     asset = service.get_asset(session, organization.id, asset_id)
     return service.asset_detail(

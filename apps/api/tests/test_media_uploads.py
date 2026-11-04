@@ -1441,3 +1441,56 @@ def test_reclassification_is_metadata_only_and_authorized(
         False,
     )
     assert legacy.read_bytes() == payload(4_000, seed=101)
+
+
+def test_handoff_decisions_are_audited(
+    api: TestClient, world: dict, db_session: Session, organization, media_dirs
+) -> None:
+    """W1: approve, reject and back-to-pending each write an audit event with the previous
+    state, the note and the uploader; a refused attempt writes nothing."""
+    login(api, world["editor"])
+    upload, _ = _uploaded(api, world, seed=110, name="review-me.mp4")
+    assert finalizer(db_session, media_dirs).run_next().status == UploadStatus.COMPLETED
+    asset_id = row(upload).media_asset_id
+    url = f"/api/v1/media/assets/{asset_id}/handoff"
+    assert api.post(url, json={"status": "approved", "note": "editor cannot"}).status_code == 403
+
+    login(api, world["admin"])
+    assert api.post(url, json={"status": "rejected", "note": ""}).status_code == 422
+    assert api.post(url, json={"status": "rejected", "note": "wrong LUT"}).status_code == 200
+    assert api.post(url, json={"status": "pending_review"}).status_code == 200
+    assert api.post(url, json={"status": "approved", "note": "fixed"}).status_code == 200
+
+    db_session.expire_all()
+    events = list(
+        db_session.scalars(
+            select(AuditEvent)
+            .where(AuditEvent.entity_id == asset_id, AuditEvent.action.like("media.handoff_%"))
+            .order_by(AuditEvent.created_at, AuditEvent.id)
+        )
+    )
+    assert [e.action for e in events] == [
+        "media.handoff_rejected",
+        "media.handoff_pending_review",
+        "media.handoff_approved",
+    ]
+    rejected, pending, approved = events
+    assert rejected.actor_user_id == world["admin"].id and rejected.actor_kind.value == "user"
+    assert rejected.data["previous_status"] == "pending_review"
+    assert rejected.data["note"] == "wrong LUT"
+    assert rejected.data["uploaded_by_user_id"] == str(world["editor"].id)
+    assert rejected.data["ingest_source"] == "upload"
+    assert pending.data["previous_status"] == "rejected" and pending.data["note"] is None
+    assert approved.data["previous_status"] == "pending_review"
+    assert approved.data["note"] == "fixed"
+    # The refused editor attempt and the validation failure left no trace.
+    assert (
+        db_session.scalar(
+            select(func.count()).where(
+                AuditEvent.entity_id == asset_id,
+                AuditEvent.actor_user_id == world["editor"].id,
+                AuditEvent.action.like("media.handoff_%"),
+            )
+        )
+        == 0
+    )
