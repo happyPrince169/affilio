@@ -693,6 +693,39 @@ picks owner / product category / content type, uploads `smoke-affilio.mp4`; expe
 6. Admin approves the corrected final → the publishing media check on its page resolves the
    `uploads` root; no job is created and the live flag stays false.
 
+### D.6 result — production smoke test executed 2026-11-04 07:58Z (PASS)
+
+Deployed 2026-11-04 06:55Z: revision `7e25b6a`, images `affilio-api@9677dec501d9`,
+`affilio-web@9431f49c16fe`, pre-deploy dump `pre-deploy-20261104-135042.dump`, database at
+`0018_upload_root`. Cloudflare's browser-integrity check (error 1010) rejects the driver's
+`urllib` signature on the public hostname and the NAS `sshd` refuses TCP forwarding, so the
+driver ran on the NAS itself against `http://192.168.1.3:3080` (report
+`/tmp/affilio-smoke/smoke-report-20261104T075820Z.txt`, 40 `ok` lines, `failed_checks: 0`).
+Only the admin account exists in production, so the admin path was exercised (no owner
+mapping needed); the WAF, cookie and CSRF settings were not changed.
+
+| Check | Evidence (read-only, 2026-11-04 08:01Z) |
+| --- | --- |
+| Files | `ready/eec59069…/2026/11/2772948f….mp4` (59 777 B) and `…/1e5d005e….mp4` (75 986 B), mode 640, nlink 1; SHA-256 `d8436de3…71d4d5` and `f3b47221…653659` equal to the clips |
+| Staging | 0 files (the organization subdirectory remains, empty) |
+| Sessions | `2772948f` completed → asset `2bd9b605`; `98263b53` duplicate of `2bd9b605`, no asset, no file; `1e5d005e` completed → asset `2a6c386e`, `replaces_asset_id = 2bd9b605`; one finalize attempt each |
+| Assets | `2bd9b605` rejected ("smoke test: please re-export"), `2a6c386e` approved, `revision_of_asset_id = 2bd9b605`, both `ingest_source = upload`, period 2026-11, thumbnails ready, variants on root `uploads` with stored content hashes |
+| Classification | `upload` rows: owner hang / accessories (primary) / comparison; corrected asset reclassified to owner hao, file path unchanged |
+| Audit | `upload.created`, `upload.uploaded`, `upload.completed` (`root_key: uploads`), `upload.duplicate`, `media.facets_reclassified`; the handoff endpoint records no audit event (pre-existing, see "remaining") |
+| Library | 168 assets, 94 finals = 92 legacy on `finals` + 2 on `uploads`; `uploads` root row kind `upload`, read-write, not scanned |
+| Legacy | 92 files, FINAL identical to the pre-D.1 listing; B2B baseline `verify` PASS |
+| Publishing | `META_LIVE_PUBLISHING_ENABLED=false` in `.env` and the api environment; 0 publication jobs, 0 publication uploads; export state `not_needed` for the approved final |
+| Containers | api, worker, publisher, exporter, web running; health `ok` |
+
+Remaining acceptance checks that need a browser or an editor account (not covered by the
+driver): bulk drag-and-drop with two concurrent sessions and per-file progress; pause,
+resume and reload recovery with file reselection; the preview playing in the browser (Range
+through the proxy); the "My uploads" view and "Submit corrected version" for an editor; an
+editor refused outside their mapped owners (needs an editor member plus an owner mapping);
+the production report page showing the smoke submissions; the handoff review UI. Smoke
+assets are kept (approved corrected final, rejected original); remove them later only by an
+approved operator action.
+
 ### D.7 Rollback (order matters)
 
 The previous image (`b16e8e2`) runs `alembic upgrade head` on start and knows nothing about

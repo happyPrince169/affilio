@@ -135,16 +135,24 @@ U2–U6 writes to production.
   legacy read-only guard with 0555 directories, static no-write guard, resolver, stream and
   ranges, publishing input, thumbnail from the uploads root, filters, reclassification).
 
+- F4 (2026-11-04): Phase D deployed to the NAS (`7e25b6a`, migration 0018, uploads root
+  mounted per the runbook) and the production smoke test passed through the API (40 checks).
+  Browser-level acceptance (bulk queue, resume after reload, preview playback, editor
+  account flows, report page) remains to be exercised by a person; see the rollout record.
+
 ## Acceptance criteria (whole track)
 
 - [ ] Editors upload many files at once with resumable progress and recover after a reload.
-- [ ] Every uploaded final is attributed to an owner and an uploader, classified like a
-      scanned file, visible immediately, and enters handoff review.
-- [ ] Duplicate content never creates a second asset or file; legacy files are never touched.
+- [x] Every uploaded final is attributed to an owner and an uploader, classified like a
+      scanned file, visible immediately, and enters handoff review (production smoke test
+      2026-11-04).
+- [x] Duplicate content never creates a second asset or file; legacy files are never touched
+      (production smoke test 2026-11-04; 92 legacy files verified unchanged).
 - [ ] Crashes at any finalization boundary are recovered without loss or duplication.
 - [ ] Reports distinguish submitted, approved and corrected work per owner and uploader.
-- [ ] Only the API's `uploads/staging` bind and the worker's `uploads` mount are writable;
-      legacy finals, originals and proxies stay read-only in every container.
+- [x] Only the API's `uploads/staging` bind and the worker's `uploads` mount are writable;
+      legacy finals, originals and proxies stay read-only in every container (verified from
+      `/proc/<pid>/mountinfo` after the 2026-11-04 deploy).
 
 ## Operational notes for U5 and U7
 

@@ -4,7 +4,8 @@
   2026-10-30 after the U7 Phase B2B probe; **amended 2026-11-04 (amendment 2, fast track):
   placement into FINAL by hard link is abandoned in favour of a dedicated, AFFILIO-managed
   upload root.** Decisions 1 and 3 and the 2026-10-30 amendment are superseded where they
-  describe writing into FINAL; everything else stands. Not deployed.
+  describe writing into FINAL; everything else stands. **Deployed to production 2026-11-04**
+  (revision `7e25b6a`, migration 0018); production smoke test passed the same day.
 - **Context:** Finished videos reach AFFILIO today by editors copying files onto the NAS share
   under `FINAL/{Owner}/{ProductCategory}/{ContentType}/` and an admin running a finals scan.
   Editors must know the folder convention, the scan is whole-root and admin-only, and nothing
