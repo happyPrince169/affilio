@@ -118,6 +118,21 @@ def _libc_renameat2():
 
 
 _RENAMEAT2 = _libc_renameat2()
+# errno values after which the exclusive-reservation fallback is used: the flag is unknown to
+# the kernel or filesystem, or the syscall is filtered (seccomp answers EPERM).
+_FALLBACK_ERRNOS = frozenset(
+    {errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EPERM}
+)
+
+
+def _try_renameat2(src: Path, dst_dir_fd: int, dst_name: str) -> int:
+    """0 on success, else the errno; `errno.ENOSYS` when libc has no `renameat2`."""
+    if _RENAMEAT2 is None:
+        return errno.ENOSYS
+    rc = _RENAMEAT2(
+        _AT_FDCWD, os.fsencode(src), dst_dir_fd, os.fsencode(dst_name), RENAME_NOREPLACE
+    )
+    return 0 if rc == 0 else ctypes.get_errno()
 
 
 def rename_noreplace(
@@ -131,16 +146,13 @@ def rename_noreplace(
     reserved with an exclusive create, then the staged file is renamed over that reservation,
     so the only entry ever replaced is the empty file this call created a moment earlier.
     Returns the strategy used ("renameat2" or "reserve") for diagnostics and tests."""
-    if use_renameat2 and _RENAMEAT2 is not None:
-        rc = _RENAMEAT2(
-            _AT_FDCWD, os.fsencode(src), dst_dir_fd, os.fsencode(dst_name), RENAME_NOREPLACE
-        )
-        if rc == 0:
+    if use_renameat2:
+        err = _try_renameat2(src, dst_dir_fd, dst_name)
+        if err == 0:
             return "renameat2"
-        err = ctypes.get_errno()
         if err == errno.EEXIST:
             raise FileExistsError(err, os.strerror(err), dst_name)
-        if err not in (errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP):
+        if err not in _FALLBACK_ERRNOS:
             raise OSError(err, os.strerror(err), str(src))
     # Fallback: exclusive reservation, then rename over our own reservation only.
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
@@ -198,7 +210,12 @@ class StagingStore:
         parent = self.root.parent
         if parent.is_symlink() or not parent.is_dir() or self.root.is_symlink():
             return
-        self.root.mkdir(mode=DIR_MODE, exist_ok=True)
+        try:
+            self.root.mkdir(mode=DIR_MODE, exist_ok=True)
+        except OSError:
+            # Read-only or foreign root (e.g. the API's read-only bind without a staging
+            # subdirectory): stay unavailable, the routes answer 503 instead of failing.
+            return
 
     def org_dir(self, organization_id: uuid.UUID) -> Path:
         return self.root / str(organization_id)

@@ -373,7 +373,13 @@ class Finalizer:
         uploads_path: Path,
     ) -> None:
         try:
-            ReadyStore.place(staging_path, dir_fd, filename)
+            strategy = ReadyStore.place(staging_path, dir_fd, filename)
+            log.info(
+                "media.upload.placed",
+                upload_id=str(upload.id),
+                strategy=strategy,
+                final_relative_path=upload.final_relative_path,
+            )
         except FileExistsError:
             try:
                 existing = ReadyStore.stat_entry(dir_fd, filename)

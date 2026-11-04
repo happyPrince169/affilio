@@ -41,6 +41,7 @@ from affilio.modules.media.thumbnails import ThumbnailGenerator
 from affilio.modules.media.upload_finalize import Finalizer, expire_and_clean
 from affilio.modules.media.upload_storage import (
     ReadyStore,
+    StagingStore,
     StorageError,
     physical_name,
     rename_noreplace,
@@ -314,6 +315,61 @@ def test_rename_noreplace_never_replaces_an_existing_name(
         assert not (dest_dir / "b.mp4").exists()
     finally:
         os.close(fd)
+
+
+def test_rename_noreplace_falls_back_when_the_syscall_is_filtered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A seccomp filter answers EPERM, an older kernel ENOSYS/EINVAL: the reservation
+    strategy takes over transparently and still never replaces an existing name."""
+    import errno as errno_module
+
+    for code in (errno_module.EPERM, errno_module.ENOSYS, errno_module.EINVAL):
+        monkeypatch.setattr(upload_storage, "_try_renameat2", lambda *a, _c=code: _c)
+        src = tmp_path / f"src-{code}.part"
+        src.write_bytes(b"bytes")
+        dest_dir = tmp_path / f"ready-{code}"
+        dest_dir.mkdir()
+        fd = os.open(dest_dir, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            assert rename_noreplace(src, fd, "a.mp4") == "reserve"
+            assert (dest_dir / "a.mp4").read_bytes() == b"bytes" and not src.exists()
+            src.write_bytes(b"other")
+            with pytest.raises(FileExistsError):
+                rename_noreplace(src, fd, "a.mp4")
+            assert (dest_dir / "a.mp4").read_bytes() == b"bytes"
+        finally:
+            os.close(fd)
+    # Any other errno is a real error, not a reason to fall back.
+    monkeypatch.setattr(upload_storage, "_try_renameat2", lambda *a: errno_module.EIO)
+    src = tmp_path / "io.part"
+    src.write_bytes(b"x")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(OSError) as excinfo:
+            rename_noreplace(src, fd, "io.mp4")
+        assert excinfo.value.errno == errno_module.EIO and not (tmp_path / "io.mp4").exists()
+    finally:
+        os.close(fd)
+
+
+def test_staging_store_stays_unavailable_on_a_read_only_root(tmp_path: Path) -> None:
+    """The API's uploads bind may be read-only (nested writable staging bind missing):
+    `ensure()` must not raise, and the store reports itself unavailable (routes → 503)."""
+    root = tmp_path / "uploads"
+    root.mkdir()
+    store = StagingStore.for_root(root)
+    assert store is not None
+    if can_test_permissions():
+        root.chmod(0o555)
+        try:
+            store.ensure()
+            assert not store.available()
+        finally:
+            root.chmod(0o750)
+    store.ensure()
+    assert store.available() and (root / "staging").is_dir()
+    assert StagingStore.for_root(None) is None
 
 
 def test_ready_store_walks_without_following_symlinks(tmp_path: Path) -> None:
