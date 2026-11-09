@@ -26,7 +26,7 @@ identity → accounts → media → products → procurement → production → 
 
 | Module       | Owns                                                        | May depend on                     | Milestone |
 | ------------ | ----------------------------------------------------------- | --------------------------------- | --------- |
-| `identity`   | organizations, users, memberships, auth, RBAC               | core, db                          | M0 tables; auth later |
+| `identity`   | organizations, users, memberships, auth, RBAC, integration API keys (ADR 0013) | core, db           | M0 tables; auth M3A; keys M3.2-B.2 |
 | `accounts`   | social/marketplace accounts, (later) encrypted credentials  | identity                          | M0 table; connect flows M3 |
 | `media`      | logical roots, scanner, ffprobe, thumbnails, scan jobs      | identity                          | **M1 ✓** (tags later) |
 | `products`   | product catalog, research lifecycle, product↔media mapping  | identity, media                   | **M2 ✓** |
@@ -71,10 +71,14 @@ modules/media/
 
 ```
 modules/products/
-├── models.py     Product, ProductStatusEvent, ProductMediaLink
-├── schemas.py    create/update/status/link schemas + responses (mirrored in shared-types)
+├── models.py     Product, ProductStatusEvent, ProductMediaLink, ProductImport,
+│                 ProductIngestBatch, ProductIngestItem
+├── schemas.py    create/update/status/link/import/ingest schemas (mirrored in shared-types)
 ├── urls.py       http(s)-only validation + normalization for duplicate detection
 ├── lifecycle.py  ALLOWED_TRANSITIONS, HUMAN_CONFIRMATION_REQUIRED (WINNER)
+├── imports.py    MeoScout CSV import: parse → map → plan → apply (M2B)
+├── ingest.py     MeoScout JSON ingest (M3.2-B.2 P1): envelope/body bounds, rate limit, batch
+│                 idempotency, identity matching, ownership rules, stored per-item results
 ├── service.py    organization-scoped CRUD, transitions, linking (uses media.service for assets)
 ├── errors.py     duplicate_product, invalid_status_transition, winner_confirmation_required, …
 └── router.py     /api/v1/products/*

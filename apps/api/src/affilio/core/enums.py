@@ -382,3 +382,20 @@ class ChannelMatchPolicy(StrEnum):
     ALLOW = "allow"
     PREFER = "prefer"
     BLOCK = "block"
+
+
+class IngestBatchStatus(StrEnum):
+    """One MeoScout → AFFILIO ingest batch (`product_ingest_batches`, M3.2-B.2 P1)."""
+
+    COMPLETED = "completed"
+    FAILED = "failed"  # processing raised; the row keeps the error and a retry re-runs it
+
+
+class IngestItemStatus(StrEnum):
+    """Per-candidate outcome of an ingest batch. Mirrors the API contract verbatim."""
+
+    CREATED = "created"
+    UPDATED = "updated"
+    UNCHANGED = "unchanged"
+    CONFLICT = "conflict"
+    REJECTED = "rejected"

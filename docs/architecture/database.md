@@ -451,6 +451,35 @@ new values into the legacy ones (`upload` kind → `final`, `upload` source → 
 `override` → `manual`) and
 restores the previous constraints, so no asset, file row or assignment is lost.
 
+## Integration keys and MeoScout ingestion (migration `0019_product_ingest`)
+
+ADR 0013 / M3.2-B.2 P1. A scoped machine credential and the idempotent record of each
+server-to-server product handoff.
+
+```
+integration_api_keys (identity)                 product_ingest_batches (products)
+  id, organization_id FK CASCADE                  id, organization_id FK CASCADE
+  name, prefix (first 12 chars of the secret)     batch_id; UNIQUE (organization_id, batch_id)
+  key_hash UNIQUE (sha256 of the secret)          contract, contract_version, payload_sha256
+  scopes jsonb ["products:ingest"]                source jsonb, on_conflict keep|replace
+  created_by_user_id FK SET NULL                  status completed|failed, error (redacted)
+  expires_at, last_used_at                        item_count, created/updated/unchanged/
+  revoked_at, revoked_by_user_id FK SET NULL        conflict/rejected counts
+  rotated_from_key_id FK self SET NULL            api_key_id FK integration_api_keys SET NULL
+  created_at                                      actor, request_id, sent_at, completed_at,
+  ix (organization_id, created_at)                  created_at; ix (organization_id, created_at)
+
+product_ingest_items                            products += ingest_batch_id FK
+  id, ingest_batch_id FK CASCADE, organization_id   product_ingest_batches SET NULL
+  position, client_ref; UNIQUE (batch, client_ref)  (the batch that created the row; parallel
+  status created|updated|unchanged|conflict|rejected   to import_id)
+  code, reason, product_id FK products SET NULL
+  changed_fields jsonb, conflicts jsonb, evidence jsonb, created_at; ix (product_id)
+```
+
+The downgrade drops the three tables and the column; ingested products stay in the catalog
+(`source=meoscout`, `source_ref=client_ref`) and every integration key stops working.
+
 ## Growth plan (not implemented)
 
 | Milestone  | Tables (indicative)                                                                                            |

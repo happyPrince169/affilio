@@ -133,13 +133,99 @@ Organization-scoped like media. Writes (`POST`/`PATCH`/`DELETE`) require the `ed
 | POST | `/api/v1/media/assets/{id}/handoff` | `{status: approved\|rejected\|pending_review, note?}` for `asset_kind = final` only; approve/reject need a note |
 | GET | `/api/v1/media/assets?asset_kind=final&handoff_status=pending_review` | Handoff queue |
 
+## MeoScout product ingestion and integration keys (M3.2-B.2 P1, ADR 0013)
+
+Server-to-server entry point for approved MeoScout candidates. Authentication is an
+**integration key** sent as `Authorization: Bearer afk_…` (44 characters). A key is bound to
+one organization (`X-Organization-Slug` is ignored), carries scopes, and may only call the
+three routes below; anything else is 403 `integration_scope_denied`. Signed-in editors may
+also call the ingest routes (same rules, audited under their email). The service token cannot.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| POST | `/api/v1/products/ingest` | Key with scope `products:ingest` (or editor). JSON ≤ `INGEST_MAX_BODY_BYTES` (1 MiB), 1–200 items. Always 200 with per-item results (also on replay). Errors: 401 `authentication_required`, 403 `integration_scope_denied`, 409 `batch_mismatch` (known `batch_id`, different payload) / `batch_in_progress`, 413 `payload_too_large`, 422 `validation_error` (envelope), 429 `too_many_requests` (+ `Retry-After`; `INGEST_MAX_BATCHES_PER_WINDOW` per key per `INGEST_WINDOW_SECONDS`) |
+| GET | `/api/v1/products/ingest/{batch_id}` | Stored results of a batch (`replayed: true`); 404 when unknown to this organization |
+| GET | `/api/v1/integrations/me` | `{integration{id,name,prefix,scopes,created_at,last_used_at,expires_at}, organization{id,slug,name}}` — connectivity check, works for any live key |
+| GET/POST | `/api/v1/integrations/keys` | **admin session**. Create `{name, scopes?: ["products:ingest"], expires_in_days?}` → 201 `{key, secret}`; the secret is shown **once**. 422 `unknown_scope` |
+| DELETE | `/api/v1/integrations/keys/{id}` | **admin**. Revoke (immediate; row kept). 409 `integration_key_not_active` when already revoked |
+| POST | `/api/v1/integrations/keys/{id}/rotate` | **admin**. New secret, same name and scopes, old key revoked in the same transaction → 201 `{key, secret}` |
+
+Request (`contract` and `version` are required; `version` must be `2.x.y`):
+
+```json
+{
+  "contract": "meoscout.affilio.candidates",
+  "version": "2.0.0",
+  "batch_id": "msb_2026-11-07T03:10:22Z_7f3a9c1d",
+  "sent_at": "2026-11-07T03:10:22Z",
+  "source": { "tool": "meoscout", "build": "c73db53", "extension_version": "0.1.0" },
+  "on_conflict": "keep",
+  "items": [
+    {
+      "client_ref": "shopee:987654_123456789",
+      "name": "Áo sơ mi nữ công sở tay dài",
+      "platform": "shopee",
+      "platform_product_id": "987654_123456789",
+      "product_url": "https://shopee.vn/product/987654/123456789",
+      "affiliate_url": "https://s.shopee.vn/AB1cdE",
+      "seller_name": "KRISTY Official",
+      "category": "Women's Fashion",
+      "image_url": "https://cf.shopee.vn/file/abc_tn.webp",
+      "currency": "VND",
+      "observed_price": "239000",
+      "estimated_commission_rate": "0.125",
+      "estimated_commission_amount": "29875",
+      "research_notes": "MeoScore 82 TAKE",
+      "evidence": { "meoscore": 82, "decision": "TAKE" }
+    }
+  ]
+}
+```
+
+Item fields follow `ProductWrite` (same validation as `POST /products`: http(s) URLs only,
+≤ 10 images, notes ≤ 20 000 chars, rate as a **fraction** 0–1, decimals as strings) plus
+`client_ref` (unique within the batch, ≤ 128), optional `image_url`, optional `evidence`
+(≤ 8 KiB, stored on the ingest item only, never on the product). `batch_id` is 8–128
+characters of `[A-Za-z0-9._:-]`; MeoScout derives it from the content so an identical resend is
+a replay and a changed selection is a new batch.
+
+Response:
+
+```json
+{
+  "id": "4d1e…", "batch_id": "msb_…", "contract": "meoscout.affilio.candidates", "version": "2.0.0",
+  "status": "completed", "replayed": false, "on_conflict": "keep",
+  "received_at": "…", "completed_at": "…",
+  "counts": { "created": 1, "updated": 0, "unchanged": 0, "conflict": 0, "rejected": 0 },
+  "results": [
+    { "client_ref": "shopee:987654_123456789", "status": "created", "product_id": "…", "product_status": "discovered",
+      "code": null, "reason": null, "changed_fields": [], "conflicts": [] }
+  ]
+}
+```
+
+| Item status | Codes | Meaning |
+| --- | --- | --- |
+| `created` | — | New product in `DISCOVERED`, `source=meoscout`, `source_ref=client_ref` |
+| `updated` | — | Matched; `changed_fields` lists what was written (research fields when non-empty and different; empty ids / URLs / links enriched; `affiliate_url` replaced only with `on_conflict=replace`, then listed in `conflicts` with `resolution: replaced`) |
+| `unchanged` | — | Matched; nothing differed |
+| `conflict` | `affiliate_url_differs`, `product_url_differs`, `identity_differs` | Matched; AFFILIO's value kept (`conflicts[].resolution: kept`); other research fields may still have been written (`changed_fields`) |
+| `rejected` | `invalid_item`, `no_canonical_identity`, `duplicate_in_batch` | Nothing written for this item |
+
+Matching: `(platform, platform_product_id)`, then normalized `product_url`. Ingest never
+changes `status`, status history, procurement, production, media links or publishing.
+Audit actions: `product.ingest_batch`, `product.ingest_replayed`, `product.ingest_conflict`,
+`product.ingest_failed`, `integration_key.created`, `integration_key.revoked`,
+`integration_key.rotated` (actor `integration:<key name>`, key prefix only).
+
 ## Authentication and identity (M3A)
 
 All routes below `/api/v1` except `/health`, `/system/info`, `/auth/login` and `/auth/logout`
 require an identity. Errors: 401 `authentication_required` (no/invalid session), 403
 `forbidden` (role too low or non-member organization; details carry `required`/`role` or
 `slug`), 403 `csrf_rejected` (cookie-authenticated write from a foreign origin), 403
-`admin_endpoints_disabled` (service token sent but not configured).
+`admin_endpoints_disabled` (service token sent but not configured), 403
+`integration_scope_denied` (integration key outside its allow-list or lacking a scope).
 
 | Method | Path | Notes |
 | --- | --- | --- |

@@ -1,4 +1,5 @@
-"""Product HTTP routes (M2). Reads are organization-scoped; writes require the admin gate."""
+"""Product HTTP routes (M2). Reads are organization-scoped; writes require the editor role.
+`/products/ingest` (M3.2-B.2 P1) is the server-to-server entry point for MeoScout candidates."""
 
 from __future__ import annotations
 
@@ -6,14 +7,22 @@ import json
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
+from fastapi import APIRouter, File, Form, Path, Query, Request, Response, UploadFile, status
+from starlette.concurrency import run_in_threadpool
 
-from affilio.api.deps import CurrentOrganization, DbSession, RequireEditor, SettingsDep
+from affilio.api.deps import (
+    CurrentOrganization,
+    DbSession,
+    RequireEditor,
+    RequireProductsIngest,
+    SettingsDep,
+)
 from affilio.core.enums import Platform, ProductStatus
-from affilio.modules.products import imports, service
+from affilio.modules.products import imports, ingest, service
 from affilio.modules.products.schemas import (
     ImportPreviewResponse,
     ImportRowPreview,
+    IngestResponse,
     LinkedProductResponse,
     PaginatedProducts,
     ProductCreate,
@@ -198,6 +207,39 @@ def list_imports(
         ProductImportResponse.model_validate(r)
         for r in service.list_imports(session, organization.id, limit)
     ]
+
+
+@router.post(
+    "/ingest",
+    response_model=IngestResponse,
+    summary="Ingest approved MeoScout candidates (integration key with products:ingest, or editor)",
+)
+async def ingest_products(
+    request: Request,
+    session: DbSession,
+    identity: RequireProductsIngest,
+    settings: SettingsDep,
+) -> IngestResponse:
+    ingest.check_rate_limit(identity, settings)
+    raw = await ingest.read_body(request, limit=settings.ingest_max_body_bytes)
+    payload = ingest.parse_request(raw, max_items=settings.ingest_max_items)
+    ingest.record_rate_limit_hit(identity, settings)
+    batch, replayed = await run_in_threadpool(ingest.ingest_batch, session, identity, payload)
+    return ingest.batch_response(batch, replayed=replayed)
+
+
+@router.get(
+    "/ingest/{batch_id}",
+    response_model=IngestResponse,
+    summary="Stored results of an ingest batch",
+)
+def read_ingest_batch(
+    batch_id: Annotated[str, Path(min_length=1, max_length=128)],
+    session: DbSession,
+    identity: RequireProductsIngest,
+) -> IngestResponse:
+    batch = ingest.get_batch(session, identity.organization.id, batch_id)
+    return ingest.batch_response(batch, replayed=True)
 
 
 @router.get(

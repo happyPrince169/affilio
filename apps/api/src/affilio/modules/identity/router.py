@@ -1,4 +1,4 @@
-"""Authentication, current user, organization members, audit log."""
+"""Authentication, current user, organization members, audit log, integration keys."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from affilio.api.deps import (
     AuthenticationRequiredError,
     CurrentIdentity,
     DbSession,
+    ForbiddenError,
     Identity,
     RequireAdmin,
     SettingsDep,
@@ -21,11 +22,17 @@ from affilio.core.config import Settings
 from affilio.core.errors import NotFoundError
 from affilio.core.ratelimit import SlidingWindowLimiter
 from affilio.modules.identity import service
-from affilio.modules.identity.models import OrganizationMembership
+from affilio.modules.identity.models import IntegrationApiKey, OrganizationMembership
 from affilio.modules.identity.schemas import (
     AuditEventResponse,
     ChangePasswordRequest,
     CurrentUserResponse,
+    IntegrationIdentityResponse,
+    IntegrationKeyCreate,
+    IntegrationKeyCreatedResponse,
+    IntegrationKeyResponse,
+    IntegrationMeResponse,
+    IntegrationOrganizationResponse,
     LoginRequest,
     MemberCreate,
     MemberResponse,
@@ -34,7 +41,7 @@ from affilio.modules.identity.schemas import (
     OrganizationUpdate,
 )
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+auth_router = APIRouter(prefix="/auth", tags=["auth"])
 
 _login_limiter: SlidingWindowLimiter | None = None
 
@@ -140,7 +147,9 @@ def _clear_cookie(response: Response, settings: Settings) -> None:
     )
 
 
-@router.post("/login", response_model=CurrentUserResponse, summary="Sign in with email + password")
+@auth_router.post(
+    "/login", response_model=CurrentUserResponse, summary="Sign in with email + password"
+)
 def login(
     body: LoginRequest,
     request: Request,
@@ -204,7 +213,7 @@ def login(
     return _me(identity)
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, summary="Sign out")
+@auth_router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, summary="Sign out")
 def logout(
     request: Request, response: Response, session: DbSession, settings: SettingsDep
 ) -> Response:
@@ -230,12 +239,14 @@ def logout(
     return response
 
 
-@router.get("/me", response_model=CurrentUserResponse, summary="Current identity")
+@auth_router.get("/me", response_model=CurrentUserResponse, summary="Current identity")
 def me(identity: CurrentIdentity) -> CurrentUserResponse:
     return _me(identity)
 
 
-@router.post("/password", status_code=status.HTTP_204_NO_CONTENT, summary="Change own password")
+@auth_router.post(
+    "/password", status_code=status.HTTP_204_NO_CONTENT, summary="Change own password"
+)
 def change_password(
     body: ChangePasswordRequest, identity: CurrentIdentity, session: DbSession, response: Response
 ) -> Response:
@@ -264,7 +275,7 @@ def change_password(
     return response
 
 
-@router.get("/members", response_model=list[MemberResponse], summary="Organization members")
+@auth_router.get("/members", response_model=list[MemberResponse], summary="Organization members")
 def list_members(identity: CurrentIdentity, session: DbSession) -> list[MemberResponse]:
     return [
         MemberResponse(
@@ -280,7 +291,7 @@ def list_members(identity: CurrentIdentity, session: DbSession) -> list[MemberRe
     ]
 
 
-@router.post(
+@auth_router.post(
     "/members",
     response_model=MemberResponse,
     status_code=status.HTTP_201_CREATED,
@@ -312,7 +323,7 @@ def create_member(body: MemberCreate, identity: RequireAdmin, session: DbSession
     )
 
 
-@router.patch(
+@auth_router.patch(
     "/members/{user_id}", response_model=MemberResponse, summary="Change a member's role (admin)"
 )
 def update_member(
@@ -343,7 +354,7 @@ def update_member(
     )
 
 
-@router.post(
+@auth_router.post(
     "/members/{user_id}/sessions/revoke",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Sign a member out everywhere (admin). Owners can only be signed out by owners.",
@@ -369,7 +380,7 @@ def revoke_member_sessions(
     return response
 
 
-@router.patch(
+@auth_router.patch(
     "/organization", response_model=MembershipResponse, summary="Update organization (admin)"
 )
 def update_organization(
@@ -396,7 +407,7 @@ def update_organization(
     )
 
 
-@router.get("/audit", response_model=list[AuditEventResponse], summary="Audit log (admin)")
+@auth_router.get("/audit", response_model=list[AuditEventResponse], summary="Audit log (admin)")
 def audit_log(
     identity: RequireAdmin,
     session: DbSession,
@@ -414,3 +425,143 @@ def audit_log(
             limit=limit,
         )
     ]
+
+
+# ---------------------------------------------------------------- integration keys (ADR 0013)
+
+integrations_router = APIRouter(prefix="/integrations", tags=["integrations"])
+
+
+def _key_response(record: IntegrationApiKey) -> IntegrationKeyResponse:
+    return IntegrationKeyResponse(
+        id=record.id,
+        name=record.name,
+        prefix=record.prefix,
+        scopes=list(record.scopes),
+        state=service.api_key_state(record),  # type: ignore[arg-type]
+        created_by_user_id=record.created_by_user_id,
+        created_at=record.created_at,
+        expires_at=record.expires_at,
+        last_used_at=record.last_used_at,
+        revoked_at=record.revoked_at,
+        revoked_by_user_id=record.revoked_by_user_id,
+        rotated_from_key_id=record.rotated_from_key_id,
+    )
+
+
+def _key_audit_data(record: IntegrationApiKey) -> dict:
+    # Prefix and scopes only; the hash is as sensitive as the key for offline guessing.
+    return {"name": record.name, "prefix": record.prefix, "scopes": list(record.scopes)}
+
+
+@integrations_router.get(
+    "/me", response_model=IntegrationMeResponse, summary="Identity of the calling integration key"
+)
+def integration_me(identity: CurrentIdentity) -> IntegrationMeResponse:
+    if identity.api_key is None:
+        raise ForbiddenError("Only integration keys have an integration identity; see /auth/me")
+    key, org = identity.api_key, identity.organization
+    return IntegrationMeResponse(
+        integration=IntegrationIdentityResponse(
+            id=key.id,
+            name=key.name,
+            prefix=key.prefix,
+            scopes=list(key.scopes),
+            created_at=key.created_at,
+            last_used_at=key.last_used_at,
+            expires_at=key.expires_at,
+        ),
+        organization=IntegrationOrganizationResponse(id=org.id, slug=org.slug, name=org.name),
+    )
+
+
+@integrations_router.get(
+    "/keys", response_model=list[IntegrationKeyResponse], summary="Integration keys (admin)"
+)
+def list_integration_keys(
+    identity: RequireAdmin, session: DbSession
+) -> list[IntegrationKeyResponse]:
+    return [_key_response(k) for k in service.list_api_keys(session, identity.organization.id)]
+
+
+@integrations_router.post(
+    "/keys",
+    response_model=IntegrationKeyCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create an integration key (admin). The secret is returned once.",
+)
+def create_integration_key(
+    body: IntegrationKeyCreate, identity: RequireAdmin, session: DbSession
+) -> IntegrationKeyCreatedResponse:
+    record, secret = service.create_api_key(
+        session,
+        identity.organization,
+        name=body.name,
+        scopes=body.scopes,
+        created_by=identity.user,
+        expires_in_days=body.expires_in_days,
+    )
+    record_audit(
+        session,
+        organization_id=identity.organization.id,
+        identity=identity,
+        action="integration_key.created",
+        entity_type="integration_api_key",
+        entity_id=record.id,
+        data=_key_audit_data(record),
+    )
+    session.commit()
+    return IntegrationKeyCreatedResponse(key=_key_response(record), secret=secret)
+
+
+@integrations_router.delete(
+    "/keys/{key_id}",
+    response_model=IntegrationKeyResponse,
+    summary="Revoke an integration key (admin). Immediate; the row is kept for audit.",
+)
+def revoke_integration_key(
+    key_id: uuid.UUID, identity: RequireAdmin, session: DbSession
+) -> IntegrationKeyResponse:
+    record = service.get_api_key(session, identity.organization.id, key_id)
+    service.revoke_api_key(record, revoked_by=identity.user)
+    record_audit(
+        session,
+        organization_id=identity.organization.id,
+        identity=identity,
+        action="integration_key.revoked",
+        entity_type="integration_api_key",
+        entity_id=record.id,
+        data=_key_audit_data(record),
+    )
+    session.commit()
+    return _key_response(record)
+
+
+@integrations_router.post(
+    "/keys/{key_id}/rotate",
+    response_model=IntegrationKeyCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Rotate an integration key (admin): new secret, same name and scopes, old key revoked",
+)
+def rotate_integration_key(
+    key_id: uuid.UUID, identity: RequireAdmin, session: DbSession
+) -> IntegrationKeyCreatedResponse:
+    record = service.get_api_key(session, identity.organization.id, key_id)
+    replacement, secret = service.rotate_api_key(session, record, rotated_by=identity.user)
+    record_audit(
+        session,
+        organization_id=identity.organization.id,
+        identity=identity,
+        action="integration_key.rotated",
+        entity_type="integration_api_key",
+        entity_id=replacement.id,
+        data={**_key_audit_data(replacement), "rotated_from_key_id": str(record.id)},
+    )
+    session.commit()
+    return IntegrationKeyCreatedResponse(key=_key_response(replacement), secret=secret)
+
+
+# The module exposes one router (see affilio.modules.iter_module_routers).
+router = APIRouter()
+router.include_router(auth_router)
+router.include_router(integrations_router)

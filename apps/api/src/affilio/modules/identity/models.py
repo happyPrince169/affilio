@@ -1,4 +1,4 @@
-"""Identity tables: organizations, users, organization_memberships."""
+"""Identity tables: organizations, users, memberships, sessions, audit, integration keys."""
 
 from __future__ import annotations
 
@@ -140,3 +140,53 @@ class AuditEvent(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class IntegrationApiKey(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """Scoped machine credential for one external integration (ADR 0013).
+
+    Only the SHA-256 of the key is stored; `prefix` (the first characters of the plaintext)
+    exists so an operator can tell keys apart and revoke the right one. The key is bound to
+    exactly one organization and carries an explicit list of scopes (`products:ingest`).
+    Revocation is a timestamp, never a delete, so audit history keeps pointing at the row;
+    rotation creates a new row that references the one it replaced.
+    """
+
+    __tablename__ = "integration_api_keys"
+    __table_args__ = (
+        Index(
+            "ix_integration_api_keys_organization_id_created_at", "organization_id", "created_at"
+        ),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    scopes: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    rotated_from_key_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("integration_api_keys.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    organization: Mapped[Organization] = relationship()
+
+    def is_active(self, now: datetime) -> bool:
+        return self.revoked_at is None and (self.expires_at is None or self.expires_at > now)
+
+    def __repr__(self) -> str:  # never includes the hash
+        return f"<IntegrationApiKey name={self.name!r} prefix={self.prefix!r}>"

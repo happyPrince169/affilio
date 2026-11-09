@@ -18,6 +18,18 @@
   organization) and is reported as `identity_kind = service`. Browsers never hold it: the
   Next.js proxy does not inject it any more.
 
+- **Integration identity (ADR 0013).** `Authorization: Bearer afk_…` authenticates an
+  external integration (today: the MeoScout relay). Keys live in `integration_api_keys`:
+  SHA-256 of the secret only, a 12-character display prefix, organization, scopes,
+  `created_by`, `expires_at`, `last_used_at`, `revoked_at`, rotation lineage. The secret is
+  `afk_` + 240 random bits, shown once (create, rotate, CLI). Resolution looks the digest up
+  and compares it in constant time, refuses revoked or expired rows, and never echoes the
+  credential in errors (`authorization` is already redacted from logs and stored errors).
+  The identity acts as `editor` for the key's organization only on `INTEGRATION_KEY_ALLOWED`
+  (`POST /products/ingest`, `GET /products/ingest/{id}`, `GET /integrations/me`); routes
+  also demand a scope (`require_scope("products:ingest")`). Key management is admin-session
+  only, so a leaked key cannot mint keys, read the catalog, or reach any other module.
+
 ## Authorization
 
 `affilio/api/deps.py` resolves an `Identity` for every request under `/api/v1` except health,
@@ -28,7 +40,8 @@ system info and login/logout. Resolution fails closed:
 2. Organization = the one named by `X-Organization-Slug` **if the user is a member**, else the
    user's first membership; a non-member slug is 403 `forbidden` with the slug echoed.
 3. Role from `organization_memberships`: `viewer < editor < admin < owner`.
-4. Otherwise the service token, otherwise 401.
+4. Otherwise an integration key (bearer, allow-listed routes + scope), otherwise the service
+   token, otherwise 401.
 
 Routers declare the minimum role with `CurrentIdentity` (any role), `RequireEditor`
 (create/edit/submit/schedule/start/confirm/fail/retry/cancel, product/procurement/production
@@ -56,8 +69,9 @@ the API unauthenticated.
 
 `audit_events` records actor kind (`user` / `service` / `system`), actor user id and label,
 action, entity type/id, structured data and the request id for logins, logouts, password
-changes, member and organization changes, account registry changes, link changes and every
-publication transition. Admins read it via `GET /auth/audit`.
+changes, member and organization changes, account registry changes, link changes, every
+publication transition, integration key operations and every ingest batch (with per-conflict
+events). Admins read it via `GET /auth/audit`.
 
 ## Secrets and tokens
 
@@ -228,3 +242,29 @@ the value (by design: a label followed by a value is treated as a field).
   through the same host name (`localhost:3000` and `localhost:8000`), or use the same-origin
   proxy (`NEXT_PUBLIC_API_URL=""`).
 - The login rate limiter is in-process (exact with one uvicorn worker).
+
+## MeoScout product ingestion (M3.2-B.2 P1)
+
+- **Surface.** `POST /products/ingest` accepts 1–200 candidates per batch and at most
+  `INGEST_MAX_BODY_BYTES` (1 MiB) of JSON, read with a hard cap before parsing (413). The
+  envelope is strict (`extra=forbid`, pinned contract name, major version 2, safe `batch_id`
+  alphabet, unique `client_ref`s); each candidate is validated by the product schema itself,
+  so URL, length, decimal and image rules are identical to `POST /products`. Per-candidate
+  problems reject that candidate only.
+- **Rate limit.** `INGEST_MAX_BATCHES_PER_WINDOW` (30) accepted batches per key (or user) per
+  `INGEST_WINDOW_SECONDS` (300), in-process (`affilio.core.ratelimit`), 429 with
+  `Retry-After`. Key guessing is not rate-limited separately: the secret has 240 bits of
+  entropy and every lookup is one indexed read.
+- **Idempotency and concurrency.** `(organization, batch_id)` is unique and stores the
+  results; the batch row is flushed before any product write, so a concurrent duplicate waits
+  on the index and then receives the stored results. Products are matched by platform id
+  then normalized URL; inserts run in savepoints so a race with another batch cannot create a
+  duplicate. A failed batch is recorded (`status=failed`, redacted error) after the rollback
+  and re-run on the next retry.
+- **Ownership.** Ingest creates `DISCOVERED` products and refreshes research fields only.
+  Identity fields are enriched when empty and never changed; a differing `affiliate_url` is a
+  kept conflict unless the batch says `on_conflict=replace`. Status, procurement, production,
+  media and publishing are never touched (tests assert it).
+- **Audit.** `product.ingest_batch`, `product.ingest_replayed`, `product.ingest_conflict`
+  (per conflicting product), `product.ingest_failed`, `integration_key.*` — actor kind
+  `service`, label `integration:<key name>`, key prefix only.

@@ -1,4 +1,5 @@
-"""Product catalog tables: products, product_status_events, product_media_links.
+"""Product catalog tables: products, product_status_events, product_media_links, imports,
+ingest batches.
 
 - Estimated commission fields are operator estimates. Actual earned commission arrives with the
   analytics module (M4) in separate tables and is never written here.
@@ -31,7 +32,14 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from affilio.core.enums import ImportStatus, Platform, ProductSource, ProductStatus
+from affilio.core.enums import (
+    ImportStatus,
+    IngestBatchStatus,
+    IngestItemStatus,
+    Platform,
+    ProductSource,
+    ProductStatus,
+)
 from affilio.db.base import Base, CreatedAtMixin, TimestampMixin, UUIDPrimaryKeyMixin
 from affilio.db.types import str_enum
 from affilio.modules.media.models import MediaAsset
@@ -105,6 +113,12 @@ class Product(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     source_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
     import_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("product_imports.id", ondelete="SET NULL"), nullable=True
+    )
+    # The MeoScout ingest batch that created the product (M3.2-B.2 P1); updates do not move it.
+    ingest_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("product_ingest_batches.id", ondelete="SET NULL"),
+        nullable=True,
     )
 
     status_events: Mapped[list[ProductStatusEvent]] = relationship(
@@ -220,3 +234,104 @@ class ProductImport(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         UUID(as_uuid=True), ForeignKey("product_imports.id", ondelete="SET NULL"), nullable=True
     )
     actor: Mapped[str] = mapped_column(String(255), nullable=False, default="api")
+
+
+class ProductIngestBatch(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """One `POST /products/ingest` call from an integration (M3.2-B.2 P1, ADR 0013).
+
+    `(organization_id, batch_id)` is unique: a replay of a known batch returns the stored
+    results and writes nothing; a different payload under a known batch id is refused. The
+    items below are the stored per-candidate results.
+    """
+
+    __tablename__ = "product_ingest_batches"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "batch_id", name="uq_product_ingest_batches_org_batch"),
+        Index(
+            "ix_product_ingest_batches_organization_id_created_at",
+            "organization_id",
+            "created_at",
+        ),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    batch_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    contract: Mapped[str] = mapped_column(String(64), nullable=False)
+    contract_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    # SHA-256 over the canonical items + on_conflict: detects a reused batch id.
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    on_conflict: Mapped[str] = mapped_column(String(16), nullable=False, default="keep")
+    status: Mapped[IngestBatchStatus] = mapped_column(
+        str_enum(IngestBatchStatus, "product_ingest_batch_status"), nullable=False
+    )
+    item_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unchanged_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    conflict_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Which credential delivered the batch (NULL for a signed-in editor or a deleted key).
+    api_key_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("integration_api_keys.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    actor: Mapped[str] = mapped_column(String(255), nullable=False, default="api")
+    request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Redacted error text for `failed` batches (processing raised; nothing was written).
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    items: Mapped[list[ProductIngestItem]] = relationship(
+        back_populates="batch",
+        cascade="all, delete-orphan",
+        order_by="ProductIngestItem.position",
+    )
+
+
+class ProductIngestItem(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """Stored result for one candidate of an ingest batch (what the client was told)."""
+
+    __tablename__ = "product_ingest_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "ingest_batch_id", "client_ref", name="uq_product_ingest_items_batch_client_ref"
+        ),
+        Index("ix_product_ingest_items_product_id", "product_id"),
+    )
+
+    ingest_batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("product_ingest_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    client_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[IngestItemStatus] = mapped_column(
+        str_enum(IngestItemStatus, "product_ingest_item_status"), nullable=False
+    )
+    code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"), nullable=True
+    )
+    changed_fields: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    # [{"field": "affiliate_url", "code": "affiliate_url_differs", "resolution": "kept"}, …]
+    conflicts: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    # MeoScout's research evidence, kept verbatim (bounded) and never merged into the product.
+    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+    batch: Mapped[ProductIngestBatch] = relationship(back_populates="items")

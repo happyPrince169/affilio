@@ -53,6 +53,9 @@ EXPECTED_TABLES = {
     "oauth_states",
     "publication_uploads",
     "publisher_workers",
+    "integration_api_keys",
+    "product_ingest_batches",
+    "product_ingest_items",
 }
 
 pytestmark = pytest.mark.database

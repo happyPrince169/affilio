@@ -198,3 +198,64 @@ export interface ProductImport {
   actor: string;
   created_at: string;
 }
+
+// ---------------------------------------------------------------- MeoScout ingest (M3.2-B.2 P1)
+
+export const INGEST_CONTRACT = "meoscout.affilio.candidates";
+export const INGEST_ITEM_STATUSES = [
+  "created",
+  "updated",
+  "unchanged",
+  "conflict",
+  "rejected",
+] as const;
+export type IngestItemStatus = (typeof INGEST_ITEM_STATUSES)[number];
+export type IngestOnConflict = "keep" | "replace";
+
+/** One approved candidate as MeoScout sends it. Decimals are strings; the rate is a fraction. */
+export interface IngestCandidate extends ProductWrite {
+  client_ref: string;
+  image_url?: string | null;
+  evidence?: Record<string, unknown> | null;
+}
+
+export interface IngestRequest {
+  contract: typeof INGEST_CONTRACT;
+  version: string; // 2.x.y
+  batch_id: string;
+  sent_at?: string | null;
+  source?: { tool: string; build?: string | null; extension_version?: string | null } | null;
+  on_conflict?: IngestOnConflict;
+  items: IngestCandidate[]; // 1..200
+}
+
+export interface IngestConflict {
+  field: string;
+  code: string;
+  resolution: "kept" | "replaced";
+}
+
+export interface IngestItemResult {
+  client_ref: string;
+  status: IngestItemStatus;
+  product_id: string | null;
+  product_status: ProductStatus | null;
+  code: string | null;
+  reason: string | null;
+  changed_fields: string[];
+  conflicts: IngestConflict[];
+}
+
+export interface IngestResponse {
+  id: string;
+  batch_id: string;
+  contract: string;
+  version: string;
+  status: "completed" | "failed";
+  replayed: boolean;
+  on_conflict: IngestOnConflict;
+  received_at: string;
+  completed_at: string | null;
+  counts: Record<IngestItemStatus, number>;
+  results: IngestItemResult[];
+}

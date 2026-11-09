@@ -81,3 +81,50 @@ export interface AuditEvent {
   request_id: string | null;
   created_at: string;
 }
+
+// ---------------------------------------------------------------- integration API keys (ADR 0013)
+
+export const INTEGRATION_SCOPES = ["products:ingest"] as const;
+export type IntegrationScope = (typeof INTEGRATION_SCOPES)[number];
+export type IntegrationKeyState = "active" | "revoked" | "expired";
+
+export interface IntegrationKeyCreate {
+  name: string;
+  scopes?: IntegrationScope[];
+  expires_in_days?: number | null;
+}
+
+export interface IntegrationKey {
+  id: string;
+  name: string;
+  /** First characters of the secret (`afk_` + 8), for telling keys apart. */
+  prefix: string;
+  scopes: string[];
+  state: IntegrationKeyState;
+  created_by_user_id: string | null;
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  revoked_by_user_id: string | null;
+  rotated_from_key_id: string | null;
+}
+
+/** Returned once by create and rotate; `secret` is never retrievable again. */
+export interface IntegrationKeyCreated {
+  key: IntegrationKey;
+  secret: string;
+}
+
+export interface IntegrationMe {
+  integration: {
+    id: string;
+    name: string;
+    prefix: string;
+    scopes: string[];
+    created_at: string;
+    last_used_at: string | null;
+    expires_at: string | null;
+  };
+  organization: { id: string; slug: string; name: string };
+}

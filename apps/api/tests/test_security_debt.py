@@ -52,6 +52,8 @@ def test_service_token_allow_list_is_explicit() -> None:
         ("POST", "/api/v1/accounts/connect/facebook"),
         ("GET", "/api/v1/accounts/connections"),
         ("POST", "/api/v1/products"),
+        ("POST", "/api/v1/products/ingest"),
+        ("GET", "/api/v1/integrations/keys"),
         ("POST", "/api/v1/publishing/publications"),
         ("DELETE", "/api/v1/media/scans/1"),
         ("POST", "/api/v1/auth/members"),
@@ -69,6 +71,8 @@ def test_service_token_cannot_reach_connections_or_registry(api: TestClient) -> 
         ("POST", "/api/v1/accounts/connect/facebook"),
         ("GET", "/api/v1/accounts/connect/facebook/config"),
         ("GET", "/api/v1/auth/members"),
+        ("POST", "/api/v1/products/ingest"),
+        ("GET", "/api/v1/integrations/keys"),
     ):
         response = api.request(method, path, headers=headers, json={} if method == "POST" else None)
         assert response.status_code == 403, (method, path, response.text)

@@ -130,6 +130,9 @@ Schedules missed while the stack was down follow `PUBLISHER_OVERDUE_GRACE_MINUTE
 `PUBLISHER_OVERDUE_POLICY` (older than the grace window → operator review in the queue).
 Maintenance: `uv run python -m affilio.scripts.maintenance` (session and OAuth-attempt purge,
 also run hourly by the worker); key rotation: `uv run python -m affilio.scripts.rotate_credential_keys`.
+Integration keys for the MeoScout handoff (ADR 0013): `uv run python -m affilio.scripts.create_integration_key create --org <slug> --name "MeoScout bridge" --scope products:ingest`
+prints the secret once (`list` / `rotate --key <id>` / `revoke --key <id>`; the same operations exist for admins under
+`/api/v1/integrations/keys`). The key may only call `POST /api/v1/products/ingest`; see `docs/api/README.md`.
 Finals folder tree (`{Owner}/{ProductCategory}/{ContentType}`, ADR 0011): `uv run python -m
 affilio.scripts.media_folder_bootstrap --root <finals root>` prints the plan; `--apply` creates only
 the missing directories (standard library only, so it also runs with the NAS `python3`).

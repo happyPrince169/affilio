@@ -156,6 +156,15 @@ class Settings(BaseSettings):
     seed_admin_email: str = "owner@affilio.local"
     seed_admin_password: SecretStr = SecretStr("affilio-dev-owner")
 
+    # --- MeoScout product ingestion (M3.2-B.2 P1, ADR 0013) ---
+    # Bounds for `POST /products/ingest`: items per batch, request body size, and the
+    # per-credential sliding window (batches per window). In-process limiter, same scope as
+    # the login limiter. Integration keys themselves live in `integration_api_keys`.
+    ingest_max_items: int = 200
+    ingest_max_body_bytes: int = 1024 * 1024
+    ingest_max_batches_per_window: int = 30
+    ingest_window_seconds: int = 300
+
     # --- publishing (M3A) ---
     publication_min_gap_minutes: int = 30
 

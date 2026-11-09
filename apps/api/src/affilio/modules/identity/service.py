@@ -1,4 +1,4 @@
-"""Identity services: credentials, sessions, memberships."""
+"""Identity services: credentials, sessions, memberships, integration API keys."""
 
 from __future__ import annotations
 
@@ -6,20 +6,26 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from zoneinfo import available_timezones
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from affilio.core.enums import MembershipRole, UserStatus
 from affilio.core.errors import AppError, ConflictError, NotFoundError
 from affilio.core.security import (
+    api_key_display_prefix,
+    generate_api_key,
     generate_session_token,
+    hash_api_key,
     hash_password,
     hash_session_token,
+    looks_like_api_key,
     password_needs_rehash,
+    tokens_equal,
     verify_password,
 )
 from affilio.modules.identity.models import (
     AuditEvent,
+    IntegrationApiKey,
     Organization,
     OrganizationMembership,
     User,
@@ -33,6 +39,12 @@ ROLE_RANK: dict[MembershipRole, int] = {
     MembershipRole.OWNER: 3,
 }
 SESSION_TOUCH_INTERVAL = timedelta(minutes=15)
+API_KEY_TOUCH_INTERVAL = timedelta(minutes=1)
+
+# Scopes an integration key may carry (ADR 0013). Adding one is a code change on purpose.
+INTEGRATION_SCOPES: frozenset[str] = frozenset({"products:ingest"})
+SCOPE_PRODUCTS_INGEST = "products:ingest"
+MAX_API_KEYS_PER_ORGANIZATION = 50
 
 
 class InvalidCredentialsError(AppError):
@@ -43,6 +55,16 @@ class InvalidCredentialsError(AppError):
 class InvalidTimezoneError(AppError):
     status_code = 422
     code = "invalid_timezone"
+
+
+class UnknownScopeError(AppError):
+    status_code = 422
+    code = "unknown_scope"
+
+
+class IntegrationKeyNotActiveError(AppError):
+    status_code = 409
+    code = "integration_key_not_active"
 
 
 def role_at_least(role: MembershipRole, minimum: MembershipRole) -> bool:
@@ -277,3 +299,147 @@ def list_audit(
     return list(
         session.scalars(stmt.order_by(AuditEvent.created_at.desc()).limit(min(max(limit, 1), 200)))
     )
+
+
+# ---------------------------------------------------------------- integration API keys
+
+
+def validate_scopes(scopes: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    for scope in scopes:
+        value = scope.strip()
+        if value not in INTEGRATION_SCOPES:
+            raise UnknownScopeError(
+                f"Unknown scope '{value[:40]}'", details={"known": sorted(INTEGRATION_SCOPES)}
+            )
+        if value not in cleaned:
+            cleaned.append(value)
+    return cleaned
+
+
+def create_api_key(
+    session: Session,
+    organization: Organization,
+    *,
+    name: str,
+    scopes: list[str],
+    created_by: User | None,
+    expires_in_days: int | None = None,
+    rotated_from: IntegrationApiKey | None = None,
+) -> tuple[IntegrationApiKey, str]:
+    """Create a key and return (row, plaintext). The plaintext is never stored or logged."""
+    active = session.scalar(
+        select(func.count(IntegrationApiKey.id)).where(
+            IntegrationApiKey.organization_id == organization.id,
+            IntegrationApiKey.revoked_at.is_(None),
+        )
+    )
+    if (active or 0) >= MAX_API_KEYS_PER_ORGANIZATION:
+        raise ConflictError(
+            f"At most {MAX_API_KEYS_PER_ORGANIZATION} active integration keys per organization"
+        )
+    raw = generate_api_key()
+    now = datetime.now(UTC)
+    record = IntegrationApiKey(
+        id=uuid.uuid4(),
+        organization_id=organization.id,
+        name=name.strip()[:120],
+        prefix=api_key_display_prefix(raw),
+        key_hash=hash_api_key(raw),
+        scopes=validate_scopes(scopes),
+        created_by_user_id=created_by.id if created_by is not None else None,
+        expires_at=now + timedelta(days=expires_in_days) if expires_in_days else None,
+        rotated_from_key_id=rotated_from.id if rotated_from is not None else None,
+    )
+    session.add(record)
+    session.flush()
+    return record, raw
+
+
+def list_api_keys(session: Session, organization_id: uuid.UUID) -> list[IntegrationApiKey]:
+    return list(
+        session.scalars(
+            select(IntegrationApiKey)
+            .where(IntegrationApiKey.organization_id == organization_id)
+            .order_by(IntegrationApiKey.created_at.desc())
+        )
+    )
+
+
+def get_api_key(
+    session: Session, organization_id: uuid.UUID, key_id: uuid.UUID
+) -> IntegrationApiKey:
+    record = session.scalar(
+        select(IntegrationApiKey).where(
+            IntegrationApiKey.organization_id == organization_id, IntegrationApiKey.id == key_id
+        )
+    )
+    if record is None:
+        raise NotFoundError("Integration key not found")
+    return record
+
+
+def revoke_api_key(record: IntegrationApiKey, *, revoked_by: User | None) -> None:
+    if record.revoked_at is not None:
+        raise IntegrationKeyNotActiveError("Integration key is already revoked")
+    record.revoked_at = datetime.now(UTC)
+    record.revoked_by_user_id = revoked_by.id if revoked_by is not None else None
+
+
+def rotate_api_key(
+    session: Session, record: IntegrationApiKey, *, rotated_by: User | None
+) -> tuple[IntegrationApiKey, str]:
+    """Issue a replacement with the same name and scopes and revoke the old key at once.
+
+    Both steps happen in the caller's transaction, so there is never a moment with two live
+    keys for the same purpose nor one with none committed.
+    """
+    if not record.is_active(datetime.now(UTC)):
+        raise IntegrationKeyNotActiveError("Only an active integration key can be rotated")
+    organization = record.organization
+    replacement, raw = create_api_key(
+        session,
+        organization,
+        name=record.name,
+        scopes=list(record.scopes),
+        created_by=rotated_by,
+        rotated_from=record,
+    )
+    revoke_api_key(record, revoked_by=rotated_by)
+    return replacement, raw
+
+
+def resolve_api_key(session: Session, raw: str) -> IntegrationApiKey | None:
+    """Return the key row for a bearer secret, in whatever state, or None when unknown.
+
+    The lookup is by SHA-256; the stored digest is then compared in constant time so the
+    path taken does not depend on how many digest bytes match. Callers decide what a revoked
+    or expired row means (`is_active`) and call `touch_api_key` on success.
+    """
+    if not looks_like_api_key(raw):
+        return None
+    digest = hash_api_key(raw)
+    record = session.scalar(
+        select(IntegrationApiKey)
+        .options(selectinload(IntegrationApiKey.organization))
+        .where(IntegrationApiKey.key_hash == digest)
+    )
+    if record is None or not tokens_equal(record.key_hash, digest):
+        return None
+    return record
+
+
+def touch_api_key(record: IntegrationApiKey, now: datetime | None = None) -> None:
+    """Record use at most once per `API_KEY_TOUCH_INTERVAL` (one write, not one per call)."""
+    now = now or datetime.now(UTC)
+    if record.last_used_at is None or now - record.last_used_at > API_KEY_TOUCH_INTERVAL:
+        record.last_used_at = now
+
+
+def api_key_state(record: IntegrationApiKey, now: datetime | None = None) -> str:
+    now = now or datetime.now(UTC)
+    if record.revoked_at is not None:
+        return "revoked"
+    if record.expires_at is not None and record.expires_at <= now:
+        return "expired"
+    return "active"

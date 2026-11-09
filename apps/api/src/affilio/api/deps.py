@@ -4,12 +4,18 @@ Identity resolution (fail closed):
 1. Session cookie → user. Cookie-authenticated unsafe requests must come from an allowed
    Origin (CSRF defence on top of SameSite=Lax). The organization is the one named by
    `X-Organization-Slug` if the user is a member of it, else the user's first membership.
-2. `X-Affilio-Admin-Token` → *service* identity (CLI, cron). It may only call the internal
+2. `Authorization: Bearer afk_…` → *integration* identity (ADR 0013): a scoped, revocable
+   key bound to one organization (`integration_api_keys`). It acts with the EDITOR role but
+   only on the routes in `INTEGRATION_KEY_ALLOWED` (product ingestion and its own identity);
+   everything else answers 403 `integration_scope_denied`. Routes additionally require a
+   scope (`require_scope`). No cookie, so the CSRF check does not apply; the organization is
+   the key's, never a header's.
+3. `X-Affilio-Admin-Token` → *service* identity (CLI, cron). It may only call the internal
    operations listed in `SERVICE_TOKEN_ALLOWED` (scan triggers, scan status, release-due,
    its own identity); every other route answers 403 `service_scope_denied`. Within that
    allow-list it acts with the OWNER role for the organization named by the header or
    `DEFAULT_ORGANIZATION_SLUG`. Never used by browsers.
-3. Otherwise 401 `authentication_required`.
+4. Otherwise 401 `authentication_required`.
 """
 
 from __future__ import annotations
@@ -17,7 +23,7 @@ from __future__ import annotations
 import hmac
 import re
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
@@ -30,7 +36,12 @@ from affilio.core.enums import MembershipRole
 from affilio.core.errors import AppError, NotFoundError
 from affilio.db.session import get_db
 from affilio.modules.identity import service as identity_service
-from affilio.modules.identity.models import Organization, User, UserSession
+from affilio.modules.identity.models import (
+    IntegrationApiKey,
+    Organization,
+    User,
+    UserSession,
+)
 from affilio.modules.media.roots import MediaRootRegistry
 
 DbSession = Annotated[Session, Depends(get_db)]
@@ -52,6 +63,16 @@ SERVICE_TOKEN_ALLOWED: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
     (frozenset({"GET", "POST"}), re.compile(r"^/media/scans(/[^/]+)?(/status|/cancel)?$")),
     (frozenset({"POST"}), re.compile(r"^/publishing/queue/release-due$")),
 )
+
+
+# Routes an integration key may call (method, path regex relative to the API prefix). Keys
+# exist for one purpose each; the allow-list keeps a leaked key away from everything else.
+INTEGRATION_KEY_ALLOWED: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
+    (frozenset({"POST"}), re.compile(r"^/products/ingest$")),
+    (frozenset({"GET"}), re.compile(r"^/products/ingest/[^/]+$")),
+    (frozenset({"GET"}), re.compile(r"^/integrations/me$")),
+)
+BEARER_PREFIX = "bearer "
 
 
 class AuthenticationRequiredError(AppError):
@@ -79,25 +100,53 @@ class ServiceScopeDeniedError(AppError):
     code = "service_scope_denied"
 
 
-def service_token_allows(method: str, path: str, api_prefix: str) -> bool:
+class IntegrationScopeDeniedError(AppError):
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "integration_scope_denied"
+
+
+def _allows(
+    rules: tuple[tuple[frozenset[str], re.Pattern[str]], ...],
+    method: str,
+    path: str,
+    api_prefix: str,
+) -> bool:
     relative = path[len(api_prefix) :] if path.startswith(api_prefix) else path
-    return any(
-        method.upper() in methods and pattern.match(relative)
-        for methods, pattern in SERVICE_TOKEN_ALLOWED
-    )
+    return any(method.upper() in methods and pattern.match(relative) for methods, pattern in rules)
+
+
+def service_token_allows(method: str, path: str, api_prefix: str) -> bool:
+    return _allows(SERVICE_TOKEN_ALLOWED, method, path, api_prefix)
+
+
+def integration_key_allows(method: str, path: str, api_prefix: str) -> bool:
+    return _allows(INTEGRATION_KEY_ALLOWED, method, path, api_prefix)
 
 
 @dataclass(slots=True)
 class Identity:
-    kind: Literal["user", "service"]
+    kind: Literal["user", "service", "integration"]
     organization: Organization
     role: MembershipRole
     user: User | None = None
     session: UserSession | None = None
+    api_key: IntegrationApiKey | None = None
 
     @property
     def label(self) -> str:
-        return self.user.email if self.user is not None else "service"
+        if self.user is not None:
+            return self.user.email
+        if self.api_key is not None:
+            return f"integration:{self.api_key.name}"
+        return "service"
+
+    @property
+    def scopes(self) -> frozenset[str]:
+        """Scopes granted to an integration key; users and the service token have none."""
+        return frozenset(self.api_key.scopes) if self.api_key is not None else frozenset()
+
+    def has_scope(self, scope: str) -> bool:
+        return scope in self.scopes
 
     @property
     def user_id(self):
@@ -145,6 +194,29 @@ def _check_csrf(request: Request, settings: Settings) -> None:
         raise CsrfRejectedError("Cross-site request rejected")
 
 
+def _integration_identity(request: Request, session: Session, settings: Settings) -> Identity:
+    """Resolve `Authorization: Bearer afk_…`. Errors never echo the credential."""
+    raw = request.headers.get("authorization", "")[len(BEARER_PREFIX) :].strip()
+    key = identity_service.resolve_api_key(session, raw)
+    if key is None:
+        raise AuthenticationRequiredError("Invalid integration key")
+    now = datetime.now(UTC)
+    if not key.is_active(now):
+        raise AuthenticationRequiredError("Integration key is revoked or expired")
+    if not integration_key_allows(request.method, request.url.path, settings.api_v1_prefix):
+        raise IntegrationScopeDeniedError(
+            "Integration keys may only ingest products and read their own identity",
+            details={"method": request.method, "path": request.url.path},
+        )
+    identity_service.touch_api_key(key, now)
+    return Identity(
+        kind="integration",
+        organization=key.organization,
+        role=MembershipRole.EDITOR,
+        api_key=key,
+    )
+
+
 def get_identity(
     request: Request,
     session: DbSession,
@@ -175,6 +247,12 @@ def get_identity(
             user=user,
             session=user_session,
         )
+        request.state.identity = identity
+        return identity
+
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith(BEARER_PREFIX):
+        identity = _integration_identity(request, session, settings)
         request.state.identity = identity
         return identity
 
@@ -222,9 +300,34 @@ def require_role(minimum: MembershipRole):
     return dependency
 
 
+def require_scope(scope: str, *, user_role: MembershipRole = MembershipRole.EDITOR):
+    """Integration keys need `scope`; signed-in users need `user_role`; the service token
+    never reaches here (its allow-list refuses the route first)."""
+
+    def dependency(identity: CurrentIdentity) -> Identity:
+        if identity.kind == "integration":
+            if not identity.has_scope(scope):
+                raise IntegrationScopeDeniedError(
+                    f"This integration key lacks the '{scope}' scope",
+                    details={"required": scope, "scopes": sorted(identity.scopes)},
+                )
+            return identity
+        if not identity.has_role(user_role):
+            raise ForbiddenError(
+                f"This action requires the {user_role.value} role",
+                details={"required": user_role.value, "role": identity.role.value},
+            )
+        return identity
+
+    return dependency
+
+
 RequireViewer = Annotated[Identity, Depends(require_role(MembershipRole.VIEWER))]
 RequireEditor = Annotated[Identity, Depends(require_role(MembershipRole.EDITOR))]
 RequireAdmin = Annotated[Identity, Depends(require_role(MembershipRole.ADMIN))]
+RequireProductsIngest = Annotated[
+    Identity, Depends(require_scope(identity_service.SCOPE_PRODUCTS_INGEST))
+]
 # Compatibility aliases for routers written before M3A.
 AdminRequired = RequireAdmin
 EditorRequired = RequireEditor
