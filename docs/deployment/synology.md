@@ -243,8 +243,10 @@ Rollback:
 1. `docker compose down` (data stays in the bind mounts).
 2. Set `AFFILIO_API_IMAGE` / `AFFILIO_WEB_IMAGE` back to the previous tag.
 3. If the upgrade applied a migration that the previous version cannot run against, restore the
-   pre-upgrade dump (§8) **or** downgrade the schema explicitly:
-   `docker compose run --rm api alembic downgrade <previous revision>`.
+   pre-upgrade dump (§8) **or** downgrade the schema explicitly, with the still-current image:
+   `docker compose run --rm --no-deps api alembic downgrade <previous revision>`. Do this
+   **before** switching images: `scripts/nas-deploy-remote.sh rollback` checks the live
+   revision against the previous image's head and refuses to switch until they match.
 4. `docker compose up -d` and re-verify.
 
 Every migration in this repository has a tested `downgrade()`; the release notes list the

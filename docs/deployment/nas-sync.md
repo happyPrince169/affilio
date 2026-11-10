@@ -90,9 +90,9 @@ script uses `--project-name affilio` and the AFFILIO compose file only, and neve
 | preflight / compose-config | nothing changed | fix `.env` or the compose file, run `pnpm nas:deploy check` |
 | build | nothing changed (old containers keep running) | read the build log, fix the source, `pnpm nas:sync`, deploy again |
 | migrate | schema may be partially upgraded; app containers not yet restarted | inspect `docker compose logs api`; fix and re-run, or restore `backups/pre-deploy-*.dump` with `scripts/db-restore.sh` |
-| up / health | new containers may be unhealthy | `pnpm nas:status`; `pnpm nas:deploy rollback` restores the previous images; if the new migration is incompatible with the old code, also restore the pre-deploy dump or `alembic downgrade <revision>` |
+| up / health | new containers may be unhealthy | `pnpm nas:status`; `pnpm nas:deploy rollback` restores the previous images **only when the live schema revision equals the previous image's migration head**. If the deployment applied a migration, first downgrade with the current image (`compose run --rm --no-deps api alembic downgrade <revision>`, after a fresh dump) or restore the pre-deploy dump; the rollback refuses, changing nothing, until the revisions match |
 
-`pnpm nas:deploy rollback` re-tags `:previous` → `:latest`, restarts the AFFILIO services
+`pnpm nas:deploy rollback` first reads `alembic_version` from the live database and asks `affilio-api:previous` (offline, `--network none`) for its migration head; it fails closed, with no tag, container or database change, when they differ or when either cannot be determined, and it never downgrades or restores the database itself. When they match it re-tags `:previous` → `:latest`, restarts the AFFILIO services
 without building, waits for health, and prints the database instructions. Every migration
 in this repository has a tested `downgrade()`.
 

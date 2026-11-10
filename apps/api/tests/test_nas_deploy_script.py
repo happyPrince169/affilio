@@ -21,7 +21,8 @@ COMPOSE = REPO / "infrastructure" / "docker" / "synology" / "docker-compose.yml"
 FAKE_DOCKER = r"""#!/usr/bin/env bash
 # Records "<COMPOSE_PROFILES marker>|<args>" per call and answers like the real CLI would.
 ctl="$FAKE_DOCKER_DIR"
-printf '%s|%s\n' "${COMPOSE_PROFILES-unset}" "$*" >> "$ctl/calls.log"
+args="$(printf '%s' "$*" | tr '\n' ' ')"  # one line per call, even for multi-line probes
+printf '%s|%s\n' "${COMPOSE_PROFILES-unset}" "$args" >> "$ctl/calls.log"
 case "$1" in
   info) exit 0 ;;
   ps)
@@ -33,7 +34,13 @@ case "$1" in
       fi
     fi
     exit 0 ;;
-  exec) echo "PGDMP"; exit 0 ;;
+  exec)  # pg_dump for the backup; the read-only alembic_version select for the rollback guard
+    if [[ "$*" == *alembic_version* ]]; then
+      [[ -f "$ctl/db-unreachable" ]] && exit 1
+      [[ -f "$ctl/db-revision" ]] || exit 1
+      cat "$ctl/db-revision"; exit 0
+    fi
+    echo "PGDMP"; exit 0 ;;
   image)  # image inspect <ref>
     grep -qx "$3" "$ctl/images" ;;
   images) echo "affilio-api:latest@deadbeef"; exit 0 ;;
@@ -49,7 +56,16 @@ case "$1" in
       echo "running:healthy"
     fi
     exit 0 ;;
-  run)  # run --rm --entrypoint python <image> -c "<probe>"
+  run)
+    if [[ "$*" == *ScriptDirectory* ]]; then
+      # run --rm --network none --entrypoint python <image> -c "<alembic probe>" <revision>
+      image="$7"; rev="${@: -1}"
+      [[ -f "$ctl/heads.$image" ]] || exit 125   # image cannot run the probe: unknown
+      echo "heads=$(tr '\n' ',' < "$ctl/heads.$image" | sed 's/,$//')"
+      grep -qx "$rev" "$ctl/revisions.$image" 2>/dev/null && exit 0
+      exit 2
+    fi
+    # run --rm --entrypoint python <image> -c "<exporter probe>"
     image="$5"
     grep -qx "$image" "$ctl/supports" ;;
   compose) exit 0 ;;
@@ -117,6 +133,13 @@ def project(tmp_path: Path) -> Path:
         "affilio-api:latest\naffilio-web:latest\naffilio-api:previous\naffilio-web:previous\n"
     )
     (ctl / "supports").write_text("")
+    # Rollback guard defaults: database and the previous api image agree on one head.
+    _schema(
+        root,
+        db="0018_upload_root",
+        heads=["0018_upload_root"],
+        known=["0017_upload_chunk_manifest", "0018_upload_root"],
+    )
     return root
 
 
@@ -173,6 +196,43 @@ def _containers(project: Path, *names: str) -> None:
 
 def _calls(calls: list[str], fragment: str) -> list[str]:
     return [c for c in calls if fragment in c]
+
+
+def _schema(
+    project: Path,
+    *,
+    db: str | None,
+    heads: list[str] | None,
+    known: list[str] | None,
+    image: str = "affilio-api:previous",
+) -> None:
+    """Fake state for the rollback guard: the live alembic_version row and what the image knows."""
+    ctl = project.parent / "ctl"
+    for name in ("db-revision", f"heads.{image}", f"revisions.{image}"):
+        (ctl / name).unlink(missing_ok=True)
+    if db is not None:
+        (ctl / "db-revision").write_text(db + "\n")
+    if heads is not None:
+        (ctl / f"heads.{image}").write_text("\n".join(heads) + "\n")
+    if known is not None:
+        (ctl / f"revisions.{image}").write_text("\n".join(known) + "\n")
+
+
+def _assert_nothing_changed(calls: list[str]) -> None:
+    """A blocked rollback may only read: inspect images, select the revision, run the probe."""
+    mutating = [
+        c
+        for c in calls
+        if any(
+            k in c
+            for k in (" tag ", " up ", " stop ", " rm ", "pg_restore", "downgrade", "pg_dump")
+        )
+    ]
+    assert mutating == [], mutating
+    for c in _calls(calls, "exec "):
+        assert "select version_num from alembic_version" in c and "psql" in c, c
+    for c in _calls(calls, "run "):
+        assert "ScriptDirectory" in c and "--network none" in c, c
 
 
 # ------------------------------------------------------------------------------ deploy
@@ -372,3 +432,107 @@ def test_deploy_checks_the_ingest_network_then_proceeds(project: Path) -> None:
     assert "ingest network 'affilio-ingest-test' present" in out
     inspect = [c for c in calls if "network inspect affilio-ingest-test" in c]
     assert len(inspect) == 1
+
+
+# ------------------------------------------------------------------ rollback schema guard (P4B)
+
+
+def test_rollback_checks_the_schema_before_touching_tags_or_containers(project: Path) -> None:
+    _containers(project, "affilio-postgres", "affilio-api")
+    code, err, calls = _run(project, "rollback")
+    assert code == 0, err
+    assert "database at '0018_upload_root' = head of affilio-api:previous, compatible" in err
+    probe = [i for i, c in enumerate(calls) if "ScriptDirectory" in c]
+    select = [i for i, c in enumerate(calls) if "alembic_version" in c]
+    first_change = min(i for i, c in enumerate(calls) if " tag " in c or " up " in c)
+    assert len(probe) == 1 and len(select) == 1
+    assert select[0] < probe[0] < first_change
+    assert "--network none" in calls[probe[0]] and "affilio-api:previous" in calls[probe[0]]
+    assert calls[probe[0]].endswith("0018_upload_root")  # the live revision is what is probed
+
+
+def test_rollback_is_blocked_when_the_database_is_ahead_of_the_previous_image(
+    project: Path,
+) -> None:
+    # The P4B case: 0019/0020 applied, the previous image's scripts end at 0018.
+    _schema(
+        project,
+        db="0020_ingest_field_ownership",
+        heads=["0018_upload_root"],
+        known=["0018_upload_root"],
+    )
+    _containers(project, "affilio-postgres", "affilio-api")
+    code, err, calls = _run(project, "rollback")
+    assert code != 0
+    assert "which affilio-api:previous does not know (its head: 0018_upload_root)" in err
+    assert "Can't locate revision" in err
+    assert "never downgrades or restores the database" in err
+    assert "nothing was changed" in err.lower()
+    _assert_nothing_changed(calls)
+    assert (project.parent / "ctl" / "db-revision").read_text() == "0020_ingest_field_ownership\n"
+
+
+def test_rollback_is_blocked_when_the_database_is_behind_the_previous_image_head(
+    project: Path,
+) -> None:
+    # Known revision but not the head: the old image would migrate forward on start-up.
+    _schema(
+        project,
+        db="0017_upload_chunk_manifest",
+        heads=["0018_upload_root"],
+        known=["0017_upload_chunk_manifest", "0018_upload_root"],
+    )
+    _containers(project, "affilio-postgres")
+    code, err, calls = _run(project, "rollback")
+    assert code != 0
+    assert "would migrate the database on start-up" in err
+    _assert_nothing_changed(calls)
+
+
+def test_rollback_is_blocked_when_the_revision_cannot_be_read(project: Path) -> None:
+    for state in ("unreachable", "missing"):
+        if state == "unreachable":
+            (project.parent / "ctl" / "db-unreachable").write_text("")
+        else:
+            (project.parent / "ctl" / "db-unreachable").unlink()
+            _schema(project, db=None, heads=["0018_upload_root"], known=["0018_upload_root"])
+        code, err, calls = _run(project, "rollback")
+        assert code != 0, state
+        assert "cannot read the database revision" in err, state
+        assert not _calls(calls, "ScriptDirectory"), state  # no probe without a revision to probe
+        _assert_nothing_changed(calls)
+
+
+def test_rollback_is_blocked_when_the_previous_image_cannot_report_its_migrations(
+    project: Path,
+) -> None:
+    _schema(project, db="0018_upload_root", heads=None, known=None)  # probe exits 125
+    code, err, calls = _run(project, "rollback")
+    assert code != 0
+    assert "cannot determine which migrations affilio-api:previous supports" in err
+    _assert_nothing_changed(calls)
+
+
+def test_rollback_is_blocked_when_the_previous_image_has_several_heads(project: Path) -> None:
+    _schema(
+        project,
+        db="0018_upload_root",
+        heads=["0018_upload_root", "0018b_branch"],
+        known=["0018_upload_root"],
+    )
+    code, err, calls = _run(project, "rollback")
+    assert code != 0
+    assert "reports no single migration head" in err
+    _assert_nothing_changed(calls)
+
+
+def test_rollback_guard_does_not_hardcode_the_revision(project: Path) -> None:
+    # Whatever the previous image's head is, a matching database passes and a mismatch is refused.
+    _schema(project, db="0042_future", heads=["0042_future"], known=["0041_x", "0042_future"])
+    _containers(project, "affilio-postgres")
+    code, err, _ = _run(project, "rollback")
+    assert code == 0, err
+    _schema(project, db="0043_newer", heads=["0042_future"], known=["0041_x", "0042_future"])
+    code, err, calls = _run(project, "rollback")
+    assert code != 0 and "does not know (its head: 0042_future)" in err
+    _assert_nothing_changed(calls)

@@ -151,19 +151,27 @@ Record the output of these commands with the Gate 1 result.
 **Rule: the old image (`affilio-api:previous`, head 0018) must never start against a 0019/0020
 schema.** Its entrypoint runs `alembic upgrade head` and dies with "Can't locate revision
 '0020_ingest_field_ownership'". Downgrade first, with the **new** image, then switch images.
-`pnpm nas:deploy rollback` alone does it in the wrong order (it switches images first and only
-prints the downgrade as a hint afterwards) — do not run it before step 2 below.
+
+`pnpm nas:deploy rollback` enforces this: before it touches any image tag or container it reads
+`alembic_version` from the live database and asks `affilio-api:previous` (offline, no network)
+for its migration head. It proceeds only when the two are identical. It refuses, changing
+nothing, when the database is ahead of or behind that head, when the revision cannot be read
+(postgres down, table missing), or when the image cannot report its migrations. It never
+downgrades or restores the database itself; that is the operator's explicit step 2 below.
 
 ```bash
 # NAS, from /volume1/docker/affilio
 C="sudo /usr/local/bin/docker compose --project-name affilio -f infrastructure/docker/synology/docker-compose.yml --env-file infrastructure/docker/synology/.env"
+# 0. (optional) see the guard refuse: laptop `pnpm nas:deploy rollback` → "database is at
+#    '0020_ingest_field_ownership', which affilio-api:previous does not know (its head:
+#    0018_upload_root) … Rollback refused, nothing was changed."  PASS: exit 1, no tag/up calls.
 # 1. fresh dump (in addition to backups/pre-deploy-<ts>.dump taken in §5 step 4)
 sudo /usr/local/bin/docker exec affilio-postgres pg_dump -U affilio -d affilio --format=custom --compress=6 > backups/rollback-$(date +%Y%m%d-%H%M%S).dump
-# 2. schema back to 0018 with the NEW image
+# 2. schema back to 0018 with the NEW image (the only database change, done by you, not the script)
 $C run --rm --no-deps api alembic downgrade 0018_upload_root
 sudo /usr/local/bin/docker exec affilio-postgres psql -U affilio -d affilio -Atc "select version_num from alembic_version"
     # PASS: 0018_upload_root   (FAIL: go to step 4 instead of 3)
-# 3. previous images
+# 3. previous images — the guard now passes ("schema check: database at '0018_upload_root' = head of affilio-api:previous, compatible")
 # laptop: pnpm nas:deploy rollback      → answers y; waits for health
 # 4. only if the downgrade failed: restore the pre-deploy dump (destructive; stops writers first)
 $C stop api worker publisher exporter

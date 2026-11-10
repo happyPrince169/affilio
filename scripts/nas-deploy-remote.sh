@@ -32,6 +32,18 @@ SERVICES=(postgres api worker publisher web)
 EXPORTER_SERVICE=exporter
 EXPORTER_CONTAINER="affilio-$EXPORTER_SERVICE"
 EXPORTER_PROBE="import affilio.worker.exporter"
+# Rollback guard (P4B): run inside the rollback image with no network, prints the image's
+# migration head(s) and exits 0 when the given revision exists in its script directory, 2 when
+# it does not. It never opens a database connection.
+ALEMBIC_PROBE='import sys
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+s = ScriptDirectory.from_config(Config("alembic.ini"))
+print("heads=" + ",".join(s.get_heads()))
+try:
+    s.get_revision(sys.argv[1])
+except Exception:
+    sys.exit(2)'
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-240}"
 AFFILIO_DEPLOY_YES="${AFFILIO_DEPLOY_YES:-0}"
 STEP="start"
@@ -46,6 +58,7 @@ on_error() {
     build) log "Nothing was changed: the running containers (if any) are untouched. Fix the build and re-run 'pnpm nas:deploy deploy'." ;;
     migrate) log "The database schema may be partially upgraded. Check 'docker compose logs api', fix, and re-run; to go back: restore the pre-deploy dump from $BACKUP_DIR or 'alembic downgrade <revision>'." ;;
     up|health) log "Containers may be in a mixed state. Inspect with 'pnpm nas:status'; to return to the previous images: 'pnpm nas:deploy rollback'." ;;
+    rollback-schema) log "Nothing was changed: no image tag, container or database write happened." ;;
     *) log "See the messages above; nothing destructive was done automatically." ;;
   esac
   exit "$rc"
@@ -67,6 +80,42 @@ exports_profile_active() {
 # Does this image know the exporter? (an import, no database, no media; the image's own user)
 image_supports_exporter() {
   ${DOCKER} run --rm --entrypoint python "$1" -c "$EXPORTER_PROBE" >/dev/null 2>&1
+}
+
+# Live schema revision, read-only (`select` on alembic_version). Empty when postgres is not
+# running, the query fails or the table is missing; the caller fails closed on empty.
+live_db_revision() {
+  { ${DOCKER} exec affilio-postgres psql -U "$(env_value POSTGRES_USER || echo affilio)" -d "$(env_value POSTGRES_DB || echo affilio)" -Atc "select version_num from alembic_version" 2>/dev/null || true; } | tr -d '\r'
+}
+
+# $1 image, $2 revision. Prints "heads=<a,b>"; exit 0 = revision known to the image, 2 = unknown,
+# anything else = the probe itself failed (image without alembic, docker error): unknown.
+image_alembic_heads() {
+  ${DOCKER} run --rm --network none --entrypoint python "$1" -c "$ALEMBIC_PROBE" "$2" 2>/dev/null
+}
+
+# Refuses a rollback unless the database revision is exactly the single migration head of the
+# image that would be started. Runs BEFORE any tag, container or database change, and never
+# downgrades or restores anything itself: the old image runs `alembic upgrade head` on start,
+# so a revision it does not know crashes it ("Can't locate revision"), and a revision behind
+# its head would be migrated forward silently. Both are refused; so is "cannot tell".
+check_rollback_schema() {
+  STEP="rollback-schema"
+  local image="affilio-api:previous" db_rev probe_out probe_rc heads manual
+  db_rev="$(live_db_revision)"
+  [[ -n "$db_rev" ]] || fail "cannot read the database revision (is affilio-postgres running? does alembic_version exist?): rollback refused, nothing was changed"
+  [[ "$(printf '%s\n' "$db_rev" | wc -l)" -eq 1 ]] || fail "alembic_version holds more than one row ($(printf '%s' "$db_rev" | tr '\n' ' ')): rollback refused, nothing was changed"
+  if probe_out="$(image_alembic_heads "$image" "$db_rev")"; then probe_rc=0; else probe_rc=$?; fi
+  heads="${probe_out#heads=}"
+  manual="To proceed: take a fresh dump, bring the schema to that revision with the CURRENT image (compose run --rm --no-deps api alembic downgrade <revision>), confirm alembic_version, then run rollback again. This script never downgrades or restores the database."
+  case "$probe_rc" in
+    0) ;;
+    2) fail "database is at '$db_rev', which $image does not know (its head: ${heads:-unknown}); starting it would crash on 'Can't locate revision'. Rollback refused, nothing was changed. $manual" ;;
+    *) fail "cannot determine which migrations $image supports (probe exit $probe_rc): rollback refused, nothing was changed" ;;
+  esac
+  [[ -n "$heads" && "$heads" != *,* ]] || fail "$image reports no single migration head ('${heads}'): rollback refused, nothing was changed"
+  [[ "$heads" == "$db_rev" ]] || fail "database is at '$db_rev' but the head of $image is '$heads': starting it would migrate the database on start-up (RUN_MIGRATIONS_ON_START). Rollback refused, nothing was changed. $manual"
+  log "schema check: database at '$db_rev' = head of $image, compatible"
 }
 
 exporter_container_exists() {
@@ -293,6 +342,8 @@ rollback() {
   for image in "${IMAGES[@]}"; do
     ${DOCKER} image inspect "$image:previous" >/dev/null 2>&1 || fail "no $image:previous image: nothing to roll back to"
   done
+  # Schema guard first: nothing below runs unless the database revision matches the image.
+  check_rollback_schema
   # Profile-aware: an exporter is kept only when the previous image can run it.
   local exporter_plan="absent"
   if exports_profile_active; then
@@ -316,10 +367,7 @@ rollback() {
   local service
   for service in "${SERVICES[@]}"; do wait_healthy "$service"; done
   [[ "$exporter_plan" != "keep" ]] || wait_healthy "$EXPORTER_SERVICE"
-  log "containers run the previous images again."
-  log "If the new release applied a migration the old code cannot use, also restore the pre-deploy dump:"
-  log "  scripts/db-restore.sh $BACKUP_DIR/pre-deploy-<timestamp>.dump affilio-postgres   (stops api/worker/publisher first)"
-  log "or downgrade the schema: compose run --rm --no-deps api alembic downgrade <previous revision>"
+  log "containers run the previous images again (schema revision verified compatible before the switch)."
 }
 
 case "$ACTION" in
