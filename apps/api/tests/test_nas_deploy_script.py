@@ -38,6 +38,9 @@ case "$1" in
     grep -qx "$3" "$ctl/images" ;;
   images) echo "affilio-api:latest@deadbeef"; exit 0 ;;
   tag|stop|rm) exit 0 ;;
+  network)  # network inspect <name>: exists unless listed in $ctl/missing-networks
+    if [[ -f "$ctl/missing-networks" ]] && grep -qx "$3" "$ctl/missing-networks"; then exit 1; fi
+    exit 0 ;;
   inspect)  # health of affilio-<service>
     name="${@: -1}"
     if [[ -f "$ctl/unhealthy" ]] && grep -qx "$name" "$ctl/unhealthy"; then
@@ -92,6 +95,8 @@ def project(tmp_path: Path) -> Path:
                 f"AFFILIO_DATA_HOST_PATH={root / 'data'}",
                 "META_LIVE_PUBLISHING_ENABLED=false",
                 "CREDENTIAL_ENCRYPTION_KEYS=v1:dGVzdA==",
+                "AFFILIO_INGEST_NETWORK=affilio-ingest-test",
+                "TRUSTED_PROXY_IPS=172.18.0.0/16",
                 "",
             ]
         )
@@ -322,3 +327,48 @@ def test_check_reports_the_profile_state(project: Path) -> None:
     _set_profile(project, False)
     code, err, _ = _run(project, "check")
     assert code == 0 and "exports profile: inactive" in err
+
+
+# ------------------------------------------------------------ MeoScout ingest network (P4B)
+
+
+def _set_env(project: Path, name: str, value: str | None) -> None:
+    env = project / "infrastructure" / "docker" / "synology" / ".env"
+    lines = [line for line in env.read_text().splitlines() if not line.startswith(f"{name}=")]
+    if value is not None:
+        lines.append(f"{name}={value}")
+    env.write_text("\n".join(lines) + "\n")
+
+
+def test_check_refuses_a_wildcard_or_missing_trusted_proxy_setting(project: Path) -> None:
+    _set_env(project, "TRUSTED_PROXY_IPS", "*")
+    code, out, _ = _run(project, "check")
+    assert code != 0 and "TRUSTED_PROXY_IPS must not contain" in out
+    _set_env(project, "TRUSTED_PROXY_IPS", None)
+    code, out, _ = _run(project, "check")
+    assert code != 0 and "TRUSTED_PROXY_IPS is unset" in out
+
+
+def test_check_requires_the_ingest_network_name(project: Path) -> None:
+    _set_env(project, "AFFILIO_INGEST_NETWORK", None)
+    code, out, _ = _run(project, "check")
+    assert code != 0 and "AFFILIO_INGEST_NETWORK is unset" in out
+
+
+def test_deploy_stops_before_building_when_the_ingest_network_does_not_exist(
+    project: Path,
+) -> None:
+    (project.parent / "ctl" / "missing-networks").write_text("affilio-ingest-test\n")
+    code, out, calls = _run(project, "deploy")
+    assert code != 0 and "ingest network 'affilio-ingest-test' does not exist" in out
+    assert not any(" build " in c for c in calls), calls
+    # Neither a backup nor the rollback re-tag happened.
+    assert not any(c.endswith("pg_dump") or " tag " in c for c in calls), calls
+
+
+def test_deploy_checks_the_ingest_network_then_proceeds(project: Path) -> None:
+    code, out, calls = _run(project, "deploy")
+    assert code == 0, out
+    assert "ingest network 'affilio-ingest-test' present" in out
+    inspect = [c for c in calls if "network inspect affilio-ingest-test" in c]
+    assert len(inspect) == 1

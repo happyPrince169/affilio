@@ -120,6 +120,8 @@ Copy `infrastructure/docker/synology/.env.example` to `.env` **next to the compo
 | `AFFILIO_DATA_HOST_PATH` | Parent of the PostgreSQL data directory. |
 | `AFFILIO_UID` / `AFFILIO_GID` | Container user (see §2). |
 | `AFFILIO_BIND_ADDRESS` / `AFFILIO_WEB_PORT` | Where the web UI listens. Use the NAS LAN IP. |
+| `AFFILIO_INGEST_NETWORK` | Name of the dedicated, operator-created Docker network (`sudo docker network create --internal affilio-ingest`) that only the `api` joins, for the MeoScout bridge (M3.2-B.2 P4B). Required; the deploy stops when it does not exist. |
+| `TRUSTED_PROXY_IPS` | Peers whose `X-Forwarded-*` the API believes: the `affilio_default` subnet (`sudo docker network inspect affilio_default -f '{{(index .IPAM.Config 0).Subnet}}'`). Required; `*` is refused. The ingest network must not be included. |
 | `POSTGRES_PASSWORD` | Generate: `openssl rand -hex 32`. |
 | `MEDIA_ADMIN_TOKEN` | Generate: `openssl rand -hex 32`. Service token for CLI/cron calls (scan triggers, release-due). Since M3A the web container does **not** hold it; browsers authenticate with session cookies. |
 | `SESSION_COOKIE_SECURE` | `false` when the UI is served over plain HTTP on the LAN (no TLS); otherwise leave unset so the cookie is `Secure`. |

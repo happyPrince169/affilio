@@ -71,11 +71,19 @@ def reset_login_limiter() -> None:
 
 
 def _client_ip(request: Request, settings: Settings) -> str:
-    if settings.trust_proxy_headers:
+    """The address used for login rate limiting and the audit trail.
+
+    X-Forwarded-For is believed only when proxy headers are trusted AND the direct peer is one
+    of the configured trusted proxies. Behind uvicorn's own proxy-header handling the peer is
+    already rewritten to the real client, so this is the second, explicit gate: a container
+    that merely shares a network with the API cannot pick the address that gets recorded.
+    """
+    peer = request.client.host if request.client else None
+    if settings.trust_proxy_headers and settings.is_trusted_proxy(peer):
         forwarded = request.headers.get("x-forwarded-for", "")
         if forwarded:
             return forwarded.split(",")[0].strip()[:64]
-    return request.client.host if request.client else "unknown"
+    return peer or "unknown"
 
 
 def _membership_response(m: OrganizationMembership) -> MembershipResponse:

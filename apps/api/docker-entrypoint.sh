@@ -14,10 +14,14 @@ case "${1:-api}" in
       echo "[entrypoint] applying database migrations"
       alembic upgrade head
     fi
+    # X-Forwarded-* is honoured only from TRUSTED_PROXY_IPS (IPs or CIDR networks, comma
+    # separated): the web proxy's network in production, loopback by default. Never "*":
+    # any other peer that can reach the API (the MeoScout bridge on the ingest network)
+    # must not be able to choose the client address or scheme the API records.
     exec uvicorn affilio.main:app \
       --host 0.0.0.0 --port 8000 \
       --workers "${UVICORN_WORKERS:-1}" \
-      --no-access-log --proxy-headers --forwarded-allow-ips "*"
+      --no-access-log --proxy-headers --forwarded-allow-ips "${TRUSTED_PROXY_IPS:-127.0.0.1}"
     ;;
   worker)
     exec python -m affilio.worker

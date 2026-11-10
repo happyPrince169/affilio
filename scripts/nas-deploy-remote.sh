@@ -123,6 +123,13 @@ preflight() {
     *) fail "META_PROVIDER_MODE must be 'live' (or unset) on the NAS; mock mode is development-only" ;;
   esac
   [[ -n "$(env_value CREDENTIAL_ENCRYPTION_KEYS)" ]] || log "warning: CREDENTIAL_ENCRYPTION_KEYS is empty; Facebook Page connections will be refused until it is set"
+  # MeoScout ingest (P4B): the api joins an external network the operator creates, and trusts
+  # X-Forwarded-* only from the web proxy's subnet. Both are explicit; a wildcard is refused.
+  [[ -n "$(env_value AFFILIO_INGEST_NETWORK)" ]] || fail "AFFILIO_INGEST_NETWORK is unset in .env: name the dedicated ingest network (sudo docker network create --internal affilio-ingest; docker network ls)"
+  case "$(env_value TRUSTED_PROXY_IPS | tr -d ' ')" in
+    "") fail "TRUSTED_PROXY_IPS is unset in .env: set it to the affilio_default subnet (sudo docker network inspect affilio_default -f '{{(index .IPAM.Config 0).Subnet}}')" ;;
+    *"*"*) fail "TRUSTED_PROXY_IPS must not contain '*': the api would trust X-Forwarded-* from every peer, including the MeoScout bridge" ;;
+  esac
   for var in AFFILIO_ORIGINALS_HOST_PATH AFFILIO_PROXIES_HOST_PATH AFFILIO_FINALS_HOST_PATH; do
     [[ -d "$(env_value "$var")" ]] || fail "$var points to a missing folder: $(env_value "$var")"
   done
@@ -227,6 +234,11 @@ deploy() {
   preflight
   ${DOCKER} info >/dev/null 2>&1 || fail "cannot talk to Docker (sudo password or docker group needed): $DOCKER"
   confirm
+  STEP="ingest-network"
+  local ingest
+  ingest="$(env_value AFFILIO_INGEST_NETWORK)"
+  ${DOCKER} network inspect "$ingest" >/dev/null 2>&1 || fail "the ingest network '$ingest' does not exist; create it first (sudo docker network create --internal $ingest) — compose would otherwise refuse to start the api"
+  log "ingest network '$ingest' present"
   backup_db
   tag_previous
   STEP="build"

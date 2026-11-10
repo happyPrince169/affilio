@@ -11,6 +11,7 @@ Nothing here should ever be returned from an HTTP endpoint verbatim; see `safe_s
 
 from __future__ import annotations
 
+import ipaddress
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
@@ -152,6 +153,10 @@ class Settings(BaseSettings):
     # Trust X-Forwarded-For for the client IP (rate limiting). Only behind the web proxy /
     # a reverse proxy that overwrites the header; off by default so clients cannot spoof it.
     trust_proxy_headers: bool = False
+    # Which direct peers may set X-Forwarded-*: IPs or CIDR networks, comma separated. The same
+    # value drives uvicorn's --forwarded-allow-ips (docker-entrypoint.sh). "*" trusts everyone
+    # and is refused in production. Default: loopback (local `uv run` behind the Next.js proxy).
+    trusted_proxy_ips: str = "127.0.0.1"
     # Development seed only (affilio.scripts.seed_dev refuses to run outside dev/test).
     seed_admin_email: str = "owner@affilio.local"
     seed_admin_password: SecretStr = SecretStr("affilio-dev-owner")
@@ -326,6 +331,24 @@ class Settings(BaseSettings):
         return normalized
 
     @model_validator(mode="after")
+    def _trusted_proxies_guard(self) -> Settings:
+        """TRUSTED_PROXY_IPS must parse, and must never be a wildcard outside development."""
+        if self.trusted_proxy_ips.strip() == "*":
+            if not self.is_development:
+                msg = (
+                    "TRUSTED_PROXY_IPS='*' trusts X-Forwarded-* from every peer; set it to the "
+                    "web proxy's address or network (never a wildcard) outside development/test"
+                )
+                raise ValueError(msg)
+            return self
+        try:
+            self.trusted_proxy_networks  # noqa: B018 — parse for validation
+        except ValueError as exc:
+            msg = f"TRUSTED_PROXY_IPS must be comma-separated IPs or CIDR networks: {exc}"
+            raise ValueError(msg) from exc
+        return self
+
+    @model_validator(mode="after")
     def _meta_mode_guard(self) -> Settings:
         """Fail at startup rather than at request time for unsafe Meta configurations."""
         if self.meta_provider_mode == "mock" and not self.is_development:
@@ -400,6 +423,29 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
+
+    @property
+    def trusted_proxy_networks(self) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+        """Parsed TRUSTED_PROXY_IPS; a single host becomes a /32 (or /128) network."""
+        networks = []
+        for raw in self.trusted_proxy_ips.split(","):
+            item = raw.strip()
+            if not item or item == "*":
+                continue
+            networks.append(ipaddress.ip_network(item, strict=False))
+        return tuple(networks)
+
+    def is_trusted_proxy(self, host: str | None) -> bool:
+        """True when a request's direct peer may set X-Forwarded-* headers."""
+        if self.trusted_proxy_ips.strip() == "*":
+            return True
+        if not host:
+            return False
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return any(address in network for network in self.trusted_proxy_networks)
 
     @property
     def is_development(self) -> bool:

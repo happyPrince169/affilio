@@ -14,14 +14,15 @@ complements `synology.md` (reference) and records the readiness review of 2026-1
 | Read-only media mounts | originals, proxies, finals `read_only: true` on api and worker; publisher mounts **only** finals read-only; thumbnails/exports read-write | OK (matches CLAUDE.md §6b) |
 | Encryption key | `CREDENTIAL_ENCRYPTION_KEYS` / `..._ACTIVE_KEY_ID` passed from `.env`; API answers 503 for connections without it | **Required before connecting any Page**; back the key up out of band |
 | Session cookie | `SESSION_COOKIE_SECURE=false` in `.env.example` for plain-HTTP LAN | **Must be unset (Secure) once TLS terminates on the DSM reverse proxy**; the Meta redirect URI needs HTTPS anyway |
-| Reverse proxy trust | API: `TRUST_PROXY_HEADERS=true`, uvicorn `--proxy-headers --forwarded-allow-ips "*"`; only the web container can reach the API (no published port) | Acceptable because the API is unreachable from outside the compose network; never publish the API port |
+| Reverse proxy trust | API: `TRUST_PROXY_HEADERS=true`, uvicorn `--proxy-headers --forwarded-allow-ips $TRUSTED_PROXY_IPS` (the `affilio_default` subnet, from `.env`); the same list gates the identity router's use of `X-Forwarded-For`. Since P4B the MeoScout bridge also reaches the API, over the separate ingest network, and is outside that list | **Required:** `TRUSTED_PROXY_IPS` in `.env` (preflight refuses unset or `*`); never publish the API port |
 | Health checks | postgres `pg_isready`; api (image `HEALTHCHECK` on `/health`); worker and publisher heartbeat commands; web image `HEALTHCHECK` | OK; `depends_on … service_healthy` orders startup (api applies migrations first) |
 | Restart policies | `restart: unless-stopped` on every service | OK |
 | Log rotation | `json-file`, `max-size 10m`, `max-file 3` per container | OK (≈ 150 MB cap total) |
 | Backups | `scripts/db-backup.sh` (custom-format dump, keeps 14), `db-restore.sh` (interactive, destructive) | OK; **plus** the vault key and `.env` out of band (dumps hold ciphertext only) |
 | Mock isolation | compose forces `META_PROVIDER_MODE: live`, `APP_ENV: production`; settings refuse mock outside development/test; live Reels publishing off (`META_LIVE_PUBLISHING_ENABLED=false`) | OK: no mock Page can exist in production |
 | Overdue schedule policy | `PUBLISHER_OVERDUE_GRACE_MINUTES=120`, `PUBLISHER_OVERDUE_POLICY=review` | OK; decisions audited |
-| Internet exposure | web port bound to the LAN IP; no QuickConnect; DSM firewall rule required | Keep LAN-only until TLS is in place |
+| Internet exposure | web port bound to the LAN IP; no QuickConnect; DSM firewall rule required | Keep LAN-only until TLS is in place. **P4B preflight (2026-11-10): the DSM firewall is disabled on the NAS**; enable it or accept LAN exposure explicitly |
+| MeoScout ingest network (P4B) | `api` joins an external network named by `AFFILIO_INGEST_NETWORK` (created once: `sudo docker network create --internal <name>`); postgres, worker, publisher, exporter and web stay on `affilio_default` only; the deploy stops before backup/build when the network is missing | **Required:** create the network and set `AFFILIO_INGEST_NETWORK` in `.env` before the first deploy of this change |
 
 Security findings from the review are listed in §7.
 
@@ -180,7 +181,7 @@ spoof that header, which is acceptable on the private LAN.
 | # | Finding | Severity | Action |
 | --- | --- | --- | --- |
 | 1 | `SESSION_COOKIE_SECURE=false` example for plain-HTTP LAN | medium | unset once TLS terminates on the DSM proxy (required for Meta OAuth anyway) |
-| 2 | uvicorn trusts `X-Forwarded-*` from any peer (`--forwarded-allow-ips "*"`) | low | acceptable only because the API has no published port; never add `ports:` to `api` |
+| 2 | uvicorn trusts `X-Forwarded-*` from any peer (`--forwarded-allow-ips "*"`) | low | **Closed in P4B:** trust limited to `TRUSTED_PROXY_IPS` (the web proxy's subnet) in the entrypoint and in `_client_ip`; `*` refused in production. Still never add `ports:` to `api` |
 | 3 | Vault key lives in `.env` on the NAS volume | medium | `chmod 600`, out-of-band backup, rotation runbook (`security.md`) |
 | 4 | Mock fault switches are process-local; a stray `META_PROVIDER_MODE=mock` would be refused in production | info | enforced by settings validation; keep `APP_ENV=production` in compose |
 | 5 | Service token acts as owner on its allow-listed routes | low | narrowed in M3B.1A; rotate `MEDIA_ADMIN_TOKEN` if it was ever shared |

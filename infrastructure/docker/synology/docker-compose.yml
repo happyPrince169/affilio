@@ -31,7 +31,11 @@ x-api-env: &api-env
   MEDIA_ADMIN_TOKEN: ${MEDIA_ADMIN_TOKEN:?set MEDIA_ADMIN_TOKEN}
   SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-}
   # The API has no published port; only the web proxy reaches it and sets X-Forwarded-For.
+  # X-Forwarded-* is honoured only from TRUSTED_PROXY_IPS: the subnet of this project's default
+  # network (where `web` lives), read with `docker network inspect affilio_default`. The
+  # MeoScout bridge on the ingest network is deliberately outside it. Never "*".
   TRUST_PROXY_HEADERS: "true"
+  TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:?set TRUSTED_PROXY_IPS to the affilio_default subnet (docker network inspect affilio_default)}
   SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-14}
   PUBLICATION_MIN_GAP_MINUTES: ${PUBLICATION_MIN_GAP_MINUTES:-30}
   # Meta connection (M3B.1A). Live provider only in production; values come from .env.
@@ -174,6 +178,12 @@ services:
       postgres:
         condition: service_healthy
     # No `ports:` — the web container proxies /api/* internally.
+    # The api is the ONLY service on the ingest network (M3.2-B.2 P4B): the MeoScout bridge
+    # reaches http://affilio-api:8000 there and nothing else of AFFILIO. Listing networks
+    # explicitly drops the implicit default, so `default` is named too.
+    networks:
+      default: {}
+      affilio-ingest: {}
     deploy:
       resources:
         limits:
@@ -304,3 +314,14 @@ services:
         limits:
           memory: ${WEB_MEMORY:-384M}
     logging: *logging
+
+networks:
+  # The project's own network, as before: every service is on it (implicitly, except the api
+  # which names it). postgres stays reachable only here.
+  default: {}
+  # Dedicated ingest network, created once by the operator OUTSIDE this project
+  # (`docker network create --internal <name>`) and joined by the api above and by the
+  # MeoScout bridge (its own compose project). Nothing here assumes its name.
+  affilio-ingest:
+    external: true
+    name: ${AFFILIO_INGEST_NETWORK:?set AFFILIO_INGEST_NETWORK to the dedicated ingest network (docker network create --internal ...)}
