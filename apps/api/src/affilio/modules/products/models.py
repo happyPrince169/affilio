@@ -120,6 +120,11 @@ class Product(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         ForeignKey("product_ingest_batches.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Field ownership for MeoScout ingest (M3.2-B.2 P1.1, ADR 0014): the values ingest itself
+    # last wrote, keyed by field. Ingest may refresh a field only while the stored value is
+    # still the one recorded here; once anyone else changes it, AFFILIO owns it. NULL for
+    # products ingest never wrote to. Internal; never returned by the API.
+    ingest_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     status_events: Mapped[list[ProductStatusEvent]] = relationship(
         back_populates="product",
@@ -329,6 +334,10 @@ class ProductIngestItem(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     # [{"field": "affiliate_url", "code": "affiliate_url_differs", "resolution": "kept"}, …]
     conflicts: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    # Fields kept because AFFILIO owns the stored value (ADR 0014); reported, not a conflict.
+    preserved_fields: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
     )
     # MeoScout's research evidence, kept verbatim (bounded) and never merged into the product.

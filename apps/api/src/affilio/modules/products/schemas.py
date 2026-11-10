@@ -6,7 +6,7 @@ import json
 import re
 import uuid
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
@@ -312,6 +312,9 @@ class ProductImportResponse(ProductModel):
 
 INGEST_CONTRACT = "meoscout.affilio.candidates"
 INGEST_CONTRACT_MAJOR = 2
+# Item fields are `extra="forbid"`, so a later minor version that adds a field would reject
+# every item one by one. Pinned to the minor this server implements: a newer one is a 422.
+INGEST_CONTRACT_MINOR = 0
 MAX_INGEST_ITEMS = 200
 MAX_CLIENT_REF_LENGTH = 128
 MAX_EVIDENCE_BYTES = 8 * 1024
@@ -348,6 +351,21 @@ class IngestCandidate(ProductFieldsBase):
             msg = "client_ref must be a non-blank printable string"
             raise ValueError(msg)
         return stripped
+
+    @field_validator("estimated_commission_rate", mode="before")
+    @classmethod
+    def _rate_to_storage_precision(cls, value: object) -> object:
+        # MeoScout sends the fraction with up to 6 decimals (12.345 % → "0.12345"); the column
+        # holds 4, as the CSV path already quantizes. Rounding happens here rather than
+        # rejecting the item; the unrounded percent stays in `evidence`.
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            try:
+                parsed = Decimal(str(value).strip())
+            except InvalidOperation:
+                return value
+            if parsed.is_finite() and parsed.as_tuple().exponent < -4:  # type: ignore[operator]
+                return parsed.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+        return value
 
     @field_validator("image_url")
     @classmethod
@@ -404,8 +422,12 @@ class IngestRequest(BaseModel):
     @classmethod
     def _supported_version(cls, value: str) -> str:
         match = _VERSION_RE.match(value.strip())
-        if match is None or int(match.group(1)) != INGEST_CONTRACT_MAJOR:
-            msg = f"version must be {INGEST_CONTRACT_MAJOR}.x.y"
+        if (
+            match is None
+            or int(match.group(1)) != INGEST_CONTRACT_MAJOR
+            or int(match.group(2)) > INGEST_CONTRACT_MINOR
+        ):
+            msg = f"version must be {INGEST_CONTRACT_MAJOR}.{INGEST_CONTRACT_MINOR}.x"
             raise ValueError(msg)
         return value.strip()
 
@@ -452,6 +474,9 @@ class IngestItemResult(ProductModel):
     reason: str | None = None
     changed_fields: list[str] = Field(default_factory=list)
     conflicts: list[IngestConflict] = Field(default_factory=list)
+    # Fields MeoScout sent a different value for that AFFILIO kept, because a person (or the
+    # CSV import, or manual entry) owns the stored value. Not a conflict.
+    preserved_fields: list[str] = Field(default_factory=list)
 
 
 class IngestCounts(ProductModel):

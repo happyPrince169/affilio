@@ -9,16 +9,27 @@ the CSV import (`imports.py`), plus the rules that make a server-to-server hando
   the second candidate of a batch that resolves to the same catalog key is `rejected`
   (`duplicate_in_batch`). Existing identities never change: a differing platform id or
   product URL is a `conflict` (`identity_differs`, `product_url_differs`), kept as stored.
-- **Ownership.** Only research-derived fields are written, and only when the incoming value
-  is non-empty and differs. `affiliate_url` differing is a `conflict` (`affiliate_url_differs`)
-  kept by default and replaced only when the batch says `on_conflict = "replace"`. Status,
-  procurement, production, media links, channels and publishing are never touched: new
-  products are `DISCOVERED`, matched products keep their lifecycle.
+  For Shopee (P1.1) the id must be `<shopId>_<itemId>`, the URL must be on shopee.vn, and the
+  ids the URL states must equal the id sent (`identity_mismatch`, rejected). A URL that states
+  both ids supplies the id when none was sent. A product stored under a weaker form of the
+  same identity (bare item id, or a URL stating only the item id) is not merged on a guess:
+  the candidate is a `conflict` (`identity_ambiguous`) and nothing is written.
+- **Ownership (ADR 0014).** Only research-derived fields are written. An empty field is
+  filled; a non-empty one is refreshed only while it still holds the value ingest itself last
+  wrote (`products.ingest_snapshot`). A value anyone else set (an editor, the CSV import,
+  manual entry) is kept and reported in `preserved_fields`. `affiliate_url` differing is a
+  `conflict` (`affiliate_url_differs`) kept by default and replaced only when the batch says
+  `on_conflict = "replace"`. Status, procurement, production, media links, channels and
+  publishing are never touched: new products are `DISCOVERED`, matched products keep their
+  lifecycle.
 - **Idempotency.** `(organization, batch_id)` is unique. The batch row is flushed before any
   product is written, so a concurrent duplicate blocks on the unique index and, once the
   first request commits, receives the stored results (`replayed = true`). The same batch id
   with a different payload is refused (`batch_mismatch`). Items are stored with the batch so a
-  replay never recomputes anything. Within the batch, every product write is a savepoint:
+  replay never recomputes anything. The payload fingerprint covers `on_conflict` and the
+  items exactly as sent (keys sorted); `sent_at` and `source` are excluded, so a client that
+  resends its original request with a fresh `sent_at` gets a replay, and any change to an
+  item is a mismatch. Within the batch, every product write is a savepoint:
   a unique-index race with another batch degrades to the update path, never to a duplicate.
 - **Failure.** If processing raises, the transaction rolls back (no product, no item) and a
   `failed` batch row with a redacted error is recorded separately; the next retry with the
@@ -34,18 +45,25 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import structlog
 from fastapi import Request, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from affilio.core.audit import record_audit
 from affilio.core.config import Settings
-from affilio.core.enums import IngestBatchStatus, IngestItemStatus, ProductSource, ProductStatus
+from affilio.core.enums import (
+    IngestBatchStatus,
+    IngestItemStatus,
+    Platform,
+    ProductSource,
+    ProductStatus,
+)
 from affilio.core.errors import AppError, NotFoundError
 from affilio.core.ratelimit import SlidingWindowLimiter
 from affilio.core.redaction import redact_message
@@ -62,6 +80,13 @@ from affilio.modules.products.schemas import (
     IngestItemResult,
     IngestRequest,
     IngestResponse,
+)
+from affilio.modules.products.shopee import (
+    AmbiguousShopeeUrlError,
+    ShopeeIds,
+    is_shopee_vn_host,
+    parse_shopee_ids,
+    split_platform_product_id,
 )
 from affilio.modules.products.urls import normalize_url
 
@@ -81,6 +106,8 @@ RESEARCH_FIELDS: tuple[str, ...] = (
     "estimated_commission_amount",
     "research_notes",
 )
+# Fields under the ownership rule (ADR 0014): research fields plus the image list.
+OWNED_FIELDS: tuple[str, ...] = (*RESEARCH_FIELDS, "images")
 # MeoScout identities that are not canonical: a later canonical client_ref replaces them.
 FINGERPRINT_REF_MARKERS = (":fp:", ":url:")
 MAX_REASON_LENGTH = 1000
@@ -92,6 +119,8 @@ CODE_DUPLICATE_IN_BATCH = "duplicate_in_batch"
 CODE_IDENTITY_DIFFERS = "identity_differs"
 CODE_PRODUCT_URL_DIFFERS = "product_url_differs"
 CODE_AFFILIATE_URL_DIFFERS = "affiliate_url_differs"
+CODE_IDENTITY_MISMATCH = "identity_mismatch"
+CODE_IDENTITY_AMBIGUOUS = "identity_ambiguous"
 
 
 class PayloadTooLargeError(AppError):
@@ -223,6 +252,7 @@ class ItemOutcome:
     changed_fields: list[str] = field(default_factory=list)
     conflicts: list[dict[str, str]] = field(default_factory=list)
     evidence: dict[str, Any] | None = None
+    preserved_fields: list[str] = field(default_factory=list)
 
 
 def _rejected(client_ref: str, code: str, reason: str, evidence: Any = None) -> ItemOutcome:
@@ -251,6 +281,63 @@ def _is_fingerprint_ref(ref: str | None) -> bool:
 
 def _empty(value: Any) -> bool:
     return value is None or value == "" or value == []
+
+
+def _snap(value: Any) -> Any:
+    """JSON form of a field value for `ingest_snapshot`; equal values give equal forms."""
+    if isinstance(value, Decimal):
+        return format(value.normalize(), "f")
+    if isinstance(value, list):
+        return list(value)
+    return value
+
+
+@dataclass(slots=True)
+class IdentityCheck:
+    """Result of the Shopee identity cross-check for one validated candidate."""
+
+    code: str | None = None
+    reason: str | None = None
+    # The ids the product URL states, when it states only the item id (no shop id).
+    item_hint: ShopeeIds | None = None
+
+
+def _check_identity(candidate: IngestCandidate) -> IdentityCheck:
+    """Cross-check `platform_product_id` against the product URL (Shopee only).
+
+    Fills `platform_product_id` from the URL when the URL states both ids and none was sent;
+    never guesses a shop id."""
+    if candidate.platform != Platform.SHOPEE:
+        return IdentityCheck()
+    sent = None
+    if candidate.platform_product_id:
+        sent = split_platform_product_id(candidate.platform_product_id)
+        if sent is None:
+            return IdentityCheck(
+                CODE_INVALID_ITEM, "platform_product_id must be '<shopId>_<itemId>' for Shopee"
+            )
+    if not candidate.product_url:
+        return IdentityCheck()
+    if not is_shopee_vn_host(urlsplit(candidate.product_url).hostname):
+        return IdentityCheck(CODE_INVALID_ITEM, "product_url must be a shopee.vn URL")
+    try:
+        stated = parse_shopee_ids(candidate.product_url)
+    except AmbiguousShopeeUrlError:
+        return IdentityCheck(CODE_IDENTITY_MISMATCH, "product_url names more than one product")
+    if stated is None:
+        return IdentityCheck()
+    if sent is not None:
+        if stated.item_id != sent.item_id or (stated.shop_id and stated.shop_id != sent.shop_id):
+            return IdentityCheck(
+                CODE_IDENTITY_MISMATCH,
+                f"product_url names {stated} but platform_product_id is "
+                f"{candidate.platform_product_id}",
+            )
+        return IdentityCheck()
+    if stated.platform_product_id is not None:
+        candidate.platform_product_id = stated.platform_product_id
+        return IdentityCheck()
+    return IdentityCheck(item_hint=stated)
 
 
 # ------------------------------------------------------------------ catalog lookups
@@ -309,6 +396,75 @@ def _refetch(
     return None
 
 
+def _item_query_pattern(item_id: str) -> str:
+    return rf"[?&]item_?id={item_id}(&|$)"
+
+
+def _weaker_identity_match(
+    session: Session,
+    organization_id: uuid.UUID,
+    candidate: IngestCandidate,
+    item_hint: ShopeeIds | None,
+) -> tuple[Product | None, bool]:
+    """A Shopee product stored under a weaker form of the candidate's identity, looked up only
+    when the exact pid / URL lookups found nothing. Returns (product, exact):
+
+    - exact: no stored id, but the stored URL states the same shop and item ids → the same
+      product; the update path enriches its id.
+    - not exact: only the item id agrees (a bare item id stored as the id, a stored URL that
+      names just the item, or a candidate URL that names just the item) → ambiguous; the
+      caller reports a conflict and writes nothing.
+
+    Runs inside the batch transaction, so products created earlier in the batch are seen."""
+    if candidate.platform != Platform.SHOPEE:
+        return None, False
+    base = select(Product).where(
+        Product.organization_id == organization_id, Product.platform == candidate.platform
+    )
+    sent = (
+        split_platform_product_id(candidate.platform_product_id)
+        if candidate.platform_product_id
+        else None
+    )
+    if sent is not None:
+        shop, item = sent.shop_id, sent.item_id
+        exact = session.scalar(
+            base.where(
+                Product.platform_product_id.is_(None),
+                Product.product_url_normalized.op("~")(
+                    rf"(-i\.{shop}\.{item}|/product/{shop}/{item})/?(\?|$)"
+                ),
+            ).limit(1)
+        )
+        if exact is not None:
+            return exact, True
+        weaker = session.scalar(
+            base.where(
+                or_(
+                    Product.platform_product_id == item,
+                    and_(
+                        Product.platform_product_id.is_(None),
+                        Product.product_url_normalized.op("~*")(_item_query_pattern(item)),
+                    ),
+                )
+            ).limit(1)
+        )
+        return weaker, False
+    if item_hint is not None:
+        item = item_hint.item_id
+        weaker = session.scalar(
+            base.where(
+                or_(
+                    Product.platform_product_id == item,
+                    Product.platform_product_id.like(f"%\\_{item}", escape="\\"),
+                    Product.product_url_normalized.op("~*")(_item_query_pattern(item)),
+                )
+            ).limit(1)
+        )
+        return weaker, False
+    return None, False
+
+
 # ------------------------------------------------------------------ writes
 
 
@@ -337,6 +493,11 @@ def _create_product(
         ingest_batch_id=batch.id,
     )
     product.product_url_normalized = _url_key(candidate)
+    product.ingest_snapshot = {
+        name: _snap(getattr(product, name))
+        for name in OWNED_FIELDS
+        if not _empty(getattr(product, name))
+    }
     try:
         with session.begin_nested():
             session.add(product)
@@ -357,10 +518,12 @@ def _create_product(
 
 def _apply_update(
     product: Product, candidate: IngestCandidate, *, on_conflict: str
-) -> tuple[list[str], list[dict[str, str]]]:
-    """Merge research fields into an existing product under the ownership rules above."""
+) -> tuple[list[str], list[dict[str, str]], list[str]]:
+    """Merge research fields into an existing product under the ownership rules above.
+    Returns (changed, conflicts, preserved)."""
     changed: list[str] = []
     conflicts: list[dict[str, str]] = []
+    preserved: list[str] = []
 
     # Identity: enrich when empty, never change.
     if candidate.platform_product_id:
@@ -408,26 +571,28 @@ def _apply_update(
                 }
             )
 
-    # Research fields: written when non-empty and different; never erased.
-    for name in RESEARCH_FIELDS:
-        value = getattr(candidate, name)
+    # Research fields (ADR 0014): never erased; an empty field is filled; a non-empty one is
+    # refreshed only while it still holds the value ingest last wrote. Anything else is kept.
+    snapshot = dict(product.ingest_snapshot or {})
+    for name in OWNED_FIELDS:
+        value = candidate.all_images() if name == "images" else getattr(candidate, name)
         if _empty(value):
             continue
         current = getattr(product, name)
-        if isinstance(value, Decimal) and isinstance(current, Decimal):
-            same = value == current
-        else:
-            same = current == value
-        if same:
+        if name == "images":
+            current = list(current or [])
+        if _snap(current) == _snap(value):
+            continue
+        if not _empty(current) and (name not in snapshot or snapshot[name] != _snap(current)):
+            preserved.append(name)
             continue
         setattr(product, name, value)
+        snapshot[name] = _snap(value)
         changed.append(name)
         if name == "observed_price":
             product.price_observed_at = candidate.price_observed_at or datetime.now(UTC)
-    images = candidate.all_images()
-    if images and images != list(product.images or []):
-        product.images = images
-        changed.append("images")
+    if snapshot != (product.ingest_snapshot or {}):
+        product.ingest_snapshot = snapshot
 
     # Provenance: fill an empty reference, upgrade a fingerprint id to a canonical one.
     upgradable = _is_fingerprint_ref(product.source_ref) and not _is_fingerprint_ref(
@@ -436,13 +601,13 @@ def _apply_update(
     if (_empty(product.source_ref) or upgradable) and product.source_ref != candidate.client_ref:
         product.source_ref = candidate.client_ref
         changed.append("source_ref")
-    return changed, conflicts
+    return changed, conflicts, preserved
 
 
 def _outcome_for_update(
     product: Product, candidate: IngestCandidate, *, on_conflict: str
 ) -> ItemOutcome:
-    changed, conflicts = _apply_update(product, candidate, on_conflict=on_conflict)
+    changed, conflicts, preserved = _apply_update(product, candidate, on_conflict=on_conflict)
     kept = [c for c in conflicts if c["resolution"] == "kept"]
     if kept:
         first = kept[0]
@@ -458,6 +623,7 @@ def _outcome_for_update(
             changed_fields=changed,
             conflicts=conflicts,
             evidence=candidate.evidence,
+            preserved_fields=preserved,
         )
     if changed:
         return ItemOutcome(
@@ -467,12 +633,14 @@ def _outcome_for_update(
             changed_fields=changed,
             conflicts=conflicts,
             evidence=candidate.evidence,
+            preserved_fields=preserved,
         )
     return ItemOutcome(
         candidate.client_ref,
         IngestItemStatus.UNCHANGED,
         product=product,
         evidence=candidate.evidence,
+        preserved_fields=preserved,
     )
 
 
@@ -499,14 +667,20 @@ def _process_items(
     *,
     actor: str,
 ) -> list[ItemOutcome]:
-    validated: list[tuple[str, IngestCandidate | None, str | None, Any]] = []
+    validated: list[tuple[str, IngestCandidate | None, IdentityCheck, Any]] = []
     pid_keys: set[tuple[str, str]] = set()
     url_keys: set[str] = set()
     for raw in request.items:
         client_ref = str(raw.get("client_ref", "")).strip()
         candidate, problem = _validate_candidate(raw)
-        validated.append((client_ref, candidate, problem, raw.get("evidence")))
-        if candidate is not None:
+        # The cross-check may fill platform_product_id from the URL, so it runs before the keys.
+        check = (
+            _check_identity(candidate)
+            if candidate is not None
+            else IdentityCheck(CODE_INVALID_ITEM, problem or "")
+        )
+        validated.append((client_ref, candidate, check, raw.get("evidence")))
+        if candidate is not None and check.code is None:
             if (pid := _pid_key(candidate)) is not None:
                 pid_keys.add(pid)
             if (url := _url_key(candidate)) is not None:
@@ -515,9 +689,16 @@ def _process_items(
 
     seen: dict[str, str] = {}
     outcomes: list[ItemOutcome] = []
-    for client_ref, candidate, problem, raw_evidence in validated:
-        if candidate is None:
-            outcomes.append(_rejected(client_ref, CODE_INVALID_ITEM, problem or "", raw_evidence))
+    for client_ref, candidate, check, raw_evidence in validated:
+        if candidate is None or check.code is not None:
+            outcomes.append(
+                _rejected(
+                    client_ref,
+                    check.code or CODE_INVALID_ITEM,
+                    check.reason or "",
+                    candidate.evidence if candidate is not None else raw_evidence,
+                )
+            )
             continue
         if not candidate.has_canonical_identity():
             outcomes.append(
@@ -572,6 +753,33 @@ def _process_items(
             continue
         existing = matched_pid or matched_url
         if existing is None:
+            weaker, exact = _weaker_identity_match(
+                session, organization_id, candidate, check.item_hint
+            )
+            if weaker is not None and not exact:
+                outcomes.append(
+                    ItemOutcome(
+                        client_ref,
+                        IngestItemStatus.CONFLICT,
+                        product=weaker,
+                        code=CODE_IDENTITY_AMBIGUOUS,
+                        reason=(
+                            "an AFFILIO product shares only the item id with this candidate; "
+                            "not merged, nothing written"
+                        ),
+                        conflicts=[
+                            {
+                                "field": "platform_product_id",
+                                "code": CODE_IDENTITY_AMBIGUOUS,
+                                "resolution": "kept",
+                            }
+                        ],
+                        evidence=candidate.evidence,
+                    )
+                )
+                continue
+            existing = weaker
+        if existing is None:
             created = _create_product(session, organization_id, batch, candidate, actor=actor)
             if created is not None:
                 if pid_key:
@@ -624,6 +832,7 @@ def _store_items(
                 changed_fields=outcome.changed_fields,
                 conflicts=outcome.conflicts,
                 evidence=outcome.evidence,
+                preserved_fields=outcome.preserved_fields,
             )
         )
         setattr(counts, outcome.status.value, getattr(counts, outcome.status.value) + 1)
@@ -791,6 +1000,7 @@ def ingest_batch(
                         "code": outcome.code,
                         "conflicts": outcome.conflicts,
                         "changed_fields": outcome.changed_fields,
+                        "preserved_fields": outcome.preserved_fields,
                     },
                 )
         session.commit()
@@ -868,6 +1078,7 @@ def batch_response(batch: ProductIngestBatch, *, replayed: bool) -> IngestRespon
                 reason=item.reason,
                 changed_fields=list(item.changed_fields or []),
                 conflicts=[IngestConflict(**c) for c in (item.conflicts or [])],
+                preserved_fields=list(item.preserved_fields or []),
             )
             for item in batch.items
         ],

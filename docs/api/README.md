@@ -150,7 +150,8 @@ also call the ingest routes (same rules, audited under their email). The service
 | DELETE | `/api/v1/integrations/keys/{id}` | **admin**. Revoke (immediate; row kept). 409 `integration_key_not_active` when already revoked |
 | POST | `/api/v1/integrations/keys/{id}/rotate` | **admin**. New secret, same name and scopes, old key revoked in the same transaction → 201 `{key, secret}` |
 
-Request (`contract` and `version` are required; `version` must be `2.x.y`):
+Request (`contract` and `version` are required; `version` must be `2.0.x`, pinned since P1.1
+because item fields are strict and an additive minor would reject items one by one):
 
 ```json
 {
@@ -183,11 +184,26 @@ Request (`contract` and `version` are required; `version` must be `2.x.y`):
 ```
 
 Item fields follow `ProductWrite` (same validation as `POST /products`: http(s) URLs only,
-≤ 10 images, notes ≤ 20 000 chars, rate as a **fraction** 0–1, decimals as strings) plus
+≤ 10 images, notes ≤ 20 000 chars, rate as a **fraction** 0–1 rounded half-up to 4 decimals,
+decimals as strings) plus
 `client_ref` (unique within the batch, ≤ 128), optional `image_url`, optional `evidence`
 (≤ 8 KiB, stored on the ingest item only, never on the product). `batch_id` is 8–128
 characters of `[A-Za-z0-9._:-]`; MeoScout derives it from the content so an identical resend is
 a replay and a changed selection is a new batch.
+
+**Replay contract (P1.1).** The batch fingerprint is SHA-256 over `on_conflict` and `items`
+exactly as sent (parsed JSON, keys sorted); `sent_at` and `source` are not part of it. A retry
+must resend the **original request** (same items, same `batch_id`); a fresh `sent_at` and a
+newer `source.build` are fine and return `replayed: true` with the stored results. Any change
+to an item under a known `batch_id` is 409 `batch_mismatch`, which is **not retryable**: the
+client must send a new `batch_id`. 409 `batch_in_progress` is retryable (`Retry-After`).
+Clients must branch on `error.code`, not on the 409 status alone.
+
+**Shopee identity (P1.1, ADR 0014).** `platform_product_id` must be `<shopId>_<itemId>`;
+`product_url` must be on shopee.vn; ids the URL states must equal the id sent, otherwise the
+item is `rejected` / `identity_mismatch`. A URL stating both ids supplies the id when none is
+sent. A stored product that shares only the item id is a `conflict` / `identity_ambiguous`
+(nothing written, `product_id` points at it).
 
 Response:
 
@@ -199,7 +215,7 @@ Response:
   "counts": { "created": 1, "updated": 0, "unchanged": 0, "conflict": 0, "rejected": 0 },
   "results": [
     { "client_ref": "shopee:987654_123456789", "status": "created", "product_id": "…", "product_status": "discovered",
-      "code": null, "reason": null, "changed_fields": [], "conflicts": [] }
+      "code": null, "reason": null, "changed_fields": [], "conflicts": [], "preserved_fields": [] }
   ]
 }
 ```
@@ -207,13 +223,19 @@ Response:
 | Item status | Codes | Meaning |
 | --- | --- | --- |
 | `created` | — | New product in `DISCOVERED`, `source=meoscout`, `source_ref=client_ref` |
-| `updated` | — | Matched; `changed_fields` lists what was written (research fields when non-empty and different; empty ids / URLs / links enriched; `affiliate_url` replaced only with `on_conflict=replace`, then listed in `conflicts` with `resolution: replaced`) |
-| `unchanged` | — | Matched; nothing differed |
-| `conflict` | `affiliate_url_differs`, `product_url_differs`, `identity_differs` | Matched; AFFILIO's value kept (`conflicts[].resolution: kept`); other research fields may still have been written (`changed_fields`) |
-| `rejected` | `invalid_item`, `no_canonical_identity`, `duplicate_in_batch` | Nothing written for this item |
+| `updated` | — | Matched; `changed_fields` lists what was written (empty fields filled; research fields ingest itself last wrote refreshed; empty ids / URLs / links enriched; `affiliate_url` replaced only with `on_conflict=replace`, then listed in `conflicts` with `resolution: replaced`) |
+| `unchanged` | — | Matched; nothing written. `preserved_fields` may list values AFFILIO kept |
+| `conflict` | `affiliate_url_differs`, `product_url_differs`, `identity_differs`, `identity_ambiguous` | Matched; AFFILIO's value kept (`conflicts[].resolution: kept`); other research fields may still have been written (`changed_fields`). `identity_ambiguous`: nothing written |
+| `rejected` | `invalid_item`, `no_canonical_identity`, `duplicate_in_batch`, `identity_mismatch` | Nothing written for this item |
 
-Matching: `(platform, platform_product_id)`, then normalized `product_url`. Ingest never
-changes `status`, status history, procurement, production, media links or publishing.
+`preserved_fields` (every status but `rejected`): research fields MeoScout sent a different
+value for that AFFILIO kept because someone other than ingest set the stored value (an editor,
+the CSV import, manual entry). Ownership rule (ADR 0014): ingest refreshes a field only while it
+still holds the value ingest last wrote; products ingest did not create are fill-only.
+
+Matching: `(platform, platform_product_id)`, then normalized `product_url`, then (Shopee) a
+stored URL stating the same shop and item ids. Ingest never changes `status`, status history,
+procurement, production, media links, affiliate links or publishing.
 Audit actions: `product.ingest_batch`, `product.ingest_replayed`, `product.ingest_conflict`,
 `product.ingest_failed`, `integration_key.created`, `integration_key.revoked`,
 `integration_key.rotated` (actor `integration:<key name>`, key prefix only).

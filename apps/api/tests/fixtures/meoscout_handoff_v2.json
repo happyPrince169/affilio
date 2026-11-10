@@ -1,0 +1,115 @@
+{
+  "_source": {
+    "repository": "meoscout",
+    "commit": "8bc741d",
+    "path": "tests/fixtures/affilio-handoff.v2.json",
+    "pointer": "/expected/payload",
+    "file_sha256": "76cea3fd46b40e0365407310ee5f70d00e3c5753b443c0f96ad84063ee21463f"
+  },
+  "payload": {
+    "contract": "meoscout.affilio.candidates",
+    "version": "2.0.0",
+    "batch_id": "msb_62e69397e9ac1b4f049e59d31b500955",
+    "sent_at": "2027-01-16T08:00:00.000Z",
+    "source": {
+      "tool": "meoscout",
+      "build": "test",
+      "extension_version": "0.1.0"
+    },
+    "on_conflict": "keep",
+    "items": [
+      {
+        "client_ref": "shopee:987654_123456789",
+        "name": "Áo sơ mi nữ công sở tay dài",
+        "platform": "shopee",
+        "affiliate_url": "https://s.shopee.vn/AB1cdE",
+        "currency": "VND",
+        "research_notes": "MeoScore 82 TAKE · rate 12.5% · ₫29875/order · 1200 sold · rating 4.9 · identity marketplace-id · link via batch_csv_import (canonical_id, conf 1) · seen shopee_affiliate_product_offer",
+        "evidence": {
+          "identity_source": "marketplace-id",
+          "link_source": "BATCH_CSV_IMPORT",
+          "link_matching_method": "CANONICAL_ID",
+          "link_confidence": 1,
+          "link_review_status": "CONFIRMED",
+          "product_url_source": "SHOPEE_EXPORT",
+          "link_source_ref": "sha256:abc#row3",
+          "link_captured_at": "2027-01-15T08:00:00.000Z",
+          "meoscore": {
+            "score": 82,
+            "decision": "TAKE",
+            "version": "meoscore-test"
+          },
+          "approved_at": "2027-01-15T08:00:00.000Z",
+          "source_surface": "SHOPEE_AFFILIATE_PRODUCT_OFFER",
+          "search_query": "áo sơ mi nữ",
+          "scanned_at": "2027-01-15T07:00:00.000Z",
+          "shopee_export_source_ref": "sha256:abc#row3",
+          "commission_rate_percent": 12.5
+        },
+        "platform_product_id": "987654_123456789",
+        "product_url": "https://shopee.vn/product/987654/123456789",
+        "seller_name": "KRISTY Official",
+        "category": "Women's Fashion",
+        "image_url": "https://cf.shopee.vn/file/abc_tn.webp",
+        "observed_price": "239000",
+        "estimated_commission_rate": "0.125",
+        "estimated_commission_amount": "29875"
+      },
+      {
+        "client_ref": "shopee:111_222",
+        "name": "Quần jogger nam thể thao",
+        "platform": "shopee",
+        "affiliate_url": "https://shope.ee/legacy1",
+        "currency": "VND",
+        "research_notes": "rate 8% · ₫12000/order · link via manual_paste (legacy)",
+        "evidence": {
+          "identity_source": "unknown",
+          "link_source": "MANUAL_PASTE",
+          "link_matching_method": "LEGACY",
+          "link_confidence": null,
+          "link_review_status": "unknown",
+          "link_captured_at": "2027-01-14T08:00:00.000Z",
+          "approved_at": "2027-01-15T08:00:00.000Z",
+          "commission_rate_percent": 8
+        },
+        "platform_product_id": "111_222",
+        "product_url": "https://shopee.vn/Quan-jogger-i.111.222",
+        "category": "Men's Fashion & Sports",
+        "image_url": "https://cf.shopee.vn/file/abc_tn.webp",
+        "observed_price": "150000",
+        "estimated_commission_rate": "0.08",
+        "estimated_commission_amount": "12000"
+      },
+      {
+        "client_ref": "shopee:url:9f8e7d6c",
+        "name": "Bình giữ nhiệt inox 500ml",
+        "platform": "shopee",
+        "affiliate_url": "https://s.shopee.vn/UrlOnly1",
+        "currency": "VND",
+        "research_notes": "MeoScore 61 TEST · rate 10% · ₫9900/order · 5000 sold · rating 4.8 · identity product-url · link via passive_modal_capture (card_correlation, conf 0.9)",
+        "evidence": {
+          "identity_source": "product-url",
+          "link_source": "PASSIVE_MODAL_CAPTURE",
+          "link_matching_method": "CARD_CORRELATION",
+          "link_confidence": 0.9,
+          "link_review_status": "CONFIRMED",
+          "link_source_ref": "ui:get-link-click",
+          "link_captured_at": "2027-01-15T08:00:00.000Z",
+          "meoscore": {
+            "score": 61,
+            "decision": "TEST",
+            "version": "meoscore-test"
+          },
+          "approved_at": "2027-01-15T08:00:00.000Z",
+          "commission_rate_percent": 10
+        },
+        "product_url": "https://shopee.vn/some-page?itemid=55667788&x=1#frag",
+        "category": "Home & Household",
+        "image_url": "https://cf.shopee.vn/file/abc_tn.webp",
+        "observed_price": "99000",
+        "estimated_commission_rate": "0.1",
+        "estimated_commission_amount": "9900"
+      }
+    ]
+  }
+}

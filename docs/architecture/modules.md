@@ -79,6 +79,7 @@ modules/products/
 ├── imports.py    MeoScout CSV import: parse → map → plan → apply (M2B)
 ├── ingest.py     MeoScout JSON ingest (M3.2-B.2 P1): envelope/body bounds, rate limit, batch
 │                 idempotency, identity matching, ownership rules, stored per-item results
+├── shopee.py     Shopee identity: ids a product URL states, `<shopId>_<itemId>` (P1.1)
 ├── service.py    organization-scoped CRUD, transitions, linking (uses media.service for assets)
 ├── errors.py     duplicate_product, invalid_status_transition, winner_confirmation_required, …
 └── router.py     /api/v1/products/*

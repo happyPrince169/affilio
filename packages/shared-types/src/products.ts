@@ -211,6 +211,16 @@ export const INGEST_ITEM_STATUSES = [
 ] as const;
 export type IngestItemStatus = (typeof INGEST_ITEM_STATUSES)[number];
 export type IngestOnConflict = "keep" | "replace";
+/** Per-item codes (`conflict` and `rejected` results). */
+export type IngestItemCode =
+  | "invalid_item"
+  | "no_canonical_identity"
+  | "duplicate_in_batch"
+  | "identity_mismatch"
+  | "identity_differs"
+  | "identity_ambiguous"
+  | "product_url_differs"
+  | "affiliate_url_differs";
 
 /** One approved candidate as MeoScout sends it. Decimals are strings; the rate is a fraction. */
 export interface IngestCandidate extends ProductWrite {
@@ -221,7 +231,7 @@ export interface IngestCandidate extends ProductWrite {
 
 export interface IngestRequest {
   contract: typeof INGEST_CONTRACT;
-  version: string; // 2.x.y
+  version: string; // 2.0.x (pinned; a newer minor is 422)
   batch_id: string;
   sent_at?: string | null;
   source?: { tool: string; build?: string | null; extension_version?: string | null } | null;
@@ -244,6 +254,8 @@ export interface IngestItemResult {
   reason: string | null;
   changed_fields: string[];
   conflicts: IngestConflict[];
+  /** Fields AFFILIO kept because someone other than ingest set them (ADR 0014). */
+  preserved_fields: string[];
 }
 
 export interface IngestResponse {

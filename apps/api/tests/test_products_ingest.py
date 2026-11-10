@@ -332,7 +332,7 @@ def test_item_errors_reject_the_item_and_land_the_rest(
 ) -> None:
     payload = batch(
         [
-            item("ok_1"),
+            item("ok_1", platform_product_id="10_1"),
             item("bad_url", product_url="javascript:alert(1)", platform_product_id=None),
             {
                 "client_ref": "shopee:fp:9a",
@@ -474,12 +474,20 @@ def test_item_level_retry_after_partial_batch(
     api: TestClient, key: dict, db_session: Session, organization
 ) -> None:
     first = by_ref(
-        api.post(INGEST, json=batch([item("1_1"), item("bad", product_url="ftp://x")]), headers=key)
+        api.post(
+            INGEST,
+            json=batch(
+                [item("1_1"), item("bad", platform_product_id="12_12", product_url="ftp://x")]
+            ),
+            headers=key,
+        )
     )
     assert first["shopee:1_1"]["status"] == "created"
     assert first["shopee:bad"]["status"] == "rejected"
     # The client fixes the rejected item and resends only it, under a new batch id.
-    retry = by_ref(api.post(INGEST, json=batch([item("bad")]), headers=key))
+    retry = by_ref(
+        api.post(INGEST, json=batch([item("bad", platform_product_id="12_12")]), headers=key)
+    )
     assert retry["shopee:bad"]["status"] == "created"
     assert product_count(db_session, organization.id) == 2
 

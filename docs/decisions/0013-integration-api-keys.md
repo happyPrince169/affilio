@@ -1,6 +1,7 @@
 # ADR 0013 — Scoped integration API keys and the MeoScout product ingestion contract
 
-- **Status:** Proposed (M3.2-B.2 P1, 2026-11-09); implemented locally, not deployed.
+- **Status:** Proposed (M3.2-B.2 P1, 2026-11-09); implemented locally, not deployed. Field
+  ownership and Shopee identity checks amended by ADR 0014 (P1.1).
 - **Context:** MeoScout (a separate repository: Shopee research, scoring, affiliate link
   collection, candidate approval) hands approved candidates to AFFILIO today by CSV export and
   upload. The cross-repository audit

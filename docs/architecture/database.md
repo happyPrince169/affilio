@@ -480,6 +480,23 @@ product_ingest_items                            products += ingest_batch_id FK
 The downgrade drops the three tables and the column; ingested products stay in the catalog
 (`source=meoscout`, `source_ref=client_ref`) and every integration key stops working.
 
+### Ingest field ownership (migration `0020_ingest_field_ownership`)
+
+ADR 0014 / M3.2-B.2 P1.1.
+
+```
+products += ingest_snapshot jsonb NULL      {field: value ingest last wrote}; internal, never
+                                             returned. Ingest refreshes a field only while the
+                                             stored value equals this record. NULL = fill-only.
+product_ingest_items += preserved_fields jsonb NOT NULL DEFAULT '[]'
+                                             fields kept because AFFILIO owns them (replays
+                                             return exactly what the first response said)
+```
+
+Existing products get `NULL` (every stored value is AFFILIO's). The downgrade drops both
+columns; ingest behaviour then reverts to P1's (refresh whenever different) only if the code is
+rolled back too.
+
 ## Growth plan (not implemented)
 
 | Milestone  | Tables (indicative)                                                                                            |
