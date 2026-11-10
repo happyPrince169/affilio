@@ -1,6 +1,6 @@
 """M3.2-B.2 P1.1: cross-repository contract, replay, ownership and identity safety for
 `POST /products/ingest`. The golden payload is MeoScout's own fixture (`fixtures/
-meoscout_handoff_v2.json`, copied byte-for-byte from MeoScout 8bc741d). Needs TEST_DATABASE_URL."""
+meoscout_handoff_v2.json`, copied byte-for-byte from MeoScout 4c3f2e9). Needs TEST_DATABASE_URL."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def products_by_ref(session: Session, organization_id: uuid.UUID) -> dict[str, P
 def test_fixture_is_meoscouts_golden_payload() -> None:
     """The copy matches MeoScout's fixture when the sibling checkout is available."""
     source = GOLDEN_DOC["_source"]
-    assert source["commit"] == "8bc741d" and source["pointer"] == "/expected/payload"
+    assert source["commit"] == "4c3f2e9" and source["pointer"] == "/expected/payload"
     repo = Path(os.environ.get("MEOSCOUT_REPO", Path(__file__).parents[4] / "meoscout"))
     original = repo / source["path"]
     if not original.is_file():

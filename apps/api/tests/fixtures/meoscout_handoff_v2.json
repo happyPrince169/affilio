@@ -1,15 +1,15 @@
 {
   "_source": {
     "repository": "meoscout",
-    "commit": "8bc741d",
+    "commit": "4c3f2e9",
     "path": "tests/fixtures/affilio-handoff.v2.json",
     "pointer": "/expected/payload",
-    "file_sha256": "76cea3fd46b40e0365407310ee5f70d00e3c5753b443c0f96ad84063ee21463f"
+    "file_sha256": "1e9d263c228bddd0d6dead8ae0e6222e0d39748878592a439fd70f59a53957a4"
   },
   "payload": {
     "contract": "meoscout.affilio.candidates",
     "version": "2.0.0",
-    "batch_id": "msb_62e69397e9ac1b4f049e59d31b500955",
+    "batch_id": "msb_e1a1c21b7305447507ac88508b27208f",
     "sent_at": "2027-01-16T08:00:00.000Z",
     "source": {
       "tool": "meoscout",
