@@ -100,7 +100,8 @@ log "kept $OUT ($bytes bytes, $(printf '%s\n' "$listing" | grep -c 'TABLE DATA')
 if [[ "${RESTORE_TEST:-0}" == "1" || "$DOW" == "$RESTORE_TEST_DOW" ]]; then
   STEP="weekly-copy"
   cp -p "$OUT" "$BACKUP_DIR/weekly-$STAMP.dump"
-  cp -p "$OUT.sha256" "$BACKUP_DIR/weekly-$STAMP.dump.sha256"
+  ( cd "$BACKUP_DIR" && sha256sum "weekly-$STAMP.dump" > "weekly-$STAMP.dump.sha256" )
+  chmod 600 "$BACKUP_DIR/weekly-$STAMP.dump.sha256"
   own "$BACKUP_DIR/weekly-$STAMP.dump" "$BACKUP_DIR/weekly-$STAMP.dump.sha256"
   STEP="restore-test"
   RESTORE_RESULT="fail"

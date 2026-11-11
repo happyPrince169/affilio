@@ -150,7 +150,14 @@ def test_weekly_day_adds_a_weekly_copy_and_a_restore_test_in_a_scratch_database(
     code, out, calls = run(world, dow="0")
     assert code == 0, out
     assert (world["backups"] / "weekly-20260101-030000.dump").exists()
-    assert (world["backups"] / "weekly-20260101-030000.dump.sha256").exists()
+    weekly_sidecar = (world["backups"] / "weekly-20260101-030000.dump.sha256").read_text()
+    assert weekly_sidecar.endswith(
+        "weekly-20260101-030000.dump\n"
+    )  # names the weekly file, not the daily one
+    assert (
+        weekly_sidecar.split()[0]
+        == (world["backups"] / "daily-20260101-030000.dump.sha256").read_text().split()[0]
+    )
     st = status(world)
     assert st["status"] == "ok" and st["restore_test"] == "ok"
     assert "restore test ok: 43 tables, revision 0020_ingest_field_ownership" in out
