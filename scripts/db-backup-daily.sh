@@ -30,7 +30,11 @@ RESTORE_TEST_DOW="${RESTORE_TEST_DOW:-0}"
 MIN_BYTES="${MIN_BYTES:-4096}"
 DOCKER="${NAS_DOCKER:-docker}"
 STATUS_FILE="${STATUS_FILE:-$BACKUP_DIR/last-backup.status}"
-SCRATCH_DB="affilio_restore_test"
+# Scratch database for the restore test. Its name is fixed and distinctive; the script refuses
+# to run the test when a database by that name already exists (a previous run that died
+# mid-way, or a real database someone created with that name), so nothing unknown is ever
+# dropped. It also refuses if the name matches the production database.
+SCRATCH_DB="${SCRATCH_DB:-affilio_restore_test}"
 STAMP="${BACKUP_STAMP:-$(date +%Y%m%d-%H%M%S)}"
 DOW="${BACKUP_DOW:-$(date +%w)}"
 OUT="$BACKUP_DIR/daily-$STAMP.dump"
@@ -56,6 +60,8 @@ fail() {
 trap 'fail "unexpected error during step $STEP"' ERR
 
 [[ "$DAILY_KEEP" =~ ^[0-9]+$ && "$WEEKLY_KEEP" =~ ^[0-9]+$ ]] || fail "DAILY_KEEP / WEEKLY_KEEP must be numbers"
+[[ "$DAILY_KEEP" -ge 1 ]] || fail "DAILY_KEEP must keep at least the dump just taken"
+[[ "$SCRATCH_DB" != "$DB_NAME" && "$SCRATCH_DB" =~ ^affilio_restore_test ]] || fail "SCRATCH_DB must be a dedicated affilio_restore_test* name, never the production database"
 mkdir -p "$BACKUP_DIR"
 chmod 770 "$BACKUP_DIR" 2>/dev/null || true
 
@@ -66,7 +72,7 @@ free_kb="$(df -Pk "$BACKUP_DIR" | awk 'NR==2{print $4}')"
 
 STEP="dump"
 log "dumping $DB_NAME from $CONTAINER to $OUT"
-${DOCKER} exec "$CONTAINER" pg_dump -U "$USER_NAME" -d "$DB_NAME" --format=custom --compress=6 > "$TMP" || fail "pg_dump failed"
+${DOCKER} exec "$CONTAINER" nice -n 10 pg_dump -U "$USER_NAME" -d "$DB_NAME" --format=custom --compress=6 > "$TMP" || fail "pg_dump failed"
 bytes="$(stat -c %s "$TMP")"
 [[ "$bytes" -ge "$MIN_BYTES" ]] || fail "dump is only $bytes bytes (minimum $MIN_BYTES); not kept"
 
@@ -86,8 +92,10 @@ if [[ "${RESTORE_TEST:-0}" == "1" || "$DOW" == "$RESTORE_TEST_DOW" ]]; then
   STEP="restore-test"
   RESTORE_RESULT="fail"
   log "restore test into scratch database $SCRATCH_DB"
-  ${DOCKER} exec "$CONTAINER" psql -U "$USER_NAME" -d postgres -q -c "DROP DATABASE IF EXISTS $SCRATCH_DB" -c "CREATE DATABASE $SCRATCH_DB" >/dev/null || fail "could not create $SCRATCH_DB"
-  if ! ${DOCKER} exec -i "$CONTAINER" pg_restore -U "$USER_NAME" -d "$SCRATCH_DB" --no-owner --exit-on-error < "$OUT" >/dev/null; then
+  existing="$(${DOCKER} exec "$CONTAINER" psql -U "$USER_NAME" -d postgres -Atc "select 1 from pg_database where datname = '$SCRATCH_DB'")" || fail "could not query pg_database"
+  [[ -z "$existing" ]] || fail "database $SCRATCH_DB already exists; a previous run did not clean up or the name is in use. Inspect it and drop it by hand before the next run. The dump itself was kept."
+  ${DOCKER} exec "$CONTAINER" psql -U "$USER_NAME" -d postgres -q -c "CREATE DATABASE $SCRATCH_DB" >/dev/null || fail "could not create $SCRATCH_DB"
+  if ! ${DOCKER} exec -i "$CONTAINER" nice -n 10 pg_restore -U "$USER_NAME" -d "$SCRATCH_DB" --no-owner --exit-on-error < "$OUT" >/dev/null; then
     ${DOCKER} exec "$CONTAINER" psql -U "$USER_NAME" -d postgres -q -c "DROP DATABASE IF EXISTS $SCRATCH_DB" >/dev/null || true
     fail "restore test FAILED: the dump does not restore cleanly"
   fi

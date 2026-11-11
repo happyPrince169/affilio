@@ -47,6 +47,7 @@ case "$1" in
           echo "pg_restore: error: could not execute query" >&2; exit 1
         fi
         exit 0 ;;
+      *pg_database*) [[ -f "$ctl/scratch-exists" ]] && echo 1; exit 0 ;;
       *"CREATE DATABASE"*) echo created >> "$ctl/scratch.log"; exit 0 ;;
       *"DROP DATABASE"*) echo dropped >> "$ctl/scratch.log"; exit 0 ;;
       *information_schema.tables*) echo 43; exit 0 ;;
@@ -154,8 +155,10 @@ def test_weekly_day_adds_a_weekly_copy_and_a_restore_test_in_a_scratch_database(
     assert st["status"] == "ok" and st["restore_test"] == "ok"
     assert "restore test ok: 43 tables, revision 0020_ingest_field_ownership" in out
     scratch = (world["ctl"] / "scratch.log").read_text().split()
-    # one psql call does drop-if-exists + create (logged once as created), then the drop after
-    assert scratch == ["created", "dropped"]
+    assert scratch == [
+        "created",
+        "dropped",
+    ]  # created only after the existence check, dropped after
     restores = [c for c in calls if "pg_restore -U" in c]
     assert restores and all("affilio_restore_test" in c for c in restores)
     assert not any("pg_restore -U" in c and "-d affilio " in c for c in calls), (
@@ -215,3 +218,29 @@ def test_status_file_is_what_nas_status_shows(world: dict[str, Path]) -> None:
         "message=",
     ):
         assert key in text
+
+
+def test_restore_test_refuses_to_touch_an_existing_scratch_database(world: dict[str, Path]) -> None:
+    (world["ctl"] / "scratch-exists").write_text("")
+    code, out, calls = run(world, dow="0")
+    assert code == 1
+    assert "already exists" in out and "drop it by hand" in out
+    assert (world["backups"] / "daily-20260101-030000.dump").exists()  # the dump itself is kept
+    assert not any("CREATE DATABASE" in c or "DROP DATABASE" in c for c in calls)
+    assert not any("pg_restore -U" in c for c in calls)
+    assert status(world)["status"] == "fail"
+
+
+def test_scratch_name_can_never_be_the_production_database(world: dict[str, Path]) -> None:
+    code, out, calls = run(world, dow="0", env={"SCRATCH_DB": "affilio"})
+    assert code == 1 and "never the production database" in out
+    assert not any("pg_dump" in c for c in calls)  # refused before anything ran
+    code, out, _ = run(world, dow="0", env={"SCRATCH_DB": "something_else"})
+    assert code == 1 and "dedicated affilio_restore_test" in out
+
+
+def test_dump_and_restore_run_at_lower_priority(world: dict[str, Path]) -> None:
+    code, out, calls = run(world, dow="0")
+    assert code == 0, out
+    assert any("nice -n 10 pg_dump" in c for c in calls)
+    assert any("nice -n 10 pg_restore" in c for c in calls)
