@@ -30,6 +30,10 @@ RESTORE_TEST_DOW="${RESTORE_TEST_DOW:-0}"
 MIN_BYTES="${MIN_BYTES:-4096}"
 DOCKER="${NAS_DOCKER:-docker}"
 STATUS_FILE="${STATUS_FILE:-$BACKUP_DIR/last-backup.status}"
+# Task Scheduler runs this as root; the files are handed to the backups directory's owner
+# (the AFFILIO operator, uid 1026 on DSM) so `pnpm nas:status` and off-NAS copies can read
+# them without sudo. Mode stays 600 (dumps hold the whole database).
+BACKUP_OWNER="${BACKUP_OWNER:-$(stat -c %u:%g "$BACKUP_DIR" 2>/dev/null || echo "")}"
 # Scratch database for the restore test. Its name is fixed and distinctive; the script refuses
 # to run the test when a database by that name already exists (a previous run that died
 # mid-way, or a real database someone created with that name), so nothing unknown is ever
@@ -50,6 +54,12 @@ write_status() {  # $1 status, $2 message
     printf 'status=%s\nfinished_at=%s\nstep=%s\nfile=%s\nbytes=%s\nsha256=%s\nrestore_test=%s\nmessage=%s\n' \
       "$1" "$(date -u '+%FT%TZ')" "$STEP" "$([[ -f "$OUT" ]] && echo "$OUT" || echo "")" "$bytes" "$sum" "$RESTORE_RESULT" "$2"
   } > "$STATUS_FILE.tmp" && mv "$STATUS_FILE.tmp" "$STATUS_FILE"
+  own "$STATUS_FILE"
+}
+own() {  # chown each existing path to BACKUP_OWNER when running as root; never fatal
+  [[ -n "$BACKUP_OWNER" && "$(id -u)" == "0" ]] || return 0
+  local f
+  for f in "$@"; do [[ -e "$f" ]] && chown "$BACKUP_OWNER" "$f" 2>/dev/null || true; done
 }
 fail() {
   log "ERROR: $*"
@@ -83,12 +93,15 @@ printf '%s\n' "$listing" | grep -q 'TABLE DATA public alembic_version' || fail "
 mv "$TMP" "$OUT"
 chmod 600 "$OUT"
 ( cd "$BACKUP_DIR" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
+chmod 600 "$OUT.sha256"
+own "$OUT" "$OUT.sha256"
 log "kept $OUT ($bytes bytes, $(printf '%s\n' "$listing" | grep -c 'TABLE DATA') tables)"
 
 if [[ "${RESTORE_TEST:-0}" == "1" || "$DOW" == "$RESTORE_TEST_DOW" ]]; then
   STEP="weekly-copy"
   cp -p "$OUT" "$BACKUP_DIR/weekly-$STAMP.dump"
   cp -p "$OUT.sha256" "$BACKUP_DIR/weekly-$STAMP.dump.sha256"
+  own "$BACKUP_DIR/weekly-$STAMP.dump" "$BACKUP_DIR/weekly-$STAMP.dump.sha256"
   STEP="restore-test"
   RESTORE_RESULT="fail"
   log "restore test into scratch database $SCRATCH_DB"

@@ -244,3 +244,17 @@ def test_dump_and_restore_run_at_lower_priority(world: dict[str, Path]) -> None:
     assert code == 0, out
     assert any("nice -n 10 pg_dump" in c for c in calls)
     assert any("nice -n 10 pg_restore" in c for c in calls)
+
+
+def test_files_are_owner_only_and_handed_to_the_backups_owner_when_root(
+    world: dict[str, Path],
+) -> None:
+    # Not root here: the chown is skipped, but every file must still be mode 600 and the
+    # owner resolution must point at the backups directory's owner.
+    code, out, _ = run(world, dow="0")
+    assert code == 0, out
+    for f in world["backups"].glob("*.dump*"):
+        assert stat.S_IMODE(f.stat().st_mode) == 0o600, f.name
+    text = SCRIPT.read_text()
+    assert 'BACKUP_OWNER="${BACKUP_OWNER:-$(stat -c %u:%g "$BACKUP_DIR"' in text
+    assert '[[ -n "$BACKUP_OWNER" && "$(id -u)" == "0" ]] || return 0' in text
