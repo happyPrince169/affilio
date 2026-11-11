@@ -18,7 +18,7 @@ complements `synology.md` (reference) and records the readiness review of 2026-1
 | Health checks | postgres `pg_isready`; api (image `HEALTHCHECK` on `/health`); worker and publisher heartbeat commands; web image `HEALTHCHECK` | OK; `depends_on … service_healthy` orders startup (api applies migrations first) |
 | Restart policies | `restart: unless-stopped` on every service | OK |
 | Log rotation | `json-file`, `max-size 10m`, `max-file 3` per container | OK (≈ 150 MB cap total) |
-| Backups | `scripts/db-backup.sh` (custom-format dump, keeps 14), `db-restore.sh` (interactive, destructive) | OK; **plus** the vault key and `.env` out of band (dumps hold ciphertext only) |
+| Backups | `scripts/db-backup.sh` (manual, keeps 14), `scripts/db-backup-daily.sh` (scheduled: verified dump, weekly restore test into a scratch database, 14 daily + 8 weekly, status file, non-zero exit for Task Scheduler mail), `db-restore.sh` (interactive, destructive) | **P4B preflight found only deploy-triggered dumps on the NAS: schedule `db-backup-daily.sh` in DSM Task Scheduler**; plus the vault key and `.env` out of band (dumps hold ciphertext only) |
 | Mock isolation | compose forces `META_PROVIDER_MODE: live`, `APP_ENV: production`; settings refuse mock outside development/test; live Reels publishing off (`META_LIVE_PUBLISHING_ENABLED=false`) | OK: no mock Page can exist in production |
 | Overdue schedule policy | `PUBLISHER_OVERDUE_GRACE_MINUTES=120`, `PUBLISHER_OVERDUE_POLICY=review` | OK; decisions audited |
 | Internet exposure | web port bound to the LAN IP; no QuickConnect; DSM firewall rule required | Keep LAN-only until TLS is in place. **P4B preflight (2026-11-10): the DSM firewall is disabled on the NAS**; enable it or accept LAN exposure explicitly |

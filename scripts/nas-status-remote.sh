@@ -11,6 +11,14 @@ echo "-- configuration"
 [ -f "$P/infrastructure/docker/synology/.env" ] && echo "   .env present (mode $(stat -c %a "$P/infrastructure/docker/synology/.env"))" || echo "   .env MISSING in infrastructure/docker/synology (deployment preflight will stop)"
 for d in data/postgres backups thumbnails exports; do [ -d "$P/$d" ] && echo "   $d/ present" || echo "   $d/ missing"; done
 echo "-- disk"; df -h /volume1 | tail -1 | awk '{print "   /volume1: " $3 " used, " $4 " free (" $5 ")"}'
+echo "-- scheduled backup (scripts/db-backup-daily.sh)"
+if [ -f "$P/backups/last-backup.status" ]; then
+  sed 's/^/   /' "$P/backups/last-backup.status"
+  newest="$(ls -t "$P"/backups/daily-*.dump 2>/dev/null | head -1)"
+  [ -n "$newest" ] && echo "   newest daily dump: $(basename "$newest"), $(( ( $(date +%s) - $(stat -c %Y "$newest") ) / 3600 )) h old"
+else
+  echo "   never ran (no backups/last-backup.status): schedule it in DSM Task Scheduler, see docs/deployment/synology.md §8"
+fi
 echo "-- containers (compose project 'affilio')"
 if $NAS_DOCKER info >/dev/null 2>&1; then
   out="$($NAS_DOCKER ps -a --filter label=com.docker.compose.project=affilio --format '   {{.Names}}\t{{.Status}}\t{{.Image}}')"

@@ -214,9 +214,26 @@ credential vault key in `.env`: dumps contain only ciphertext, so keep a copy of
 POSTGRES_PASSWORD=... /volume1/docker/affilio/scripts/db-backup.sh /volume1/docker/affilio/backups affilio-postgres
 ```
 
-Schedule it with DSM **Task Scheduler → User-defined script** (daily, as root or the AFFILIO
-user), and include `/volume1/docker/affilio/backups` plus `thumbnails/` in Hyper Backup.
-Stopping the stack and copying `data/postgres` is also a valid cold backup.
+**Scheduled daily backup (P4B follow-up): `scripts/db-backup-daily.sh`.** Create a DSM
+**Task Scheduler → User-defined script**, user `root`, daily at a quiet hour (e.g. 03:17), with
+"Send run details by email" → "only when the script terminates abnormally", running:
+
+```bash
+bash /volume1/docker/affilio/scripts/db-backup-daily.sh
+```
+
+Each run dumps the database, refuses an implausibly small file, verifies the archive with
+`pg_restore --list` (the `alembic_version` table must be present), keeps `daily-<ts>.dump` with
+a `.sha256` sidecar, and on Sundays (or `RESTORE_TEST=1`) also keeps `weekly-<ts>.dump` and
+restores the new dump into a scratch database `affilio_restore_test` inside the container
+(created, restored with `--exit-on-error`, table count and schema revision read back, dropped).
+The production database is only read. Retention: 14 daily and 8 weekly dumps; the deploy
+script's `pre-deploy-*.dump` files are never touched. Every run writes
+`backups/last-backup.status` (`status=ok|fail`, time, file, bytes, sha256, restore_test) and
+exits non-zero on failure, which triggers the Task Scheduler mail; `pnpm nas:status` shows the
+status file and the age of the newest daily dump. Also include `/volume1/docker/affilio/backups`
+plus `thumbnails/` in Hyper Backup for an off-NAS copy. Stopping the stack and copying
+`data/postgres` is also a valid cold backup.
 
 ### Restore
 
