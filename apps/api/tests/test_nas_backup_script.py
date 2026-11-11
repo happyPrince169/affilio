@@ -253,15 +253,38 @@ def test_dump_and_restore_run_at_lower_priority(world: dict[str, Path]) -> None:
     assert any("nice -n 10 pg_restore" in c for c in calls)
 
 
-def test_files_are_owner_only_and_handed_to_the_backups_owner_when_root(
-    world: dict[str, Path],
-) -> None:
-    # Not root here: the chown is skipped, but every file must still be mode 600 and the
-    # owner resolution must point at the backups directory's owner.
+def test_dumps_stay_owner_only_and_only_the_status_file_is_shared(world: dict[str, Path]) -> None:
     code, out, _ = run(world, dow="0")
     assert code == 0, out
     for f in world["backups"].glob("*.dump*"):
         assert stat.S_IMODE(f.stat().st_mode) == 0o600, f.name
+    assert stat.S_IMODE((world["backups"] / "last-backup.status").stat().st_mode) == 0o644
     text = SCRIPT.read_text()
-    assert 'BACKUP_OWNER="${BACKUP_OWNER:-$(stat -c %u:%g "$BACKUP_DIR"' in text
-    assert '[[ -n "$BACKUP_OWNER" && "$(id -u)" == "0" ]] || return 0' in text
+    assert "chown" in text and "STATUS_OWNER" in text
+    # The only chown in the script targets the status file, never a dump or sidecar.
+    chowns = [
+        line for line in text.splitlines() if "chown " in line and not line.strip().startswith("#")
+    ]
+    assert chowns and all('"$STATUS_FILE"' in line for line in chowns), chowns
+
+
+def test_concurrent_runs_are_refused_by_the_lock(world: dict[str, Path]) -> None:
+    import fcntl
+
+    lock_path = world["backups"] / ".db-backup-daily.lock"
+    with open(lock_path, "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        code, out, calls = run(world)
+        assert code == 1
+        assert "another backup run holds" in out
+        assert not any("pg_dump" in c for c in calls)
+        assert not list(world["backups"].glob("daily-*.dump"))
+    code, out, _ = run(world)
+    assert code == 0, out  # released lock: the next run proceeds
+
+
+def test_the_only_drop_database_targets_the_scratch_name(world: dict[str, Path]) -> None:
+    text = SCRIPT.read_text()
+    drops = [line for line in text.splitlines() if "DROP DATABASE" in line]
+    assert drops and all("$SCRATCH_DB" in line for line in drops), drops
+    assert "DROP DATABASE IF EXISTS $SCRATCH_DB" in text  # only after the script created it
